@@ -1,7 +1,9 @@
-# Временные файлы, логи и результаты тестов
+# Временные файлы и артефакты тестирования
 sniffer_results/
 backup/
-*.pyc
-__pycache__/
+strategies/
+Repo/
 *.bak
 *.log
+*.pyc
+__pycache__/

@@ -22,7 +22,7 @@ from PyQt5.QtGui import QFont
 # КОНСТАНТЫ
 # ============================================================================
 
-PROJECT_DIR = Path.home() / "Scripts/ZAPRET"
+PROJECT_DIR = Path.home() / "Scripts/ZapretPass"
 STRATEGIES_DIR = PROJECT_DIR / "strategies"
 WHITELIST_FILE = PROJECT_DIR / "whitelist.txt"
 ZAPRET_DIR = Path("/opt/zapret")

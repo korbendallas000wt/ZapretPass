@@ -21,7 +21,7 @@ from PyQt5.QtGui import QColor, QFont
 # КОНСТАНТЫ
 # ============================================================================
 
-PROJECT_DIR = Path.home() / "Scripts/ZAPRET"
+PROJECT_DIR = Path.home() / "Scripts/ZapretPass"
 SNIFFER_RESULTS_DIR = PROJECT_DIR / "sniffer_results"
 EMOJI_FONT = "Noto Color Emoji, Noto Emoji, Segoe UI Emoji, sans-serif"
 

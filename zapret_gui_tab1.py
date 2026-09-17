@@ -21,7 +21,7 @@ from PyQt5.QtGui import QFont, QColor, QBrush
 # КОНСТАНТЫ
 # ============================================================================
 
-PROJECT_DIR = Path.home() / "Scripts/ZAPRET"
+PROJECT_DIR = Path.home() / "Scripts/ZapretPass"
 STRATEGIES_DIR = PROJECT_DIR / "strategies"
 SNIFFER_DIR = PROJECT_DIR / "sniffer_results"
 WHITELIST_FILE = PROJECT_DIR / "whitelist.txt"
