@@ -1,0 +1,7 @@
+# Временные файлы, логи и результаты тестов
+sniffer_results/
+backup/
+*.pyc
+__pycache__/
+*.bak
+*.log

@@ -1,0 +1,23 @@
+{
+  "domain": "facebook.com",
+  "strategies": [
+    [
+      "nfqws --methodeol",
+      "nfqws --dpi-desync=fake --dpi-desync-ttl=5 --orig-ttl=1 --orig-mod-start=s1 --orig-mod-cutoff=d1"
+    ]
+  ],
+  "params_only": [
+    "nfqws --methodeol",
+    "nfqws --dpi-desync=fake --dpi-desync-ttl=5 --orig-ttl=1 --orig-mod-start=s1 --orig-mod-cutoff=d1"
+  ],
+  "date": "2026-04-06 22:28",
+  "settings": {
+    "ipver": "4",
+    "http": "Y",
+    "tls12": "Y",
+    "tls13": "N",
+    "quic": "N",
+    "repeat": 1,
+    "mode": "1"
+  }
+}
