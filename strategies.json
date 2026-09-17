@@ -1,0 +1,22 @@
+{
+  "YouTube #4 (рабочая)": [
+    "--filter-tcp=80 --dpi-desync=fake --dpi-desync-fooling=md5sig --dup=1 --dup-cutoff=n2 --dup-fooling=md5sig --new",
+    "--filter-tcp=443 --dpi-desync=fake --dpi-desync-fooling=md5sig --dup=1 --dup-cutoff=n2 --dup-fooling=md5sig --new",
+    "--filter-udp=443 --dpi-desync=fake --dpi-desync-repeats=6 --new"
+  ],
+  "YouTube #5 (hostfakesplit+ttl)": [
+    "--filter-tcp=80 --dpi-desync=hostfakesplit --dpi-desync-ttl=3 --new",
+    "--filter-tcp=443 --dpi-desync=hostfakesplit --dpi-desync-ttl=3 --new",
+    "--filter-udp=443 --dpi-desync=fake --dpi-desync-repeats=6 --new"
+  ],
+  "YouTube #8 (hostfakesplit+md5sig)": [
+    "--filter-tcp=80 --dpi-desync=hostfakesplit --dpi-desync-fooling=md5sig --new",
+    "--filter-tcp=443 --dpi-desync=hostfakesplit --dpi-desync-fooling=md5sig --new",
+    "--filter-udp=443 --dpi-desync=fake --dpi-desync-repeats=6 --new"
+  ],
+  "Минимальная": [
+    "--filter-tcp=80 --dpi-desync=fake --dpi-desync-split-pos=1 --dpi-desync-fooling=md5sig --new",
+    "--filter-tcp=443 --dpi-desync=fake --dpi-desync-split-pos=1 --dpi-desync-fooling=md5sig --new",
+    "--filter-udp=443 --dpi-desync=fake --dpi-desync-repeats=6 --new"
+  ]
+}
