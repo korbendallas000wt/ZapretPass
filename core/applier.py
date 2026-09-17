@@ -2,132 +2,153 @@
 # -*- coding: utf-8 -*-
 """
 ZapretPass Core - Applier
-Применение стратегий, режимов и whitelist к конфигу zapret.
+Применение стратегий и настроек к конфигу zapret.
+
+Все операции требуют пароль sudo.
 """
-import re
 import shutil
+from pathlib import Path
 from typing import Optional
 
 from . import config
-from . import sudo
-from . import strategies as strat
 
 
 # ============================================================================
-# WHITELIST
+# ПРИМЕНЕНИЕ WHITELIST
 # ============================================================================
 
-def apply_whitelist(password: Optional[str] = None) -> tuple[bool, str]:
-    """Копирует локальный whitelist.txt в системный файл zapret.
+def apply_whitelist(password: str) -> tuple[bool, str]:
+    """Копирует data/whitelist.txt в системный файл zapret.
     
-    Целевой файл: /opt/zapret/ipset/zapret-hosts-user.txt
+    Args:
+        password: пароль sudo.
+        
+    Returns:
+        (успех, сообщение).
     """
     if not config.WHITELIST_FILE.exists():
-        return False, "Файл whitelist.txt не найден"
+        return False, "❌ Файл whitelist.txt не найден"
     
-    if not config.IPSET_USER.exists():
-        return False, f"Системный файл {config.IPSET_USER} не найден"
-    
-    try:
-        content = config.WHITELIST_FILE.read_text(encoding="utf-8")
-    except Exception as e:
-        return False, f"Ошибка чтения whitelist: {e}"
-    
+    content = config.WHITELIST_FILE.read_text(encoding="utf-8")
     if not content.strip():
-        return False, "Белый список пуст"
+        return False, "❌ Белый список пуст"
     
-    # Копируем файл через sudo cp (простой и надёжный способ)
-    ok, _, err = sudo.manager.run_with_sudo(
-        ["cp", str(config.WHITELIST_FILE), str(config.IPSET_USER)],
-        timeout=10
+    return _sudo_cp(
+        str(config.WHITELIST_FILE),
+        str(config.IPSET_USER),
+        password,
+        success_msg="✅ Белый список обновлён"
     )
-    
-    if ok:
-        return True, f"✅ Whitelist применён ({config.IPSET_USER})"
-    return False, f"❌ Ошибка копирования: {err}"
 
 
 # ============================================================================
-# РЕЖИМ (MODE_FILTER)
+# ПРИМЕНЕНИЕ РЕЖИМА (MODE_FILTER)
 # ============================================================================
 
 def apply_mode(mode: str, password: str) -> tuple[bool, str]:
     """Переключает MODE_FILTER в конфиге zapret.
     
     Args:
-        mode: "whitelist" (MODE_FILTER=hostlist) или "global" (MODE_FILTER=none).
+        mode: "whitelist" или "global".
         password: пароль sudo.
+        
+    Returns:
+        (успех, сообщение).
     """
-    if mode not in ("whitelist", "global"):
-        return False, f"Неизвестный режим: {mode}"
+    if mode == "whitelist":
+        src = config.CONFIG_WHITELIST
+    elif mode == "global":
+        src = config.CONFIG_GLOBAL
+    else:
+        return False, f"❌ Неизвестный режим: {mode}"
     
-    target_value = "hostlist" if mode == "whitelist" else "none"
+    if not src.exists():
+        return False, f"❌ Шаблон конфига не найден: {src.name}"
     
-    try:
-        content = config.CONFIG_FILE.read_text(encoding="utf-8")
-    except Exception as e:
-        return False, f"Ошибка чтения конфига: {e}"
+    # Бэкап текущего конфига перед заменой
+    _backup_config(password)
     
-    # Заменяем активную строку MODE_FILTER=... на нужную
-    # Обрабатываем и закомментированный, и активный варианты
-    new_content = re.sub(
-        r'^\s*#?\s*MODE_FILTER\s*=.*$',
-        f'MODE_FILTER={target_value}',
-        content,
-        count=1,
-        flags=re.MULTILINE
+    return _sudo_cp(
+        str(src),
+        str(config.CONFIG_FILE),
+        password,
+        success_msg=f"✅ Режим переключён на {mode}"
     )
-    
-    if new_content == content:
-        # Строка не найдена — добавляем в начало
-        new_content = f"MODE_FILTER={target_value}\n" + content
-    
-    return _write_config_with_sudo(new_content, password, f"Режим {mode}")
 
 
 # ============================================================================
-# СТРАТЕГИЯ (NFQWS_OPT / TPWS_OPT)
+# ПРИМЕНЕНИЕ СТРАТЕГИИ
 # ============================================================================
 
 def apply_strategy(strategy: str, password: str) -> tuple[bool, str]:
-    """Применяет стратегию к конфигу zapret.
+    """Применяет стратегию к конфигу zapret (записывает в NFQWS_OPT).
     
-    Стратегия вида "nfqws --dpi-desync=fake ..." или "tpws --hostcase".
-    Записывается в соответствующую переменную конфига (NFQWS_OPT или TPWS_OPT).
+    Стратегия должна быть в формате: "nfqws --dpi-desync=..." или "tpws --hostcase".
+    Префикс (nfqws/tpws) удаляется, параметры записываются для портов 80, 443 TCP и 443 UDP.
+    
+    Args:
+        strategy: строка стратегии.
+        password: пароль sudo.
+        
+    Returns:
+        (успех, сообщение).
     """
-    strategy = strategy.strip()
     if not strategy:
-        return False, "Пустая стратегия"
+        return False, "❌ Пустая стратегия"
     
-    # Определяем тип стратегии по префиксу
-    if strategy.startswith("nfqws"):
-        opt_value = strategy[len("nfqws"):].strip()
-        var_name = "NFQWS_OPT"
-    elif strategy.startswith("tpws"):
-        opt_value = strategy[len("tpws"):].strip()
+    # Валидация: стратегия должна начинаться с nfqws или tpws
+    strategy_stripped = strategy.strip()
+    if not (strategy_stripped.startswith("nfqws") or strategy_stripped.startswith("tpws")):
+        return False, f"❌ Некорректный формат стратегии: {strategy[:50]}"
+    
+    # Убираем префикс
+    params = strategy_stripped.replace("nfqws ", "").replace("tpws ", "").strip()
+    
+    # Бэкап перед модификацией
+    ok_backup, msg_backup = _backup_config(password)
+    if not ok_backup:
+        return False, f"❌ Не удалось сделать бэкап: {msg_backup}"
+    
+    # Формируем строку для записи в конфиг
+    # Для tpws-стратегий используем TPWS_OPT, для nfqws — NFQWS_OPT
+    if strategy_stripped.startswith("tpws"):
         var_name = "TPWS_OPT"
+        # Для tpws обычно достаточно одной строки (нет разделения по портам)
+        strategy_line = f'{var_name}="{params}"'
     else:
-        return False, f"Неизвестный тип стратегии: {strategy[:20]}"
+        var_name = "NFQWS_OPT"
+        # Для nfqws — три фильтра: TCP 80, TCP 443, UDP 443
+        strategy_line = (
+            f'{var_name}="--filter-tcp=80 {params} --new '
+            f'--filter-tcp=443 {params} --new '
+            f'--filter-udp=443 {params}"'
+        )
+    
+    # Записываем в конец конфига через sudo bash -c 'echo ... >> ...'
+    # Используем одинарные кавычки для bash, чтобы двойные внутри не ломались
+    # Экранируем одинарные кавычки внутри strategy_line (на случай, если они там есть)
+    safe_line = strategy_line.replace("'", "'\\''")
+    shell_cmd = f"echo '{safe_line}' >> {config.CONFIG_FILE}"
     
     try:
-        content = config.CONFIG_FILE.read_text(encoding="utf-8")
+        import subprocess
+        process = subprocess.Popen(
+            ['sudo', '-S', 'bash', '-c', shell_cmd],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        stdout, stderr = process.communicate(input=password + "\n", timeout=30)
+        
+        if process.returncode == 0:
+            return True, f"✅ Стратегия применена ({var_name})"
+        
+        error_msg = _filter_sudo_stderr(stderr)
+        return False, f"❌ Не удалось записать стратегию: {error_msg}"
+    
     except Exception as e:
-        return False, f"Ошибка чтения конфига: {e}"
-    
-    # Заменяем значение переменной
-    new_content = re.sub(
-        rf'^\s*#?\s*{var_name}\s*=.*$',
-        f'{var_name}="{opt_value}"',
-        content,
-        count=1,
-        flags=re.MULTILINE
-    )
-    
-    if new_content == content:
-        # Переменная не найдена — добавляем
-        new_content = f'{var_name}="{opt_value}"\n' + content
-    
-    return _write_config_with_sudo(new_content, password, f"Стратегия {var_name}")
+        return False, f"❌ Ошибка записи стратегии: {str(e)}"
 
 
 # ============================================================================
@@ -136,72 +157,129 @@ def apply_strategy(strategy: str, password: str) -> tuple[bool, str]:
 
 def apply_all(
     mode: str,
-    strategy: Optional[str] = None,
-    password: Optional[str] = None,
-    update_whitelist: bool = True
-) -> tuple[bool, str]:
-    """Комплексное применение: режим + стратегия + whitelist.
+    strategy: Optional[str],
+    password: str,
+    restart_service: bool = True
+) -> tuple[bool, str, list[str]]:
+    """Применяет все настройки: режим, whitelist (для whitelist-режима), стратегию.
     
     Args:
         mode: "whitelist" или "global".
-        strategy: стратегия (опционально).
+        strategy: строка стратегии (может быть None для режима global).
         password: пароль sudo.
-        update_whitelist: копировать ли whitelist в систему.
+        restart_service: нужно ли перезапускать сервис после применения.
         
     Returns:
-        (успех, итоговое сообщение).
+        (успех, итоговое_сообщение, список_шагов).
     """
-    pwd = password or sudo.manager.get_password()
-    if not pwd:
-        return False, "Пароль не предоставлен"
+    steps = []
+    success = True
     
-    messages = []
-    all_ok = True
+    # 1. Применяем режим
+    ok, msg = apply_mode(mode, password)
+    steps.append(f"[1/3] Режим: {msg}")
+    if not ok:
+        return False, msg, steps
     
-    # 1. Обновляем whitelist (если режим whitelist)
-    if update_whitelist and mode == "whitelist":
-        ok, msg = apply_whitelist(pwd)
-        messages.append(msg)
-        all_ok = all_ok and ok
+    # 2. Для whitelist-режима — обновляем whitelist
+    if mode == "whitelist":
+        ok, msg = apply_whitelist(password)
+        steps.append(f"[2/3] Whitelist: {msg}")
+        if not ok:
+            return False, msg, steps
+    else:
+        steps.append("[2/3] Whitelist: пропущен (режим global)")
     
-    # 2. Применяем режим
-    ok, msg = apply_mode(mode, pwd)
-    messages.append(msg)
-    all_ok = all_ok and ok
-    
-    # 3. Применяем стратегию (если указана)
+    # 3. Применяем стратегию (если задана)
     if strategy:
-        ok, msg = apply_strategy(strategy, pwd)
-        messages.append(msg)
-        all_ok = all_ok and ok
+        ok, msg = apply_strategy(strategy, password)
+        steps.append(f"[3/3] Стратегия: {msg}")
+        if not ok:
+            return False, msg, steps
+    else:
+        steps.append("[3/3] Стратегия: не задана, пропущена")
     
-    summary = "\n".join(messages)
-    return all_ok, summary
+    # 4. Опциональный рестарт сервиса
+    if restart_service:
+        from . import service
+        ok, msg = service.restart(password)
+        steps.append(f"[рестарт] {msg}")
+        if not ok:
+            return False, msg, steps
+    
+    return True, "✅ Все настройки применены", steps
 
 
 # ============================================================================
 # ВНУТРЕННИЕ ФУНКЦИИ
 # ============================================================================
 
-def _write_config_with_sudo(
-    content: str, password: str, label: str
-) -> tuple[bool, str]:
-    """Записывает новое содержимое в конфиг zapret через sudo."""
-    import subprocess
+def _backup_config(password: str) -> tuple[bool, str]:
+    """Делает бэкап текущего конфига в config.backup."""
+    if not config.CONFIG_FILE.exists():
+        return False, "Конфиг не существует"
+    
     try:
+        ok, stdout, stderr = _sudo_cp(
+            str(config.CONFIG_FILE),
+            str(config.CONFIG_BACKUP),
+            password,
+            success_msg="Бэкап создан"
+        )
+        return ok, stderr if not ok else "OK"
+    except Exception as e:
+        return False, str(e)
+
+
+def _sudo_cp(src: str, dst: str, password: str, success_msg: str) -> tuple[bool, str]:
+    """Выполняет sudo cp src dst."""
+    if not password:
+        return False, "Пароль не предоставлен"
+    
+    try:
+        import subprocess
         process = subprocess.Popen(
-            ["sudo", "-S", "tee", str(config.CONFIG_FILE)],
+            ['sudo', '-S', 'cp', src, dst],
             stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True
         )
-        _, stderr = process.communicate(
-            input=password + "\n" + content,
-            timeout=10
-        )
+        stdout, stderr = process.communicate(input=password + "\n", timeout=30)
+        
         if process.returncode == 0:
-            return True, f"✅ {label}: применено"
-        return False, f"❌ {label}: {stderr.strip()}"
+            return True, success_msg
+        
+        error_msg = _filter_sudo_stderr(stderr)
+        return False, error_msg
+    
     except Exception as e:
-        return False, f"❌ {label}: {e}"
+        return False, str(e)
+
+
+def _filter_sudo_stderr(stderr: str) -> str:
+    """Фильтрует служебные строки sudo из stderr."""
+    if not stderr:
+        return "Неизвестная ошибка"
+    
+    filtered = []
+    for line in stderr.splitlines():
+        if "[sudo]" in line or "password for" in line.lower():
+            continue
+        if line.strip():
+            filtered.append(line.strip())
+    
+    return "\n".join(filtered) if filtered else "Неизвестная ошибка"
+
+
+def restore_from_backup(password: str) -> tuple[bool, str]:
+    """Восстанавливает конфиг из бэкапа (откат)."""
+    if not config.CONFIG_BACKUP.exists():
+        return False, "❌ Бэкап не найден"
+    
+    return _sudo_cp(
+        str(config.CONFIG_BACKUP),
+        str(config.CONFIG_FILE),
+        password,
+        success_msg="✅ Конфиг восстановлен из бэкапа"
+    )
