@@ -1,0 +1,6 @@
+google.com
+instagram.com
+cdninstagram.com
+googleapis.com
+facebook.com
+meta.com

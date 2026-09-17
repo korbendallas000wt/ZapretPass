@@ -1,9 +1,14 @@
-# Временные файлы и артефакты тестирования
-sniffer_results/
-backup/
-strategies/
+# Папка релиза (отдельный репозиторий)
 Repo/
-*.bak
-*.log
+
+# Временные файлы и артефакты тестирования (только в корне)
+/sniffer_results/
+/backup/
+/strategies/
+
+# Python
 *.pyc
 __pycache__/
+
+# Прочее
+*.log

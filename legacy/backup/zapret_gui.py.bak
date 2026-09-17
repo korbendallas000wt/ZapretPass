@@ -1,0 +1,476 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+import sys, subprocess, json, os, re, pexpect
+from datetime import datetime
+from PyQt5.QtWidgets import *
+from PyQt5.QtCore import *
+from PyQt5.QtGui import QFont
+from PyQt5.QtWidgets import QLineEdit
+
+CONFIG_PATH = "/opt/zapret/config"
+STRATEGIES_DIR = os.path.expanduser("~/Scripts/ZAPRET/strategies")
+DEFAULT_SITES = {"YouTube": "https://youtube.com", "Facebook": "https://facebook.com", "Instagram": "https://www.instagram.com", "Outlook": "https://outlook.com", "Rutracker": "https://rutracker.org/forum/index.php"}
+
+PRESET_STRATEGIES = {
+    "YouTube #4 (рабочая)": ["--filter-tcp=80 --dpi-desync=fake --dpi-desync-fooling=md5sig --dup=1 --dup-cutoff=n2 --dup-fooling=md5sig --new", "--filter-tcp=443 --dpi-desync=fake --dpi-desync-fooling=md5sig --dup=1 --dup-cutoff=n2 --dup-fooling=md5sig --new", "--filter-udp=443 --dpi-desync=fake --dpi-desync-repeats=6 --new"],
+    "YouTube #5 (hostfakesplit+ttl)": ["--filter-tcp=80 --dpi-desync=hostfakesplit --dpi-desync-ttl=3 --new", "--filter-tcp=443 --dpi-desync=hostfakesplit --dpi-desync-ttl=3 --new", "--filter-udp=443 --dpi-desync=fake --dpi-desync-repeats=6 --new"],
+    "YouTube #8 (hostfakesplit+md5sig)": ["--filter-tcp=80 --dpi-desync=hostfakesplit --dpi-desync-fooling=md5sig --new", "--filter-tcp=443 --dpi-desync=hostfakesplit --dpi-desync-fooling=md5sig --new", "--filter-udp=443 --dpi-desync=fake --dpi-desync-repeats=6 --new"],
+    "Минимальная": ["--filter-tcp=80 --dpi-desync=fake --dpi-desync-split-pos=1 --dpi-desync-fooling=md5sig --new", "--filter-tcp=443 --dpi-desync=fake --dpi-desync-split-pos=1 --dpi-desync-fooling=md5sig --new", "--filter-udp=443 --dpi-desync=fake --dpi-desync-repeats=6 --new"]
+}
+
+BC_STEPS = [
+    {"label": "📝 Домен для проверки:", "type": "text", "default": "youtube.com", "key": "domain"},
+    {"label": "🌐 Версия IP:", "type": "combo", "options": ["4", "6", "46"], "default": "4", "key": "ipver"},
+    {"label": "📡 Проверять HTTP (порт 80):", "type": "radio", "options": ["Да", "Нет"], "default": "Да", "key": "http", "map": {"Да": "Y", "Нет": "N"}},
+    {"label": "🔒 Проверять HTTPS TLS 1.2:", "type": "radio", "options": ["Да", "Нет"], "default": "Да", "key": "tls12", "map": {"Да": "Y", "Нет": "N"}},
+    {"label": "🔐 Проверять HTTPS TLS 1.3:", "type": "radio", "options": ["Да", "Нет"], "default": "Нет", "key": "tls13", "map": {"Да": "Y", "Нет": "N"}},
+    {"label": "🚀 Проверять QUIC (HTTP/3):", "type": "radio", "options": ["Да", "Нет"], "default": "Нет", "key": "quic", "map": {"Да": "Y", "Нет": "N"}},
+    {"label": "🔁 Повторов каждого теста:", "type": "spin", "min": 1, "max": 10, "default": 1, "key": "repeat"},
+    {"label": "⚙️ Режим проверки:", "type": "combo", "options": ["Quick (быстро, 2-5 мин)", "Standard (полный, 10-15 мин)", "Force (максимум, 20+ мин)"], "default": "Standard (полный, 10-15 мин)", "key": "mode", "mode_map": {"Quick": "1", "Standard": "2", "Force": "3"}}
+]
+
+class WorkerThread(QThread):
+    finished = pyqtSignal(str, bool)
+    progress = pyqtSignal(str)
+    def __init__(self, command, description=""):
+        super().__init__()
+        self.command = command
+        self.description = description
+    def run(self):
+        try:
+            self.progress.emit(f"⏳ {self.description}...")
+            result = subprocess.run(self.command, shell=True, capture_output=True, text=True, timeout=600)
+            self.finished.emit(result.stdout + result.stderr, result.returncode == 0)
+        except subprocess.TimeoutExpired:
+            self.finished.emit("⏱ Таймаут", False)
+        except Exception as e:
+            self.finished.emit(f"Ошибка: {str(e)}", False)
+
+class SiteTestThread(QThread):
+    site_result = pyqtSignal(str, str, bool)
+    def __init__(self, name, url):
+        super().__init__()
+        self.name = name
+        self.url = url
+    def run(self):
+        try:
+            result = subprocess.run(f"curl -s -o /dev/null -w '%{{http_code}}' --ipv4 -m 10 '{self.url}'", shell=True, capture_output=True, text=True, timeout=15)
+            code = result.stdout.strip()
+            success = code in ["200","301","302"]
+            self.site_result.emit(self.name, f"OK {code}" if success else f"FAIL {code}", success)
+        except:
+            self.site_result.emit(self.name, "ERROR", False)
+
+class BlockcheckThread(QThread):
+    finished = pyqtSignal(str, bool, dict)
+    progress = pyqtSignal(str)
+    def __init__(self, domain, answers, password):
+        super().__init__()
+        self.domain = domain
+        self.answers = answers
+        self.password = password
+    def run(self):
+        try:
+            self.progress.emit("⏳ Остановка zapret...")
+            child = pexpect.spawn(f'sudo -S systemctl stop zapret', timeout=30)
+            child.expect(['password', 'Password', pexpect.EOF, pexpect.TIMEOUT])
+            child.sendline(self.password)
+            child.wait()
+            
+            self.progress.emit("⏳ Запуск blockcheck...")
+            child = pexpect.spawn(f'sudo -S ./blockcheck.sh {self.domain}', timeout=600, cwd='/opt/zapret')
+            
+            password_sent = False
+            output = ""
+            
+            while True:
+                try:
+                    idx = child.expect(['password', 'Password', pexpect.EOF, pexpect.TIMEOUT], timeout=60)
+                    if idx in [0, 1]:
+                        child.sendline(self.password)
+                        password_sent = True
+                    elif idx == 2:
+                        output = child.before.decode('utf-8', errors='ignore') if child.before else ""
+                        break
+                    elif idx == 3:
+                        self.progress.emit("⏱ Ожидание...")
+                except Exception as e:
+                    break
+            
+            self.progress.emit("✅ Blockcheck завершён")
+            self.finished.emit(output, True, self.answers)
+        except Exception as e:
+            self.finished.emit(f"Ошибка: {str(e)}", False, {})
+
+class ZapretManager(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("🛡️ ZAPRET Manager")
+        self.setMinimumSize(950, 750)
+        self.sudo_password = None
+        os.makedirs(STRATEGIES_DIR, exist_ok=True)
+        self.bc_answers = {"domain": "youtube.com", "ipver": "4", "http": "Y", "tls12": "Y", "tls13": "N", "quic": "N", "repeat": 1, "mode": "2"}
+        self.bc_step = 0
+        self.bc_widgets = {}
+        self.init_ui()
+        self.load_strategies()
+        self.update_status()
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.update_status)
+        self.timer.start(5000)
+
+    def init_ui(self):
+        central = QWidget()
+        self.setCentralWidget(central)
+        layout = QVBoxLayout(central)
+        tabs = QTabWidget()
+        layout.addWidget(tabs)
+
+        # Вкладка 1: Управление
+        tab1 = QWidget()
+        tabs.addTab(tab1, "📊 Управление")
+        l1 = QVBoxLayout(tab1)
+        self.status_label = QLabel("🔴 Статус: Неизвестно")
+        self.status_label.setFont(QFont("Arial", 12, QFont.Bold))
+        l1.addWidget(self.status_label)
+        btn_layout = QHBoxLayout()
+        for txt, cmd in [("▶ Запустить", "start"), ("⏹ Остановить", "stop"), ("🔄 Перезапустить", "restart")]:
+            btn = QPushButton(txt)
+            btn.clicked.connect(lambda c, c2=cmd: self.run_cmd(f"systemctl {c2} zapret", txt))
+            btn_layout.addWidget(btn)
+        l1.addLayout(btn_layout)
+        l1.addWidget(QLabel("📁 Стратегия:"))
+        self.strategy_combo = QComboBox()
+        self.strategy_combo.currentTextChanged.connect(self.on_strategy_changed)
+        l1.addWidget(self.strategy_combo)
+        self.strategy_preview = QPlainTextEdit()
+        self.strategy_preview.setReadOnly(True)
+        self.strategy_preview.setMaximumHeight(100)
+        l1.addWidget(QLabel("📋 Предпросмотр:"))
+        l1.addWidget(self.strategy_preview)
+        btn_apply = QPushButton("💾 Применить стратегию")
+        btn_apply.clicked.connect(self.apply_strategy)
+        l1.addWidget(btn_apply)
+
+        # Вкладка 2: Тест сайтов
+        tab2 = QWidget()
+        tabs.addTab(tab2, "🌐 Тест сайтов")
+        l2 = QVBoxLayout(tab2)
+        self.site_widgets = {}
+        for name, url in DEFAULT_SITES.items():
+            row = QHBoxLayout()
+            row.addWidget(QLabel(name), 1)
+            btn_test = QPushButton("🧪 Тест")
+            btn_test.clicked.connect(lambda c, n=name, u=url: self.test_site(n, u))
+            row.addWidget(btn_test)
+            btn_open = QPushButton("🌐 Открыть")
+            btn_open.clicked.connect(lambda c, u=url: subprocess.run(f"xdg-open '{u}'", shell=True))
+            row.addWidget(btn_open)
+            lbl = QLabel("⏪ Ожидание")
+            lbl.setMinimumWidth(120)
+            row.addWidget(lbl)
+            self.site_widgets[name] = {"label": lbl, "url": url}
+            l2.addLayout(row)
+        btn_all = QPushButton("🧪 Тестировать все")
+        btn_all.clicked.connect(self.test_all)
+        l2.addWidget(btn_all)
+        l2.addStretch()
+
+        # Вкладка 3: Поиск стратегий
+        tab3 = QWidget()
+        tabs.addTab(tab3, "🔍 Поиск стратегий")
+        self.l3 = QVBoxLayout(tab3)
+        
+        self.bc_progress = QProgressBar()
+        self.bc_progress.setMaximum(len(BC_STEPS) - 1)
+        self.l3.addWidget(self.bc_progress)
+        
+        self.bc_question_label = QLabel()
+        self.bc_question_label.setFont(QFont("Arial", 11, QFont.Bold))
+        self.l3.addWidget(self.bc_question_label)
+        
+        self.bc_input_container = QWidget()
+        self.l3.addWidget(self.bc_input_container)
+        
+        btn_nav = QHBoxLayout()
+        self.btn_bc_back = QPushButton("◀ Назад")
+        self.btn_bc_back.clicked.connect(lambda: self.navigate_bc_step(-1))
+        self.btn_bc_back.setEnabled(False)
+        btn_nav.addWidget(self.btn_bc_back)
+        
+        self.btn_bc_next = QPushButton("Далее ▶")
+        self.btn_bc_next.clicked.connect(lambda: self.navigate_bc_step(1))
+        btn_nav.addWidget(self.btn_bc_next)
+        
+        self.btn_bc_run = QPushButton("🚀 Запустить проверку")
+        self.btn_bc_run.clicked.connect(self.run_blockcheck)
+        self.btn_bc_run.setEnabled(False)
+        btn_nav.addWidget(self.btn_bc_run)
+        
+        self.l3.addLayout(btn_nav)
+        
+        self.bc_output = QPlainTextEdit()
+        self.bc_output.setReadOnly(True)
+        self.bc_output.setMaximumHeight(200)
+        self.l3.addWidget(QLabel("📋 Вывод:"))
+        self.l3.addWidget(self.bc_output)
+        
+        btn_save = QPushButton("💾 Сохранить стратегию")
+        btn_save.clicked.connect(self.save_blockcheck_strategy)
+        self.l3.addWidget(btn_save)
+        self.l3.addStretch()
+
+        # Вкладка 4: Логи
+        tab4 = QWidget()
+        tabs.addTab(tab4, "📋 Логи")
+        l4 = QVBoxLayout(tab4)
+        self.log_output = QPlainTextEdit()
+        self.log_output.setReadOnly(True)
+        self.log_output.setFont(QFont("Monospace", 9))
+        l4.addWidget(self.log_output)
+        btn_logs = QHBoxLayout()
+        btn_refresh = QPushButton("🔄 Обновить")
+        btn_refresh.clicked.connect(self.refresh_logs)
+        btn_logs.addWidget(btn_refresh)
+        btn_clear = QPushButton("🗑 Очистить")
+        btn_clear.clicked.connect(self.log_output.clear)
+        btn_logs.addWidget(btn_clear)
+        l4.addLayout(btn_logs)
+
+        self.statusbar = self.statusBar()
+        self.statusbar.showMessage("Готов к работе")
+        self.last_blockcheck_result = None
+        
+        # Инициализируем первый шаг
+        self.update_bc_step_ui(0)
+
+    def update_bc_step_ui(self, step_index):
+        config = BC_STEPS[step_index]
+        self.bc_question_label.setText(config["label"])
+        
+        # Очищаем контейнер
+        if self.bc_input_container.layout():
+            QWidget().setLayout(self.bc_input_container.layout())
+        
+        layout = QVBoxLayout(self.bc_input_container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        
+        if config["type"] == "text":
+            widget = QLineEdit(config["default"])
+            layout.addWidget(widget)
+            self.bc_widgets[config["key"]] = widget
+        elif config["type"] == "combo":
+            widget = QComboBox()
+            widget.addItems(config["options"])
+            widget.setCurrentText(config["default"])
+            layout.addWidget(widget)
+            self.bc_widgets[config["key"]] = widget
+        elif config["type"] == "radio":
+            group = QButtonGroup()
+            for opt in config["options"]:
+                btn = QRadioButton(opt)
+                if opt == config["default"]:
+                    btn.setChecked(True)
+                group.addButton(btn)
+                layout.addWidget(btn)
+            self.bc_widgets[config["key"]] = group
+        elif config["type"] == "spin":
+            widget = QSpinBox()
+            widget.setRange(config["min"], config["max"])
+            widget.setValue(config["default"])
+            layout.addWidget(widget)
+            self.bc_widgets[config["key"]] = widget
+        
+        self.bc_progress.setValue(step_index)
+        self.btn_bc_back.setEnabled(step_index > 0)
+        self.btn_bc_next.setEnabled(step_index < len(BC_STEPS) - 1)
+        self.btn_bc_run.setEnabled(step_index == len(BC_STEPS) - 1)
+
+    def navigate_bc_step(self, direction):
+        self.save_bc_answer(self.bc_step)
+        new_step = self.bc_step + direction
+        if 0 <= new_step < len(BC_STEPS):
+            self.bc_step = new_step
+            self.update_bc_step_ui(new_step)
+
+    def save_bc_answer(self, step_index):
+        config = BC_STEPS[step_index]
+        key = config["key"]
+        widget = self.bc_widgets.get(key)
+        
+        if config["type"] == "text":
+            self.bc_answers[key] = widget.text().strip()
+        elif config["type"] == "combo":
+            self.bc_answers[key] = widget.currentText()
+        elif config["type"] == "radio":
+            for btn in widget.buttons():
+                if btn.isChecked():
+                    self.bc_answers[key] = config.get("map", {}).get(btn.text(), btn.text())
+                    break
+        elif config["type"] == "spin":
+            self.bc_answers[key] = widget.value()
+
+    def get_bc_answers_for_blockcheck(self):
+        answers = self.bc_answers.copy()
+        mode_text = answers.get("mode", "")
+        for k, v in {"Quick": "1", "Standard": "2", "Force": "3"}.items():
+            if k in mode_text:
+                answers["mode"] = v
+                break
+        domain = answers.get("domain", "")
+        if domain.startswith("http"):
+            domain = domain.split("//")[-1].split("/")[0]
+            answers["domain"] = domain
+        return answers
+
+    def get_sudo_password(self):
+        if self.sudo_password is not None:
+            return self.sudo_password
+        pwd, ok = QInputDialog.getText(self, "🔐 Пароль sudo", "Введите пароль:", echo=QLineEdit.Password)
+        if ok and pwd:
+            self.sudo_password = pwd
+            return pwd
+        return None
+
+    def load_strategies(self):
+        self.strategy_combo.clear()
+        for n in PRESET_STRATEGIES:
+            self.strategy_combo.addItem(f"📦 {n}")
+        if os.path.exists(STRATEGIES_DIR):
+            for f in os.listdir(STRATEGIES_DIR):
+                if f.endswith(".json"):
+                    self.strategy_combo.addItem(f"💾 {f[:-5]}")
+        self.strategy_combo.currentTextChanged.connect(self.on_strategy_changed)
+
+    def on_strategy_changed(self, name):
+        clean = name.replace("📦 ","").replace("💾 ","")
+        if clean in PRESET_STRATEGIES:
+            self.strategy_preview.setPlainText("\n".join(PRESET_STRATEGIES[clean]))
+        else:
+            p = os.path.join(STRATEGIES_DIR, f"{clean}.json")
+            if os.path.exists(p):
+                try:
+                    with open(p,'r',encoding='utf-8') as f:
+                        d=json.load(f)
+                        self.strategy_preview.setPlainText("\n".join(d.get("strategy",[])))
+                except: pass
+
+    def run_cmd(self, cmd, desc):
+        pwd = self.get_sudo_password()
+        if not pwd: return
+        self.statusbar.showMessage(f"⏳ {desc}...")
+        full = f"echo '{pwd}' | sudo -S {cmd}"
+        self.worker = WorkerThread(full, desc)
+        self.worker.finished.connect(lambda out,ok: self.statusbar.showMessage("✅ OK" if ok else "❌ Ошибка"))
+        self.worker.start()
+
+    def update_status(self):
+        try:
+            r=subprocess.run("systemctl is-active zapret",shell=True,capture_output=True,text=True)
+            s=r.stdout.strip()
+            self.status_label.setText(f"{'🟢' if s=='active' else '🔴' if s=='inactive' else '⚪'} Статус: {s}")
+        except: self.status_label.setText("⚪ Статус: Ошибка")
+
+    def apply_strategy(self):
+        name = self.strategy_combo.currentText().replace("📦 ","").replace("💾 ","")
+        strat = PRESET_STRATEGIES.get(name)
+        if not strat:
+            p=os.path.join(STRATEGIES_DIR,f"{name}.json")
+            if os.path.exists(p):
+                try:
+                    with open(p,'r',encoding='utf-8') as f: strat=json.load(f).get("strategy")
+                except: pass
+        if not strat:
+            QMessageBox.warning(self,"Ошибка","Стратегия не найдена"); return
+        val="\\n".join(strat)
+        cmd=f"""sed -i '/^NFQWS_OPT=/,/^"/c\\NFQWS_OPT="\\n{val}\\n"' {CONFIG_PATH}"""
+        cmd2=f"""grep -q "NFQWS_PACKETS" {CONFIG_PATH} || sed -i '/^NFQWS_OPT=/i\\NFQWS_PACKETS_OUT=0\\nNFQWS_PACKETS_IN=0' {CONFIG_PATH}"""
+        if QMessageBox.question(self,"Подтверждение",f"Применить '{name}'?",QMessageBox.Yes|QMessageBox.No)==QMessageBox.Yes:
+            pwd=self.get_sudo_password()
+            if pwd:
+                full=f"echo '{pwd}' | sudo -S bash -c '{cmd} && {cmd2} && systemctl restart zapret'"
+                self.worker=WorkerThread(full,"Применение")
+                self.worker.finished.connect(lambda o,k: self.statusbar.showMessage("✅ Готово" if k else "❌ Ошибка"))
+                self.worker.start()
+
+    def test_site(self, name, url):
+        self.site_widgets[name]["label"].setText("⏳ Тест...")
+        self.site_widgets[name]["label"].setStyleSheet("color: orange;")
+        self.thread = SiteTestThread(name, url)
+        def on_result(n, s, ok):
+            self.site_widgets[n]["label"].setText(s)
+            self.site_widgets[n]["label"].setStyleSheet("color: green;" if ok else "color: red;")
+        self.thread.site_result.connect(on_result)
+        self.thread.start()
+
+    def test_all(self):
+        for n, d in self.site_widgets.items():
+            self.test_site(n, d["url"])
+
+    def run_blockcheck(self):
+        self.save_bc_answer(self.bc_step)
+        domain = self.bc_answers.get("domain", "").strip()
+        if not domain:
+            QMessageBox.warning(self, "Ошибка", "Введите домен")
+            return
+        pwd = self.get_sudo_password()
+        if not pwd:
+            return
+        answers = self.get_bc_answers_for_blockcheck()
+        self.bc_output.setPlainText(f"🔍 Запуск blockcheck для {domain}...\n\nОжидайте...\n")
+        self.btn_bc_run.setEnabled(False)
+        self.btn_bc_back.setEnabled(False)
+        self.btn_bc_next.setEnabled(False)
+        self.statusbar.showMessage("⏳ Blockcheck...")
+        self.bc_thread = BlockcheckThread(domain, answers, pwd)
+        self.bc_thread.progress.connect(lambda m: self.bc_output.appendPlainText(m))
+        self.bc_thread.finished.connect(self.on_blockcheck_finished)
+        self.bc_thread.start()
+
+    def on_blockcheck_finished(self, output, success, answers):
+        self.bc_output.appendPlainText("\n" + "="*60 + "\n" + output)
+        self.btn_bc_run.setEnabled(True)
+        self.btn_bc_back.setEnabled(True)
+        self.btn_bc_next.setEnabled(True)
+        self.statusbar.showMessage("✅ Завершено" if success else "⚠ Завершено")
+        try:
+            match = re.search(r'nfqws\s+(--dpi-desync[^\n]+)', output)
+            if match:
+                params = match.group(1).strip().rstrip('!')
+                strat = [f"--filter-tcp=80 {params} --new", f"--filter-tcp=443 {params} --new", "--filter-udp=443 --dpi-desync=fake --dpi-desync-repeats=6 --new"]
+                self.last_blockcheck_result = {"domain": answers.get("domain", ""), "strategy": strat}
+                QMessageBox.information(self, "🎉 Найдено!", "Стратегия найдена!\nНажмите '💾 Сохранить'.")
+            else:
+                self.last_blockcheck_result = None
+                QMessageBox.warning(self, "Внимание", "Не удалось найти стратегию.")
+        except Exception as e:
+            self.last_blockcheck_result = None
+            QMessageBox.warning(self, "Ошибка", f"Не удалось разобрать: {str(e)}")
+
+    def save_blockcheck_strategy(self):
+        if not self.last_blockcheck_result:
+            QMessageBox.warning(self, "Ошибка", "Сначала найдите стратегию")
+            return
+        dom = self.last_blockcheck_result["domain"]
+        strat = self.last_blockcheck_result["strategy"]
+        p = os.path.join(STRATEGIES_DIR, f"{dom}.json")
+        try:
+            with open(p, 'w', encoding='utf-8') as f:
+                json.dump({"domain": dom, "strategy": strat, "date": datetime.now().strftime("%Y-%m-%d %H:%M")}, f, ensure_ascii=False, indent=2)
+            QMessageBox.information(self, "✅ Сохранено", f"Файл: {p}")
+            self.load_strategies()
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", str(e))
+
+    def refresh_logs(self):
+        try:
+            r = subprocess.run("journalctl -u zapret -n 100 --no-pager", shell=True, capture_output=True, text=True)
+            self.log_output.setPlainText(r.stdout)
+        except Exception as e:
+            self.log_output.setPlainText(f"Ошибка: {e}")
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    win = ZapretManager()
+    win.show()
+    sys.exit(app.exec_())
