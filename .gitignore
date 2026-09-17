@@ -12,3 +12,4 @@ __pycache__/
 
 # Прочее
 *.log
+legacy/

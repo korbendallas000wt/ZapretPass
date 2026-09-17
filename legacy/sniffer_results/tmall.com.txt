@@ -1,8 +1,0 @@
-google.com
-tmall.com
-alicdn.com
-taobao.com
-mmstat.com
-alibaba.com
-mediav.com
-googleapis.com
