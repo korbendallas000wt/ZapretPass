@@ -29,7 +29,9 @@ STRATEGY_CACHE = DATA_DIR / "selected_strategy.json"
 # на папку внутри проекта (для самодостаточной установки).
 ZAPRET_DIR = Path("/opt/zapret")
 CONFIG_FILE = ZAPRET_DIR / "config"
-CONFIG_BACKUP = ZAPRET_DIR / "config.backup"
+CONFIG_BACKUP = ZAPRET_DIR / "config.backup"  # Легаси-имя для совместимости
+CONFIG_BACKUP_PREFIX = "config.backup"       # Префикс для датированных бэкапов
+MAX_BACKUPS = 10                              # Максимум бэкапов для хранения
 CONFIG_WHITELIST = ZAPRET_DIR / "config.whitelist"
 CONFIG_GLOBAL = ZAPRET_DIR / "config.global"
 IPSET_DIR = ZAPRET_DIR / "ipset"
