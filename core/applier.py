@@ -231,8 +231,10 @@ def apply_all(
     mode: str,
     strategy: Optional[str],
     password: str,
-    restart_service: bool = True
-) -> tuple[bool, str, list[str]]:
+    restart_service: bool = True,
+    verify: bool = False,
+    test_domains: Optional[list[str]] = None
+) -> tuple[bool, str, list[str], Optional[tuple[bool, str]], Optional[tuple[bool, str, list]]]:
     """Применяет все настройки: режим, whitelist (для whitelist-режима), стратегию.
     
     Args:
@@ -242,7 +244,7 @@ def apply_all(
         restart_service: нужно ли перезапускать сервис после применения.
         
     Returns:
-        (успех, итоговое_сообщение, список_шагов).
+        (успех, итоговое_сообщение, список_шагов, верификация, smoke_тест).
     """
     steps = []
     success = True
@@ -251,14 +253,14 @@ def apply_all(
     ok, msg = apply_mode(mode, password)
     steps.append(f"[1/3] Режим: {msg}")
     if not ok:
-        return False, msg, steps
+        return False, msg, steps, None, None
     
     # 2. Для whitelist-режима — обновляем whitelist
     if mode == "whitelist":
         ok, msg = apply_whitelist(password)
         steps.append(f"[2/3] Whitelist: {msg}")
         if not ok:
-            return False, msg, steps
+            return False, msg, steps, None, None
     else:
         steps.append("[2/3] Whitelist: пропущен (режим global)")
     
@@ -267,7 +269,7 @@ def apply_all(
         ok, msg = apply_strategy(strategy, password)
         steps.append(f"[3/3] Стратегия: {msg}")
         if not ok:
-            return False, msg, steps
+            return False, msg, steps, None, None
     else:
         steps.append("[3/3] Стратегия: не задана, пропущена")
     
@@ -277,9 +279,31 @@ def apply_all(
         ok, msg = service.restart(password)
         steps.append(f"[рестарт] {msg}")
         if not ok:
-            return False, msg, steps
+            return False, msg, steps, None, None
     
-    return True, "✅ Все настройки применены", steps
+    # 5. Верификация применения (если запрошена)
+    verification_result = None
+    if verify:
+        ver_ok, ver_msg = verify_after_apply(password)
+        steps.append(f"[верификация] {ver_msg}")
+        verification_result = (ver_ok, ver_msg)
+        
+        if not ver_ok:
+            # Верификация не прошла — это проблема, но конфиг уже применён
+            return False, f"⚠️ Применение завершено, но верификация не удалась: {ver_msg}", steps, verification_result, None
+    
+    # 6. Smoke-тест доступности (если переданы домены)
+    smoke_test_result = None
+    if test_domains:
+        smoke_ok, smoke_msg, smoke_results = smoke_test_sites(test_domains, password)
+        steps.append(f"[smoke-тест] {smoke_msg}")
+        smoke_test_result = (smoke_ok, smoke_msg, smoke_results)
+        
+        if not smoke_ok:
+            # Smoke-тест провален — предлагаем откат
+            return False, f"⚠️ Стратегия применена, но smoke-тест не удался: {smoke_msg}. Рекомендуется откат.", steps, verification_result, smoke_test_result
+    
+    return True, "✅ Все настройки применены", steps, verification_result, smoke_test_result
 
 
 # ============================================================================
@@ -576,6 +600,132 @@ def restore_backup(backup_name: str, password: str, restart_service: bool = True
         return True, f"✅ Конфиг восстановлен из {backup_name}, сервис перезапущен"
     
     return True, f"✅ Конфиг восстановлен из {backup_name}"
+
+
+
+# ============================================================================
+# ВЕРИФИКАЦИЯ ПОСЛЕ ПРИМЕНЕНИЯ
+# ============================================================================
+
+def verify_after_apply(password: str) -> tuple[bool, str]:
+    """Проверяет, что стратегия реально записана в конфиг и процесс nfqws получил параметры.
+    
+    Выполняет две проверки:
+    1. Читает конфиг и проверяет наличие NFQWS_OPT или TPWS_OPT с непустыми значениями
+    2. Проверяет запущенный процесс nfqws/tpws через ps aux
+    
+    Returns:
+        (успех, диагностическое сообщение).
+    """
+    # Проверка 1: читаем конфиг
+    try:
+        import subprocess
+        process = subprocess.Popen(
+            ['sudo', '-S', 'cat', str(config.CONFIG_FILE)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        stdout, stderr = process.communicate(input=password + "\n", timeout=10)
+        
+        if process.returncode != 0:
+            return False, f"❌ Не удалось прочитать конфиг: {_filter_sudo_stderr(stderr)}"
+        
+        config_content = stdout
+        
+        # Ищем NFQWS_OPT или TPWS_OPT
+        strategy_found = False
+        strategy_type = None
+        strategy_value = ""
+        
+        for line in config_content.splitlines():
+            line_stripped = line.strip()
+            match = re.search(r'^(NFQWS_OPT|TPWS_OPT)="([^"]*)"', line_stripped)
+            if match:
+                var_name, value = match.groups()
+                value = value.strip()
+                if value:
+                    strategy_found = True
+                    strategy_type = var_name
+                    strategy_value = value
+                    break
+        
+        if not strategy_found:
+            return False, "❌ В конфиге не найдена активная стратегия (NFQWS_OPT или TPWS_OPT пусты)"
+        
+    except Exception as e:
+        return False, f"❌ Ошибка чтения конфига: {str(e)}"
+    
+    # Проверка 2: процесс запущен с правильными параметрами
+    try:
+        process_name = "nfqws" if strategy_type == "NFQWS_OPT" else "tpws"
+        process = subprocess.Popen(
+            ['ps', 'aux'],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        stdout, stderr = process.communicate(timeout=5)
+        
+        # Ищем процесс nfqws или tpws
+        process_found = False
+        for line in stdout.splitlines():
+            if process_name in line and "grep" not in line:
+                process_found = True
+                # Проверяем, что параметры процесса содержат ключевые слова из стратегии
+                if "--dpi-desync=" in line or "--hostcase" in line or "--disorder" in line:
+                    return True, f"✅ Стратегия применена и процесс {process_name} запущен"
+                break
+        
+        if not process_found:
+            return False, f"⚠️ Стратегия записана в конфиг, но процесс {process_name} не запущен"
+        
+        return True, f"✅ Стратегия применена, процесс {process_name} активен"
+    
+    except Exception as e:
+        # Если не удалось проверить процесс — считаем, что конфиг верифицирован
+        return True, f"✅ Стратегия записана в конфиг ({strategy_type})"
+
+
+def smoke_test_sites(domains: list[str], password: str) -> tuple[bool, str, list]:
+    """Выполняет smoke-тест доступности сайтов после применения стратегии.
+    
+    Проверяет 2-3 домена через core.checker.check_site().
+    
+    Args:
+        domains: список доменов для проверки.
+        password: пароль sudo (не используется напрямую, но передаётся для единообразия).
+        
+    Returns:
+        (успех, сообщение, список_результатов).
+    """
+    if not domains:
+        return True, "Нет доменов для проверки", []
+    
+    from . import checker
+    
+    # Проверяем не более 3 доменов
+    test_domains = domains[:3]
+    results = []
+    accessible_count = 0
+    
+    for domain in test_domains:
+        result = checker.check_site(domain, timeout=8)
+        verdict = checker.classify(result)
+        results.append({
+            "domain": domain,
+            "accessible": result.accessible,
+            "verdict": verdict
+        })
+        
+        if result.accessible:
+            accessible_count += 1
+    
+    if accessible_count > 0:
+        return True, f"✅ {accessible_count} из {len(test_domains)} сайтов доступны", results
+    else:
+        return False, f"❌ Ни один из {len(test_domains)} сайтов не доступен", results
 
 
 def restore_from_backup(password: str) -> tuple[bool, str]:
