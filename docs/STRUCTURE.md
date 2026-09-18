@@ -1,0 +1,118 @@
+# ZapretPass — структура проекта
+
+Графический менеджер для zapret (https://github.com/bol-van/zapret) — инструмента обхода DPI-блокировок. Позволяет подбирать рабочие стратегии для заблокированных сайтов, искать универсальные стратегии для групп доменов и управлять сервисом.
+
+Ветка разработки: dev
+Релизная ветка: main (staging в директории Repo/)
+
+---
+
+## Дерево проекта
+ZapretPass/
+├── core/                          Ядро: бизнес-логика, независимая от UI
+│   ├── __init__.py
+│   ├── config.py                  Пути, инициализация директорий, шаблоны конфигов
+│   ├── service.py                 Управление systemd-сервисом zapret
+│   ├── sudo.py                    Запрос и кэширование пароля, привилегии
+│   ├── strategies.py              Стратегии, пресеты, whitelist, пересечения
+│   ├── blockcheck.py              Запуск и парсинг blockcheck.sh
+│   ├── applier.py                 Применение стратегий и режимов к конфигу
+│   ├── sniffer.py                 Перехват SNI-доменов через tshark
+│   └── checker.py                 Проверка доступности сайтов через curl
+├── ui/                            Qt6-интерфейс (в разработке)
+│   └── __init__.py
+├── data/                          Данные приложения
+│   ├── strategies/                Результаты blockcheck: {domain}.json
+│   ├── sniffer_results/           Результаты сниффинга: {domain}.txt
+│   ├── whitelist.txt              Белый список доменов
+│   ├── strategies.json            Именованные пресеты стратегий
+│   └── selected_strategy.json     Текущая выбранная стратегия
+├── docs/                          Документация проекта
+│   ├── STRUCTURE.md               Этот файл — карта проекта
+│   ├── PROJECT_MANIFEST.md        Карта модулей, форматы данных, зависимости
+│   ├── CHANGELOG.md               История релизов (для апдейтера)
+│   ├── WORKLOG.md                 Журнал работы между сессиями
+│   ├── HANDOFF_RELIABILITY.md     План передачи контекста (не в git)
+│   └── README.md                  Витрина проекта
+├── scripts/                       Bash-скрипты (в разработке)
+├── installer/                     Установщик движка zapret (в разработке)
+├── assets/                        Иконки, изображения (в разработке)
+├── tests/                         Тесты (в разработке)
+├── legacy/                        Старый код на PyQt5 (локально, вне git)
+├── Repo/                          Staging для релизов в main (вне git)
+└── .gitignore                     Исключения для git
+
+Описание папок
+
+### core/ — ядро проекта
+Все модули независимы от UI и не импортируют Qt. Это позволяет тестировать логику отдельно и менять интерфейс без переписывания ядра.
+
+- config.py — Константы путей, создание директорий, шаблоны конфигов whitelist/global
+- service.py — Старт/стоп/рестарт сервиса, статус, определение режима (через systemctl show)
+- sudo.py — Менеджер пароля: запрос через диалог, кэширование, выполнение команд с правами
+- strategies.py — Сохранение/загрузка стратегий, поиск пересечений и объединений, пресеты, whitelist
+- blockcheck.py — Запуск скрипта подбора стратегий, отправка интерактивных ответов, парсинг вывода
+- applier.py — Применение стратегий и режимов к конфигу, бэкап и откат
+- sniffer.py — Перехват SNI через tshark, извлечение базовых доменов, сохранение результатов
+- checker.py — Проверка доступности через curl, классификация вердиктов (доступен/заблокирован/частично)
+
+### ui/ — интерфейс
+Графический интерфейс на Qt6. В разработке.
+
+### data/ — данные приложения
+Создаются автоматически через core.config.init_dirs().
+- strategies/ — JSON с найденными стратегиями для каждого домена
+- sniffer_results/ — TXT с найденными SNI-доменами для каждого домена
+- whitelist.txt — пользовательский белый список
+- strategies.json — именованные пресеты стратегий
+- selected_strategy.json — текущая выбранная стратегия
+
+### docs/ — документация
+Вся проектная документация. Именно здесь лежат файлы для передачи контекста между сессиями с ИИ:
+- STRUCTURE.md — этот файл
+- PROJECT_MANIFEST.md — карта модулей, зависимостей, форматов данных
+- CHANGELOG.md — история релизов (для апдейтера)
+- WORKLOG.md — журнал работы между сессиями
+- README.md — витрина проекта
+- `HANDOFF_RELIABILITY.md` — план передачи контекста между сессиями (не в git)
+### legacy/ — старый код
+Исходники предыдущей версии на PyQt5. Хранятся локально для справки, исключены из репозитория.
+
+### Repo/ — релизная директория
+Отдельный клон репозитория на ветке main. Используется для подготовки релизов. Исключена из репозитория.
+
+---
+
+## Внешние зависимости
+
+- zapret (/opt/zapret) — Движок обхода DPI
+- systemctl — Управление сервисом
+- blockcheck.sh — Подбор рабочих стратегий
+- tshark (wireshark) — Перехват сетевых пакетов
+- curl — Проверка доступности сайтов
+- sudo / pkexec — Выполнение привилегированных команд
+- kdialog — Графический запрос пароля (KDE)
+
+
+---
+
+## Ссылки на файлы (ветка dev)
+Базовый адрес: https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/
+
+Ядро
+- core/config.py: https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/core/config.py
+- core/service.py: https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/core/service.py
+- core/sudo.py: https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/core/sudo.py
+- core/strategies.py: https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/core/strategies.py
+- core/blockcheck.py: https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/core/blockcheck.py
+- core/applier.py: https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/core/applier.py
+- core/sniffer.py: https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/core/sniffer.py
+- core/checker.py: https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/core/checker.py
+
+Документация
+- docs/STRUCTURE.md: https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/docs/STRUCTURE.md
+- docs/PROJECT_MANIFEST.md: https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/docs/PROJECT_MANIFEST.md
+- docs/CHANGELOG.md: https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/docs/CHANGELOG.md
+- docs/WORKLOG.md: https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/docs/WORKLOG.md
+- docs/README.md: https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/docs/README.md
+- docs/HANDOFF_RELIABILITY.md: (не в git, передаётся вручную между сессиями)
