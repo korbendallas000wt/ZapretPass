@@ -17,6 +17,9 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core import service, sudo
 
+# Импорты виджетов вкладок
+from .site_passport import SitePassportWidget
+
 
 
 
@@ -212,24 +215,32 @@ class MainWindow(QMainWindow):
             self.set_status_message(f"⚠️ Не удалось прочитать статус: {e}", is_system=True)
 
     def _create_tabs(self):
-        """Создаёт вкладки-заглушки."""
-        tabs_data = [
-            ("🔍 Проверить и починить", "tab_check"),
-            ("🌐 Мои сайты", "tab_sites"),
-            ("⚙️ Дополнительно", "tab_advanced"),
-        ]
+        """Создаёт вкладки приложения."""
         
-        for title, name in tabs_data:
-            tab = QWidget()
-            tab.setObjectName(name)
-            layout = QVBoxLayout(tab)
-            placeholder = QLabel(f"Здесь будет: {title}")
-            placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            font = QFont()
-            font.setPointSize(14)
-            placeholder.setFont(font)
-            layout.addWidget(placeholder)
-            self.tabs.addTab(tab, title)
+        # Вкладка 1: 📋 Паспорт сайта (реальный виджет)
+        self.passport_tab = SitePassportWidget()
+        self.passport_tab.status_message_requested.connect(self.set_status_message)
+        self.tabs.addTab(self.passport_tab, "📋 Паспорт сайта")
+        
+        # Вкладка 2: 🌐 Мои сайты (пока заглушка)
+        sites_tab = QWidget()
+        sites_layout = QVBoxLayout(sites_tab)
+        sites_placeholder = QLabel("Здесь будет: 🌐 Мои сайты")
+        sites_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        font = QFont()
+        font.setPointSize(14)
+        sites_placeholder.setFont(font)
+        sites_layout.addWidget(sites_placeholder)
+        self.tabs.addTab(sites_tab, "🌐 Мои сайты")
+        
+        # Вкладка 3: ⚙️ Дополнительно (пока заглушка)
+        advanced_tab = QWidget()
+        advanced_layout = QVBoxLayout(advanced_tab)
+        advanced_placeholder = QLabel("Здесь будет: ⚙️ Дополнительно")
+        advanced_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        advanced_placeholder.setFont(font)
+        advanced_layout.addWidget(advanced_placeholder)
+        self.tabs.addTab(advanced_tab, "⚙️ Дополнительно")
     
     def _set_indicator_color(self, color: str):
         """Устанавливает цвет круглого индикатора."""
