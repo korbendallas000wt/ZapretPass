@@ -7,7 +7,7 @@ ZapretPass UI - Вкладка "Паспорт сайта"
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QGroupBox, QProgressBar, QScrollArea,
-    QFrame, QSizePolicy
+    QFrame, QSizePolicy, QComboBox, QTextEdit
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QThread
 from PyQt6.QtGui import QFont, QPalette
@@ -82,6 +82,11 @@ class SitePassportWidget(QWidget):
         
         # Заглушки для этапов (пока пустые)
         self._stage_widgets = {}
+        
+        # Ссылки на активные воркеры (чтобы не собирался мусором)
+        self._diagnosis_worker = None
+        self._blockcheck_worker = None
+        self._found_strategy = None  # найденная стратегия для следующих этапов
     
     def _create_progress_bar(self) -> QWidget:
         """Создаёт визуальный прогресс-бар визарда."""
@@ -217,8 +222,28 @@ class SitePassportWidget(QWidget):
         # Запускаем первый этап
         self._start_diagnosis()
     
+    def _stop_active_workers(self):
+        """Останавливает активные воркеры перед очисткой."""
+        if self._diagnosis_worker is not None:
+            if self._diagnosis_worker.isRunning():
+                self._diagnosis_worker.quit()
+                self._diagnosis_worker.wait(1000)  # ждём до 1 сек
+            self._diagnosis_worker.deleteLater()
+            self._diagnosis_worker = None
+        
+        if self._blockcheck_worker is not None:
+            self._blockcheck_worker.cancel()
+            if self._blockcheck_worker.isRunning():
+                self._blockcheck_worker.quit()
+                self._blockcheck_worker.wait(1000)
+            self._blockcheck_worker.deleteLater()
+            self._blockcheck_worker = None
+    
     def _clear_results(self):
         """Очищает область результатов."""
+        # Останавливаем активные воркеры ПЕРЕД удалением виджетов
+        self._stop_active_workers()
+        
         while self.results_layout.count():
             item = self.results_layout.takeAt(0)
             if item.widget():
@@ -270,6 +295,9 @@ class SitePassportWidget(QWidget):
     
     def _on_diagnosis_finished(self, result, verdict):
         """Вызывается при успешном завершении диагностики."""
+        # Корректно удаляем воркер через deleteLater
+        if self._diagnosis_worker is not None:
+            self._diagnosis_worker.deleteLater()
         self._diagnosis_worker = None
         
         # Обновляем статус-лейбл
@@ -325,6 +353,8 @@ class SitePassportWidget(QWidget):
     
     def _on_diagnosis_error(self, error_msg: str):
         """Вызывается при ошибке диагностики."""
+        if self._diagnosis_worker is not None:
+            self._diagnosis_worker.deleteLater()
         self._diagnosis_worker = None
         self._diagnosis_status_label.setText(f"⚠️ Ошибка: {error_msg}")
         self._diagnosis_status_label.setStyleSheet(
@@ -333,32 +363,200 @@ class SitePassportWidget(QWidget):
             f"⚠️ Ошибка диагностики: {error_msg}", True)
     
     def _start_strategy_search(self):
-        """Запускает этап поиска стратегии (заглушка)."""
+        """Запускает этап поиска стратегии через блокчек."""
         self._set_stage_active(1)
+        
+        # Удаляем старый виджет если он есть (защита от дублирования)
+        if 'strategy' in self._stage_widgets:
+            old_widget = self._stage_widgets['strategy']
+            self.results_layout.removeWidget(old_widget)
+            old_widget.deleteLater()
+            del self._stage_widgets['strategy']
         
         box = QGroupBox("🔬 Поиск рабочей стратегии")
         layout = QVBoxLayout(box)
         
-        info_label = QLabel(f"Ищем стратегии для {self.domain}...")
-        layout.addWidget(info_label)
+        # Выбор пресета
+        preset_layout = QHBoxLayout()
+        preset_label = QLabel("Режим поиска:")
+        preset_layout.addWidget(preset_label)
         
-        # Прогресс-бар (заглушка)
-        progress = QProgressBar()
-        progress.setRange(0, 100)
-        progress.setValue(50)
-        progress.setFormat("Пробуем способ 4 из 7...")
-        layout.addWidget(progress)
+        self._blockcheck_preset = QComboBox()
+        self._blockcheck_preset.addItem("🚀 Быстрый (первая рабочая)", "1")
+        self._blockcheck_preset.addItem("⚖️ Стандарт (баланс)", "2")
+        self._blockcheck_preset.addItem("🔬 Полный (все варианты)", "3")
+        self._blockcheck_preset.setCurrentIndex(0)  # По умолчанию быстрый
+        preset_layout.addWidget(self._blockcheck_preset, stretch=1)
+        layout.addLayout(preset_layout)
         
-        # Кнопка "Далее" (заглушка)
-        btn_next = QPushButton("Перейти к карте сайта →")
-        btn_next.clicked.connect(lambda: self._start_site_map())
-        layout.addWidget(btn_next)
+        # Предупреждение об остановке сервиса
+        warning_label = QLabel(
+            "⚠️ Сервис будет временно остановлен для тестирования.\n"
+            "Ориентировочное время: 2-30 минут (зависит от режима)."
+        )
+        warning_label.setStyleSheet("color: #cc6600; margin-top: 10px;")
+        layout.addWidget(warning_label)
+        
+        # Кнопка запуска
+        self._blockcheck_start_btn = QPushButton("▶ Запустить поиск")
+        self._blockcheck_start_btn.setMinimumHeight(40)
+        self._blockcheck_start_btn.clicked.connect(self._run_blockcheck)
+        layout.addWidget(self._blockcheck_start_btn)
+        
+        # Прогресс и вывод (скрыты до запуска)
+        self._blockcheck_progress = QProgressBar()
+        self._blockcheck_progress.setRange(0, 0)  # неопределённый прогресс
+        self._blockcheck_progress.hide()
+        layout.addWidget(self._blockcheck_progress)
+        
+        self._blockcheck_output = QTextEdit()
+        self._blockcheck_output.setReadOnly(True)
+        self._blockcheck_output.setMaximumHeight(200)
+        self._blockcheck_output.setStyleSheet("font-family: monospace; font-size: 9pt;")
+        self._blockcheck_output.hide()
+        layout.addWidget(self._blockcheck_output)
+        
+        # Контейнер для результатов (скрыт до завершения)
+        self._blockcheck_result_container = QWidget()
+        self._blockcheck_result_layout = QVBoxLayout(self._blockcheck_result_container)
+        self._blockcheck_result_layout.setContentsMargins(0, 10, 0, 0)
+        self._blockcheck_result_container.hide()
+        layout.addWidget(self._blockcheck_result_container)
+        
+        # Кнопка "Далее" (скрыта до завершения)
+        self._blockcheck_next_btn = QPushButton("Перейти к карте сайта →")
+        self._blockcheck_next_btn.clicked.connect(lambda: self._start_site_map())
+        self._blockcheck_next_btn.hide()
+        layout.addWidget(self._blockcheck_next_btn)
         
         self.results_layout.addWidget(box)
         self._stage_widgets['strategy'] = box
+    
+    def _run_blockcheck(self):
+        """Запускает блокчек с выбранным пресетом."""
+        from core import blockcheck, sudo, service
         
+        # Получаем пароль
+        password = sudo.manager.get_password()
+        if password is None:
+            self.status_message_requested.emit(
+                "❌ Пароль не предоставлен — операция отменена", True)
+            return
+        
+        # Останавливаем сервис если запущен
+        status = service.get_status()
+        if status.active:
+            self.status_message_requested.emit(
+                "⏸️ Останавливаем сервис для тестирования...", True)
+            ok, msg = service.stop(password)
+            if not ok:
+                self.status_message_requested.emit(
+                    f"❌ Не удалось остановить сервис: {msg}", True)
+                return
+        
+        # Создаём настройки блокчека
+        mode = self._blockcheck_preset.currentData()
+        settings = blockcheck.BlockcheckSettings(
+            mode=mode,
+            ipver="4",
+            http="Y",
+            tls12="Y",
+            tls13="N",
+            quic="N",
+            repeat=1
+        )
+        
+        # Скрываем кнопку запуска, показываем прогресс
+        self._blockcheck_start_btn.hide()
+        self._blockcheck_preset.setEnabled(False)
+        self._blockcheck_progress.show()
+        self._blockcheck_output.show()
+        
+        # Запускаем фоновый воркер
+        self._blockcheck_worker = BlockcheckWorker(
+            domain=self.domain,
+            settings=settings,
+            password=password
+        )
+        self._blockcheck_worker.blockcheck_started.connect(self._on_blockcheck_started)
+        self._blockcheck_worker.output_line.connect(self._on_blockcheck_output)
+        self._blockcheck_worker.blockcheck_finished.connect(self._on_blockcheck_finished)
+        self._blockcheck_worker.blockcheck_error.connect(self._on_blockcheck_error)
+        self._blockcheck_worker.start()
+    
+    def _on_blockcheck_started(self):
+        """Вызывается при старте блокчека."""
         self.status_message_requested.emit(
             f"🔬 Поиск стратегий для {self.domain}...", False)
+    
+    def _on_blockcheck_output(self, line: str):
+        """Вызывается при получении строки вывода."""
+        self._blockcheck_output.append(line.rstrip())
+        # Автоскролл вниз
+        scrollbar = self._blockcheck_output.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+    
+    def _on_blockcheck_finished(self, result):
+        """Вызывается при завершении блокчека."""
+        if self._blockcheck_worker is not None:
+            self._blockcheck_worker.deleteLater()
+        self._blockcheck_worker = None
+        self._blockcheck_progress.hide()
+        
+        # Очищаем контейнер результатов
+        while self._blockcheck_result_layout.count():
+            item = self._blockcheck_result_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        
+        if result.success:
+            # Успех — показываем найденные стратегии
+            result_label = QLabel(
+                f"✅ Найдено стратегий: {len(result.strategies)}"
+            )
+            result_label.setStyleSheet("font-size: 12pt; color: #2ecc71; font-weight: bold;")
+            self._blockcheck_result_layout.addWidget(result_label)
+            
+            # Список стратегий
+            strategies_text = "\n".join(
+                f"• {s[:80]}..." if len(s) > 80 else f"• {s}"
+                for s in result.strategies[:5]  # показываем первые 5
+            )
+            if len(result.strategies) > 5:
+                strategies_text += f"\n... и ещё {len(result.strategies) - 5}"
+            
+            strategies_label = QLabel(strategies_text)
+            strategies_label.setStyleSheet("font-family: monospace; font-size: 9pt; margin-left: 20px;")
+            self._blockcheck_result_layout.addWidget(strategies_label)
+            
+            # Сохраняем первую стратегию для следующего этапа
+            self._found_strategy = result.strategies[0] if result.strategies else None
+            
+            self.status_message_requested.emit(
+                f"✅ Найдено {len(result.strategies)} стратегий для {self.domain}", True)
+        else:
+            # Неудача
+            error_msg = result.error or "Неизвестная ошибка"
+            result_label = QLabel(f"❌ {error_msg}")
+            result_label.setStyleSheet("font-size: 12pt; color: #e74c3c; font-weight: bold;")
+            self._blockcheck_result_layout.addWidget(result_label)
+            
+            self.status_message_requested.emit(
+                f"❌ Не найдено стратегий для {self.domain}", True)
+        
+        self._blockcheck_result_container.show()
+        self._blockcheck_next_btn.show()
+    
+    def _on_blockcheck_error(self, error_msg: str):
+        """Вызывается при ошибке блокчека."""
+        if self._blockcheck_worker is not None:
+            self._blockcheck_worker.deleteLater()
+        self._blockcheck_worker = None
+        self._blockcheck_progress.hide()
+        self._blockcheck_start_btn.show()
+        self._blockcheck_preset.setEnabled(True)
+        self.status_message_requested.emit(
+            f"⚠️ Ошибка блокчека: {error_msg}", True)
     
     def _start_site_map(self):
         """Запускает этап карты сайта (заглушка)."""
@@ -529,3 +727,51 @@ class DiagnosisWorker(QThread):
         
         except Exception as e:
             self.diagnosis_error.emit(str(e))
+
+
+class BlockcheckWorker(QThread):
+    """Фоновый поток для запуска blockcheck.sh."""
+    
+    blockcheck_started = pyqtSignal()
+    output_line = pyqtSignal(str)  # строка вывода в реальном времени
+    blockcheck_finished = pyqtSignal(object)  # BlockcheckResult
+    blockcheck_error = pyqtSignal(str)
+    
+    def __init__(self, domain: str, settings, password: str, parent=None):
+        super().__init__(parent)
+        self.domain = domain
+        self.settings = settings
+        self.password = password
+        self._process = None
+        self._cancelled = False
+    
+    def run(self):
+        try:
+            self.blockcheck_started.emit()
+            
+            from core import blockcheck
+            
+            result = blockcheck.run_blockcheck(
+                domain=self.domain,
+                settings=self.settings,
+                password=self.password,
+                on_output=self._on_output,
+                fast_mode=(self.settings.mode == "1")
+            )
+            
+            if not self._cancelled:
+                self.blockcheck_finished.emit(result)
+        
+        except Exception as e:
+            if not self._cancelled:
+                self.blockcheck_error.emit(str(e))
+    
+    def _on_output(self, line: str):
+        """Callback для получения вывода в реальном времени."""
+        if not self._cancelled:
+            self.output_line.emit(line)
+    
+    def cancel(self):
+        """Отменяет выполнение блокчека."""
+        self._cancelled = True
+        # Процесс будет остановлен через timeout или SIGTERM в run_blockcheck

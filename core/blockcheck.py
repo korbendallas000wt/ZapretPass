@@ -154,11 +154,28 @@ def run_blockcheck(
             preexec_fn=os.setsid  # для корректного завершения группы процессов
         )
         
-        # Отправляем интерактивные ответы
+        # Сначала отправляем пароль для sudo -S
+        import time
         try:
+            process.stdin.write(password + "\n")
+            process.stdin.flush()
+            # Пауза, чтобы sudo успел обработать пароль
+            time.sleep(0.5)
+            
+            # Отправляем ответы на вопросы блокчека
             for answer in answers:
                 process.stdin.write(answer + "\n")
                 process.stdin.flush()
+                time.sleep(0.1)  # небольшая пауза между ответами
+            
+            # ВАЖНО: blockcheck.sh в конце пишет "press enter to continue"
+            # и ждёт Enter. Отправляем финальный Enter, иначе процесс зависнет
+            time.sleep(1.0)
+            try:
+                process.stdin.write("\n")
+                process.stdin.flush()
+            except (BrokenPipeError, OSError):
+                pass  # процесс уже завершился
         except Exception:
             pass  # Процесс мог завершиться раньше
         
