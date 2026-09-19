@@ -9,8 +9,8 @@ from PyQt6.QtWidgets import (
     QPushButton, QGroupBox, QProgressBar, QScrollArea,
     QFrame, QSizePolicy
 )
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QFont
+from PyQt6.QtCore import Qt, pyqtSignal, QThread
+from PyQt6.QtGui import QFont, QPalette
 import re
 from typing import Optional
 
@@ -228,26 +228,109 @@ class SitePassportWidget(QWidget):
         self._stage_widgets.clear()
     
     def _start_diagnosis(self):
-        """Запускает этап диагностики (заглушка)."""
+        """Запускает этап диагностики через фоновый воркер."""
         self._set_stage_active(0)
         
         # Создаём виджет для этапа диагностики
         box = QGroupBox("🔍 Диагностика сайта")
         layout = QVBoxLayout(box)
         
-        info_label = QLabel(f"Проверяем доступность {self.domain}...")
-        layout.addWidget(info_label)
+        # Начальное состояние — "проверяем"
+        self._diagnosis_status_label = QLabel(f"⏳ Проверяем доступность {self.domain}...")
+        self._diagnosis_status_label.setStyleSheet("font-size: 11pt; color: #3498db;")
+        layout.addWidget(self._diagnosis_status_label)
         
-        # Кнопка "Далее" (заглушка)
-        btn_next = QPushButton("Перейти к поиску стратегии →")
-        btn_next.clicked.connect(lambda: self._start_strategy_search())
-        layout.addWidget(btn_next)
+        # Контейнер для результатов (скрыт до завершения)
+        self._diagnosis_result_container = QWidget()
+        self._diagnosis_result_layout = QVBoxLayout(self._diagnosis_result_container)
+        self._diagnosis_result_layout.setContentsMargins(0, 10, 0, 0)
+        layout.addWidget(self._diagnosis_result_container)
+        self._diagnosis_result_container.hide()
+        
+        # Кнопка "Далее" (скрыта до завершения)
+        self._diagnosis_next_btn = QPushButton("Перейти к поиску стратегии →")
+        self._diagnosis_next_btn.clicked.connect(lambda: self._start_strategy_search())
+        self._diagnosis_next_btn.hide()
+        layout.addWidget(self._diagnosis_next_btn)
         
         self.results_layout.addWidget(box)
         self._stage_widgets['diagnosis'] = box
         
+        # Запускаем фоновый воркер
+        self._diagnosis_worker = DiagnosisWorker(self.domain)
+        self._diagnosis_worker.diagnosis_started.connect(self._on_diagnosis_started)
+        self._diagnosis_worker.diagnosis_finished.connect(self._on_diagnosis_finished)
+        self._diagnosis_worker.diagnosis_error.connect(self._on_diagnosis_error)
+        self._diagnosis_worker.start()
+    
+    def _on_diagnosis_started(self):
+        """Вызывается при старте диагностики."""
         self.status_message_requested.emit(
-            f"🔍 Диагностика {self.domain}...", False)
+            f"🔍 Проверяем {self.domain}...", False)
+    
+    def _on_diagnosis_finished(self, result, verdict):
+        """Вызывается при успешном завершении диагностики."""
+        self._diagnosis_worker = None
+        
+        # Обновляем статус-лейбл
+        self._diagnosis_status_label.setText(f"{verdict.icon} {verdict.label}")
+        
+        # Определяем цвет статуса
+        if verdict.status == "ok":
+            color = "#2ecc71"  # зелёный
+        elif verdict.status == "blocked":
+            color = "#e74c3c"  # красный
+        else:
+            color = "#f39c12"  # оранжевый
+        
+        self._diagnosis_status_label.setStyleSheet(
+            f"font-size: 12pt; color: {color}; font-weight: bold;")
+        
+        # Очищаем контейнер результатов
+        while self._diagnosis_result_layout.count():
+            item = self._diagnosis_result_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        
+        # Добавляем детальную информацию
+        details_text = f"""
+<b>Домен:</b> {result.domain}<br>
+<b>HTTP код:</b> {result.http_code}<br>
+<b>Размер ответа:</b> {result.size} байт<br>
+<b>Время до первого байта:</b> {result.time_first_byte:.2f} сек<br>
+<b>URL:</b> {result.url}<br>
+<b>Рекомендация:</b> {verdict.hint}
+"""
+        details_label = QLabel(details_text)
+        details_label.setWordWrap(True)
+        # Используем системный цвет из палитры (кроссплатформенность)
+        bg_color = self.palette().color(QPalette.ColorRole.AlternateBase).name()
+        details_label.setStyleSheet(
+            f"margin-top: 10px; padding: 8px; background-color: {bg_color}; border-radius: 4px;")
+        self._diagnosis_result_layout.addWidget(details_label)
+        
+        # Показываем контейнер и кнопку
+        self._diagnosis_result_container.show()
+        
+        if verdict.status == "ok":
+            self._diagnosis_next_btn.setText("Сайт работает! Пропустить визард ✓")
+            self.status_message_requested.emit(
+                f"✅ {self.domain} доступен (HTTP {result.http_code})", True)
+        else:
+            self._diagnosis_next_btn.setText("Перейти к поиску стратегии →")
+            self.status_message_requested.emit(
+                f"❌ {self.domain} недоступен: {verdict.label}", True)
+        
+        self._diagnosis_next_btn.show()
+    
+    def _on_diagnosis_error(self, error_msg: str):
+        """Вызывается при ошибке диагностики."""
+        self._diagnosis_worker = None
+        self._diagnosis_status_label.setText(f"⚠️ Ошибка: {error_msg}")
+        self._diagnosis_status_label.setStyleSheet(
+            "font-size: 12pt; color: #e74c3c;")
+        self.status_message_requested.emit(
+            f"⚠️ Ошибка диагностики: {error_msg}", True)
     
     def _start_strategy_search(self):
         """Запускает этап поиска стратегии (заглушка)."""
@@ -418,3 +501,31 @@ class SitePassportWidget(QWidget):
         webbrowser.open(f"https://{self.domain}")
         self.status_message_requested.emit(
             f"🌐 Открываем {self.domain} в браузере", False)
+
+
+class DiagnosisWorker(QThread):
+    """Фоновый поток для проверки доступности сайта."""
+    
+    diagnosis_started = pyqtSignal()
+    diagnosis_finished = pyqtSignal(object, object)  # (SiteCheckResult, Verdict)
+    diagnosis_error = pyqtSignal(str)
+    
+    def __init__(self, domain: str, parent=None):
+        super().__init__(parent)
+        self.domain = domain
+    
+    def run(self):
+        try:
+            self.diagnosis_started.emit()
+            
+            # Импорты здесь, чтобы не тянуть в основном потоке
+            from core import checker
+            
+            # Выполняем проверку
+            result = checker.check_site(self.domain, timeout=8)
+            verdict = checker.classify(result)
+            
+            self.diagnosis_finished.emit(result, verdict)
+        
+        except Exception as e:
+            self.diagnosis_error.emit(str(e))
