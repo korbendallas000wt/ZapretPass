@@ -15,6 +15,8 @@ from PyQt6.QtGui import QFont, QPalette
 import re
 from typing import Optional
 
+from core import service_manager
+
 
 class DiagnosisWorker(QThread):
     """Фоновый поток для проверки доступности сайта."""
@@ -399,6 +401,15 @@ class SitePassportWidget(QWidget):
         # Запускаем воркер
         from core import blockcheck, sudo
         password = sudo.manager.get_password()
+        
+        # Подготовка перед блоком (остановка сервиса если нужно)
+        class BlockProxy:
+            flags = flags
+        ok_prep, msg_prep = service_manager.manager.prepare_before_block(
+            BlockProxy(), self.domain, password)
+        if not ok_prep:
+            layout.addWidget(QLabel(f"❌ {msg_prep}"))
+            return
         if password is None:
             layout.addWidget(QLabel("❌ Пароль не предоставлен"))
             return
@@ -431,6 +442,18 @@ class SitePassportWidget(QWidget):
             self._blockcheck_worker.deleteLater()
         self._blockcheck_worker = None
         self._blockcheck_progress.hide()
+        
+        # Завершение после блока (применение стратегии, перезапуск сервиса)
+        from core import sudo
+        password = sudo.manager.get_password()
+        block_result = {
+            'found_strategy': result.strategies[0] if result.strategies else None
+        }
+        class BlockProxy:
+            flags = flags
+        if password:
+            service_manager.manager.cleanup_after_block(
+                BlockProxy(), self.domain, password, block_result)
         
         if result.success:
             self._found_strategies = result.strategies

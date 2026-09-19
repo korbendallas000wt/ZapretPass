@@ -15,6 +15,12 @@ from typing import Optional
 
 from . import config
 
+# Импортируем функции управления конфигом
+from .config import (
+    backup_config, cleanup_old_backups, list_backups,
+    restore_backup, restore_from_backup, _sudo_cp, _filter_sudo_stderr
+)
+
 
 
 # ============================================================================
@@ -107,7 +113,7 @@ def apply_whitelist(password: str) -> tuple[bool, str]:
     if not content.strip():
         return False, "❌ Белый список пуст"
     
-    return _sudo_cp(
+    return config._sudo_cp(
         str(config.WHITELIST_FILE),
         str(config.IPSET_USER),
         password,
@@ -140,9 +146,9 @@ def apply_mode(mode: str, password: str) -> tuple[bool, str]:
         return False, f"❌ Шаблон конфига не найден: {src.name}"
     
     # Бэкап текущего конфига перед заменой
-    _backup_config(password)
+    config.backup_config(password)
     
-    return _sudo_cp(
+    return config._sudo_cp(
         str(src),
         str(config.CONFIG_FILE),
         password,
@@ -177,7 +183,7 @@ def apply_strategy(strategy: str, password: str) -> tuple[bool, str]:
     params = strategy_stripped.replace("nfqws ", "").replace("tpws ", "").strip()
     
     # Бэкап перед модификацией
-    ok_backup, msg_backup = _backup_config(password)
+    ok_backup, msg_backup = config.backup_config(password)
     if not ok_backup:
         return False, f"❌ Не удалось сделать бэкап: {msg_backup}"
     
@@ -216,7 +222,7 @@ def apply_strategy(strategy: str, password: str) -> tuple[bool, str]:
         if process.returncode == 0:
             return True, f"✅ Стратегия применена ({var_name})"
         
-        error_msg = _filter_sudo_stderr(stderr)
+        error_msg = config._filter_sudo_stderr(stderr)
         return False, f"❌ Не удалось записать стратегию: {error_msg}"
     
     except Exception as e:
@@ -305,449 +311,3 @@ def apply_all(
     
     return True, "✅ Все настройки применены", steps, verification_result, smoke_test_result
 
-
-# ============================================================================
-# ВНУТРЕННИЕ ФУНКЦИИ
-# ============================================================================
-
-def _backup_config(password: str) -> tuple[bool, str]:
-    """Делает бэкап текущего конфига с проверкой содержимого.
-    
-    Перед бэкапом проверяет, что в конфиге есть непустая стратегия.
-    Если конфиг пустой — пропускает бэкап (защита от бэкапа мусора).
-    Имя бэкапа содержит дату и время: config.backup.YYYY-MM-DD_HH-MM-SS
-    После создания вызывает ротацию старых бэкапов.
-    """
-    if not config.CONFIG_FILE.exists():
-        return False, "Конфиг не существует"
-    
-    # Проверяем содержимое конфига перед бэкапом
-    try:
-        import subprocess
-        process = subprocess.Popen(
-            ['sudo', '-S', 'cat', str(config.CONFIG_FILE)],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-        stdout, stderr = process.communicate(input=password + "\n", timeout=10)
-        
-        if process.returncode != 0:
-            return False, f"Не удалось прочитать конфиг для проверки: {_filter_sudo_stderr(stderr)}"
-        
-        config_content = stdout
-        
-        # Проверяем наличие непустой стратегии в конфиге
-        has_strategy = False
-        for line in config_content.splitlines():
-            line_stripped = line.strip()
-            if line_stripped.startswith('NFQWS_OPT=') or line_stripped.startswith('TPWS_OPT='):
-                # Извлекаем значение между кавычками
-                match = re.search(r'^(NFQWS_OPT|TPWS_OPT)="([^"]*)"', line_stripped)
-                if match:
-                    value = match.group(2).strip()
-                    if value:  # Непустое значение
-                        has_strategy = True
-                        break
-        
-        if not has_strategy:
-            return False, "Конфиг не содержит активной стратегии — бэкап пропущен (защита от мусора)"
-    
-    except Exception as e:
-        return False, f"Ошибка проверки конфига: {str(e)}"
-    
-    # Формируем датированное имя бэкапа
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    backup_name = f"{config.CONFIG_BACKUP_PREFIX}.{timestamp}"
-    backup_path = config.ZAPRET_DIR / backup_name
-    
-    # Копируем конфиг в датированный бэкап
-    try:
-        ok, msg = _sudo_cp(
-            str(config.CONFIG_FILE),
-            str(backup_path),
-            password,
-            success_msg=f"Бэкап создан: {backup_name}"
-        )
-        if not ok:
-            return False, msg
-        
-        # Ротация старых бэкапов
-        cleanup_old_backups(password)
-        
-        return True, f"Бэкап создан: {backup_name}"
-    
-    except Exception as e:
-        return False, str(e)
-
-
-def cleanup_old_backups(password: str) -> None:
-    """Удаляет старые бэкапы, оставляя не более MAX_BACKUPS последних.
-    
-    Бэкапы сортируются по имени (которое содержит дату), удаляются самые старые.
-    """
-    try:
-        import subprocess
-        # Находим все бэкапы с паттерном config.backup.*
-        pattern = str(config.ZAPRET_DIR / f"{config.CONFIG_BACKUP_PREFIX}.*")
-        process = subprocess.Popen(
-            ['sudo', '-S', 'bash', '-c', f'ls -1 {pattern} 2>/dev/null'],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-        stdout, stderr = process.communicate(input=password + "\n", timeout=10)
-        
-        if process.returncode != 0 or not stdout.strip():
-            return
-        
-        backups = [line.strip() for line in stdout.strip().splitlines() if line.strip()]
-        
-        # Сортируем по имени (дата в имени обеспечивает правильную сортировку)
-        backups.sort()
-        
-        # Если бэкапов больше лимита — удаляем самые старые
-        if len(backups) > config.MAX_BACKUPS:
-            to_delete = backups[:-config.MAX_BACKUPS]
-            for backup_path in to_delete:
-                subprocess.Popen(
-                    ['sudo', '-S', 'rm', '-f', backup_path],
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True
-                ).communicate(input=password + "\n", timeout=10)
-    
-    except Exception:
-        pass  # Ротация — некритичная операция, ошибки игнорируем
-
-
-def _sudo_cp(src: str, dst: str, password: str, success_msg: str) -> tuple[bool, str]:
-    """Выполняет sudo cp src dst."""
-    if not password:
-        return False, "Пароль не предоставлен"
-    
-    try:
-        import subprocess
-        process = subprocess.Popen(
-            ['sudo', '-S', 'cp', src, dst],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-        stdout, stderr = process.communicate(input=password + "\n", timeout=30)
-        
-        if process.returncode == 0:
-            return True, success_msg
-        
-        error_msg = _filter_sudo_stderr(stderr)
-        return False, error_msg
-    
-    except Exception as e:
-        return False, str(e)
-
-
-def _filter_sudo_stderr(stderr: str) -> str:
-    """Фильтрует служебные строки sudo из stderr."""
-    if not stderr:
-        return "Неизвестная ошибка"
-    
-    filtered = []
-    for line in stderr.splitlines():
-        if "[sudo]" in line or "password for" in line.lower():
-            continue
-        if line.strip():
-            filtered.append(line.strip())
-    
-    return "\n".join(filtered) if filtered else "Неизвестная ошибка"
-
-
-def list_backups(password: str) -> list[dict]:
-    """Возвращает список всех бэкапов конфига с информацией.
-    
-    Каждый бэкап представлен словарём:
-    {
-        "name": "config.backup.2026-09-18_14-30-22",
-        "path": "/opt/zapret/config.backup.2026-09-18_14-30-22",
-        "date_str": "2026-09-18_14-30-22",
-        "has_strategy": True
-    }
-    
-    Список отсортирован от новых к старым.
-    """
-    try:
-        import subprocess
-        pattern = str(config.ZAPRET_DIR / f"{config.CONFIG_BACKUP_PREFIX}.*")
-        process = subprocess.Popen(
-            ['sudo', '-S', 'bash', '-c', f'ls -1 {pattern} 2>/dev/null'],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-        stdout, stderr = process.communicate(input=password + "\n", timeout=10)
-        
-        if process.returncode != 0 or not stdout.strip():
-            return []
-        
-        backup_paths = [line.strip() for line in stdout.strip().splitlines() if line.strip()]
-        backups = []
-        
-        for path_str in backup_paths:
-            path = Path(path_str)
-            # Извлекаем дату из имени: config.backup.2026-09-18_14-30-22
-            date_part = path.name.replace(f"{config.CONFIG_BACKUP_PREFIX}.", "")
-            
-            # Проверяем, есть ли стратегия в бэкапе
-            has_strategy = _backup_has_strategy(path_str, password)
-            
-            backups.append({
-                "name": path.name,
-                "path": str(path),
-                "date_str": date_part,
-                "has_strategy": has_strategy,
-            })
-        
-        # Сортируем по имени (дата в имени обеспечивает правильный порядок), от новых к старым
-        backups.sort(key=lambda b: b["name"], reverse=True)
-        return backups
-    
-    except Exception:
-        return []
-
-
-def _backup_has_strategy(backup_path: str, password: str) -> bool:
-    """Проверяет, содержит ли бэкап непустую стратегию."""
-    try:
-        import subprocess
-        process = subprocess.Popen(
-            ['sudo', '-S', 'cat', backup_path],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-        stdout, stderr = process.communicate(input=password + "\n", timeout=10)
-        
-        if process.returncode != 0:
-            return False
-        
-        for line in stdout.splitlines():
-            line_stripped = line.strip()
-            if line_stripped.startswith('NFQWS_OPT=') or line_stripped.startswith('TPWS_OPT='):
-                match = re.search(r'^(NFQWS_OPT|TPWS_OPT)="([^"]*)"', line_stripped)
-                if match and match.group(2).strip():
-                    return True
-        return False
-    
-    except Exception:
-        return False
-
-
-def restore_backup(backup_name: str, password: str, restart_service: bool = True) -> tuple[bool, str]:
-    """Восстанавливает конфиг из конкретногоного бэкапа.
-    
-    Args:
-        backup_name: имя файла бэкапа (например, "config.backup.2026-09-18_14-30-22").
-        password: пароль sudo.
-        restart_service: перезапускать ли сервис после восстановления.
-        
-    Returns:
-        (успех, сообщение).
-    """
-    backup_path = config.ZAPRET_DIR / backup_name
-    
-    # Проверяем существование бэкапа
-    try:
-        import subprocess
-        process = subprocess.Popen(
-            ['sudo', '-S', 'test', '-f', str(backup_path)],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-        _, stderr = process.communicate(input=password + "\n", timeout=10)
-        if process.returncode != 0:
-            return False, f"❌ Бэкап не найден: {backup_name}"
-    except Exception as e:
-        return False, f"❌ Ошибка проверки бэкапа: {str(e)}"
-    
-    # Проверяем, что бэкап содержит стратегию
-    if not _backup_has_strategy(str(backup_path), password):
-        return False, f"⚠️ Бэкап {backup_name} не содержит стратегии — восстановление не рекомендуется"
-    
-    # Восстанавливаем конфиг из бэкапа
-    ok, msg = _sudo_cp(
-        str(backup_path),
-        str(config.CONFIG_FILE),
-        password,
-        success_msg=f"✅ Конфиг восстановлен из {backup_name}"
-    )
-    
-    if not ok:
-        return False, f"❌ Не удалось восстановить конфиг: {msg}"
-    
-    # Опциональный рестарт сервиса
-    if restart_service:
-        from . import service
-        restart_ok, restart_msg = service.restart(password)
-        if not restart_ok:
-            return False, f"⚠️ Конфиг восстановлен, но не удалось перезапустить сервис: {restart_msg}"
-        return True, f"✅ Конфиг восстановлен из {backup_name}, сервис перезапущен"
-    
-    return True, f"✅ Конфиг восстановлен из {backup_name}"
-
-
-
-# ============================================================================
-# ВЕРИФИКАЦИЯ ПОСЛЕ ПРИМЕНЕНИЯ
-# ============================================================================
-
-def verify_after_apply(password: str) -> tuple[bool, str]:
-    """Проверяет, что стратегия реально записана в конфиг и процесс nfqws получил параметры.
-    
-    Выполняет две проверки:
-    1. Читает конфиг и проверяет наличие NFQWS_OPT или TPWS_OPT с непустыми значениями
-    2. Проверяет запущенный процесс nfqws/tpws через ps aux
-    
-    Returns:
-        (успех, диагностическое сообщение).
-    """
-    # Проверка 1: читаем конфиг
-    try:
-        import subprocess
-        process = subprocess.Popen(
-            ['sudo', '-S', 'cat', str(config.CONFIG_FILE)],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-        stdout, stderr = process.communicate(input=password + "\n", timeout=10)
-        
-        if process.returncode != 0:
-            return False, f"❌ Не удалось прочитать конфиг: {_filter_sudo_stderr(stderr)}"
-        
-        config_content = stdout
-        
-        # Ищем NFQWS_OPT или TPWS_OPT
-        strategy_found = False
-        strategy_type = None
-        strategy_value = ""
-        
-        for line in config_content.splitlines():
-            line_stripped = line.strip()
-            match = re.search(r'^(NFQWS_OPT|TPWS_OPT)="([^"]*)"', line_stripped)
-            if match:
-                var_name, value = match.groups()
-                value = value.strip()
-                if value:
-                    strategy_found = True
-                    strategy_type = var_name
-                    strategy_value = value
-                    break
-        
-        if not strategy_found:
-            return False, "❌ В конфиге не найдена активная стратегия (NFQWS_OPT или TPWS_OPT пусты)"
-        
-    except Exception as e:
-        return False, f"❌ Ошибка чтения конфига: {str(e)}"
-    
-    # Проверка 2: процесс запущен с правильными параметрами
-    try:
-        process_name = "nfqws" if strategy_type == "NFQWS_OPT" else "tpws"
-        process = subprocess.Popen(
-            ['ps', 'aux'],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-        stdout, stderr = process.communicate(timeout=5)
-        
-        # Ищем процесс nfqws или tpws
-        process_found = False
-        for line in stdout.splitlines():
-            if process_name in line and "grep" not in line:
-                process_found = True
-                # Проверяем, что параметры процесса содержат ключевые слова из стратегии
-                if "--dpi-desync=" in line or "--hostcase" in line or "--disorder" in line:
-                    return True, f"✅ Стратегия применена и процесс {process_name} запущен"
-                break
-        
-        if not process_found:
-            return False, f"⚠️ Стратегия записана в конфиг, но процесс {process_name} не запущен"
-        
-        return True, f"✅ Стратегия применена, процесс {process_name} активен"
-    
-    except Exception as e:
-        # Если не удалось проверить процесс — считаем, что конфиг верифицирован
-        return True, f"✅ Стратегия записана в конфиг ({strategy_type})"
-
-
-def smoke_test_sites(domains: list[str], password: str) -> tuple[bool, str, list]:
-    """Выполняет smoke-тест доступности сайтов после применения стратегии.
-    
-    Проверяет 2-3 домена через core.checker.check_site().
-    
-    Args:
-        domains: список доменов для проверки.
-        password: пароль sudo (не используется напрямую, но передаётся для единообразия).
-        
-    Returns:
-        (успех, сообщение, список_результатов).
-    """
-    if not domains:
-        return True, "Нет доменов для проверки", []
-    
-    from . import checker
-    
-    # Проверяем не более 3 доменов
-    test_domains = domains[:3]
-    results = []
-    accessible_count = 0
-    
-    for domain in test_domains:
-        result = checker.check_site(domain, timeout=8)
-        verdict = checker.classify(result)
-        results.append({
-            "domain": domain,
-            "accessible": result.accessible,
-            "verdict": verdict
-        })
-        
-        if result.accessible:
-            accessible_count += 1
-    
-    if accessible_count > 0:
-        return True, f"✅ {accessible_count} из {len(test_domains)} сайтов доступны", results
-    else:
-        return False, f"❌ Ни один из {len(test_domains)} сайтов не доступен", results
-
-
-def restore_from_backup(password: str) -> tuple[bool, str]:
-    """Восстанавливает конфиг из последнего бэкапа (легаси-функция для совместимости).
-    
-    Если есть датированные бэкапы — использует самый новый.
-    Иначе использует старое имя config.backup.
-    """
-    backups = list_backups(password)
-    
-    if backups:
-        # Есть датированные бэкапы — восстанавливаем из самого нового
-        latest = backups[0]
-        return restore_backup(latest["name"], password, restart_service=False)
-    
-    # Легаси: старый формат config.backup
-    if not config.CONFIG_BACKUP.exists():
-        return False, "❌ Бэкап не найден"
-    
-    return _sudo_cp(
-        str(config.CONFIG_BACKUP),
-        str(config.CONFIG_FILE),
-        password,
-        success_msg="✅ Конфиг восстановлен из бэкапа"
-    )
