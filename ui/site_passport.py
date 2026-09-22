@@ -8,11 +8,11 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QGroupBox, QProgressBar, QScrollArea,
     QFrame, QSizePolicy, QComboBox, QTextEdit, QRadioButton,
-    QButtonGroup
+    QButtonGroup, QToolTip
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QThread, QTimer, QPoint
+from PyQt6.QtCore import Qt, pyqtSignal, QThread, QTimer, QPoint, QRectF, QPointF
 import threading
-from PyQt6.QtGui import QFont, QPalette
+from PyQt6.QtGui import QFont, QPalette, QPainter, QPen, QBrush
 import re
 from typing import Optional
 
@@ -84,6 +84,229 @@ class BlockcheckWorker(QThread):
         self._cancel_event.set()
 
 
+class ScenarioProgressIndicator(QWidget):
+    """Горизонтальный индикатор этапов сценария: линия + круглые точки."""
+
+    WAITING = "waiting"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    ERROR = "error"
+    STOPPED = "stopped"
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMouseTracking(True)
+        self._items = []
+        self._points = []
+        self.setFixedHeight(38)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.set_placeholder(False, False)
+
+    def set_placeholder(self, domain_ready: bool, scenario_ready: bool):
+        """Две точки-заглушки до формирования реального сценария."""
+        self._items = [
+            [
+                "Введите адрес сайта",
+                "",
+                self.COMPLETED if domain_ready else self.WAITING,
+            ],
+            [
+                "Выберите сценарий",
+                "",
+                self.COMPLETED if scenario_ready else self.WAITING,
+            ],
+        ]
+        self._points = []
+        self.update()
+
+    def set_blocks(self, blocks):
+        """Строит реальные этапы из блоков сценария."""
+        self._items = []
+        for block in blocks:
+            name = getattr(block, "name", "") or getattr(block, "block_type", "")
+            description = getattr(block, "description", "")
+            self._items.append([name, description, self.WAITING])
+        self._points = []
+        self.update()
+
+    def set_state(self, index: int, state: str):
+        if 0 <= index < len(self._items):
+            self._items[index][2] = state
+            self.update()
+
+    def set_running(self, index: int):
+        """Текущий этап выполняется, предыдущие завершены, будущие ожидают."""
+        for i, item in enumerate(self._items):
+            state = item[2]
+            if i < index:
+                if state not in (self.ERROR, self.STOPPED):
+                    item[2] = self.COMPLETED
+            elif i == index:
+                item[2] = self.RUNNING
+            else:
+                if state not in (self.ERROR, self.STOPPED):
+                    item[2] = self.WAITING
+        self.update()
+
+    def finish_all(self):
+        """Помечает все незавершённые этапы как завершённые."""
+        for item in self._items:
+            if item[2] not in (self.ERROR, self.STOPPED):
+                item[2] = self.COMPLETED
+        self.update()
+
+    def mark_current(self, index: int, state: str):
+        """Меняет статус текущего этапа с защитой от перетирания остановки."""
+        if not (0 <= index < len(self._items)):
+            return
+        if state != self.STOPPED and self._items[index][2] == self.STOPPED:
+            return
+        self._items[index][2] = state
+        self.update()
+
+    def _state_label(self, state: str) -> str:
+        return {
+            self.WAITING: "Ожидание",
+            self.RUNNING: "Выполняется",
+            self.COMPLETED: "Завершено",
+            self.ERROR: "Ошибка",
+            self.STOPPED: "Остановлено",
+        }.get(state, state)
+
+    def _appearance(self, state: str):
+        """Возвращает (цвет контура, цвет заливки или None, цвет текста, bold)."""
+        pal = self.palette()
+
+        if state == self.RUNNING:
+            accent = pal.color(QPalette.ColorRole.Highlight)
+            text = pal.color(QPalette.ColorRole.HighlightedText)
+            return accent, accent, text, True
+
+        if state == self.COMPLETED:
+            text = pal.color(QPalette.ColorRole.Text)
+            return text, None, text, False
+
+        if state == self.ERROR:
+            bright = pal.color(QPalette.ColorRole.BrightText)
+            base = pal.color(QPalette.ColorRole.Base)
+            return bright, bright, base, True
+
+        if state == self.STOPPED:
+            mid = pal.color(QPalette.ColorRole.Mid)
+            return mid, None, mid, False
+
+        placeholder = pal.color(QPalette.ColorRole.PlaceholderText)
+        return placeholder, None, placeholder, False
+
+    def _segment_color(self, left_state: str, right_state: str):
+        pal = self.palette()
+
+        if self.ERROR in (left_state, right_state):
+            return pal.color(QPalette.ColorRole.BrightText)
+
+        if self.STOPPED in (left_state, right_state):
+            return pal.color(QPalette.ColorRole.Mid)
+
+        if right_state == self.RUNNING or left_state == self.RUNNING:
+            return pal.color(QPalette.ColorRole.Highlight)
+
+        if left_state == self.COMPLETED:
+            return pal.color(QPalette.ColorRole.Text)
+
+        return pal.color(QPalette.ColorRole.PlaceholderText)
+
+    def _point_at(self, pos):
+        best = None
+        best_dist = None
+
+        for i, (x, y, r) in enumerate(self._points):
+            dist = (pos.x() - x) ** 2 + (pos.y() - y) ** 2
+            hit_r = r + 4.0
+            if dist <= hit_r * hit_r:
+                if best_dist is None or dist < best_dist:
+                    best = i
+                    best_dist = dist
+
+        return best
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        n = len(self._items)
+        self._points = []
+
+        if n == 0:
+            return
+
+        h = float(self.height())
+        w = float(self.width())
+
+        r = max(9.0, min(h * 0.42, 18.0))
+        margin = r + 6.0
+        y = h / 2.0
+
+        if n == 1:
+            xs = [w / 2.0]
+        else:
+            available = max(1.0, w - 2.0 * margin)
+            step = available / float(n - 1)
+            xs = [margin + i * step for i in range(n)]
+
+        line_width = max(2.0, h * 0.08)
+
+        base_color = self._segment_color(self.WAITING, self.WAITING)
+        painter.setPen(QPen(base_color, line_width))
+        painter.drawLine(QPointF(xs[0], y), QPointF(xs[-1], y))
+
+        for i in range(n - 1):
+            color = self._segment_color(self._items[i][2], self._items[i + 1][2])
+            painter.setPen(QPen(color, line_width))
+            painter.drawLine(QPointF(xs[i], y), QPointF(xs[i + 1], y))
+
+        circle_width = max(2.0, h * 0.07)
+
+        for i, item in enumerate(self._items):
+            state = item[2]
+            pen_color, brush_color, text_color, bold = self._appearance(state)
+
+            painter.setPen(QPen(pen_color, circle_width))
+            if brush_color is None:
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+            else:
+                painter.setBrush(QBrush(brush_color))
+
+            painter.drawEllipse(QPointF(xs[i], y), r, r)
+
+            font = self.font()
+            font.setPixelSize(max(10, int(r * 1.05)))
+            font.setBold(bold)
+            painter.setFont(font)
+            painter.setPen(QPen(text_color))
+
+            text_rect = QRectF(xs[i] - r, y - r, 2.0 * r, 2.0 * r)
+            painter.drawText(text_rect, Qt.AlignmentFlag.AlignCenter, str(i + 1))
+
+            self._points.append((xs[i], y, r))
+
+    def mouseMoveEvent(self, event):
+        index = self._point_at(event.position())
+
+        if index is not None:
+            name, description, state = self._items[index]
+            lines = [f"{index + 1}. {name}", self._state_label(state)]
+            if description:
+                lines.append(description)
+            QToolTip.showText(event.globalPosition().toPoint(), "\n".join(lines), self)
+        else:
+            QToolTip.hideText()
+
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event):
+        QToolTip.hideText()
+        super().leaveEvent(event)
+
 class SitePassportWidget(QWidget):
     """Виджет вкладки "Паспорт сайта" на архитектуре сценариев."""
     
@@ -117,6 +340,19 @@ class SitePassportWidget(QWidget):
         input_layout.addLayout(url_row)
         main_layout.addWidget(input_box)
         
+        # 1a. Фиксированный индикатор этапов сценария (вне скролла)
+        self.progress_box = QGroupBox("")
+        self.progress_layout = QVBoxLayout(self.progress_box)
+        self.progress_layout.setContentsMargins(8, 4, 8, 4)
+        self.progress_layout.setSpacing(0)
+
+        self.progress_indicator = ScenarioProgressIndicator(self.progress_box)
+        self.progress_layout.addWidget(self.progress_indicator)
+        self.progress_indicator.set_placeholder(False, False)
+
+        self.url_input.textChanged.connect(lambda *_: self._update_progress_placeholder())
+        main_layout.addWidget(self.progress_box)
+        
         # 2. Область результатов (скроллируемая)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -135,6 +371,7 @@ class SitePassportWidget(QWidget):
         self.domain = None
         self.scenario = None
         self.current_block_index = 0
+        self._clear_progress_layout()
         
         # Ссылки на активные воркеры
         self._diagnosis_worker = None
@@ -216,9 +453,11 @@ class SitePassportWidget(QWidget):
         btn_start = QPushButton("▶ Начать")
         btn_start.setMinimumHeight(40)
         btn_start.clicked.connect(self._start_selected_scenario)
+        self.scenario_button_group.buttonClicked.connect(lambda *_: self._update_progress_placeholder())
         layout.addWidget(btn_start)
         
         self.results_layout.addWidget(self._scenario_box)
+        self._update_progress_placeholder()
         
         self.status_message_requested.emit(
             f"🎯 Выбор сценария для {self.domain}", False)
@@ -245,6 +484,7 @@ class SitePassportWidget(QWidget):
         
         self.scenario = scenarios.registry.get(selected_id)
         self.current_block_index = 0
+        self._create_scenario_progress(self.scenario.get_blocks())
         
         # Удаляем UI выбора сценария
         if self._scenario_box:
@@ -273,11 +513,54 @@ class SitePassportWidget(QWidget):
         )
         self._active_block = box
 
+    def _update_progress_placeholder(self):
+        """Обновляет две точки-заглушки до запуска сценария."""
+        if getattr(self, "scenario", None) is not None:
+            return
+
+        domain_ready = bool(self.url_input.text().strip())
+
+        scenario_ready = False
+        group = getattr(self, "scenario_button_group", None)
+        if group is not None:
+            try:
+                scenario_ready = group.checkedButton() is not None
+            except RuntimeError:
+                scenario_ready = False
+
+        self.progress_indicator.set_placeholder(domain_ready, scenario_ready)
+
+    def _clear_progress_layout(self):
+        """Сбрасывает индикатор в начальное заглушечное состояние."""
+        self.progress_box.setTitle("")
+        self.progress_indicator.set_placeholder(False, False)
+
+    def _create_scenario_progress(self, blocks):
+        """Строит реальный индикатор по блокам сценария."""
+        self.progress_indicator.set_blocks(blocks)
+
+        title = ""
+        if self.scenario is not None:
+            title = getattr(self.scenario, "name", "")
+
+        self.progress_box.setTitle(title)
+
+    def _set_progress_running(self, index: int):
+        self.progress_indicator.set_running(index)
+
+    def _finish_progress_all(self):
+        self.progress_indicator.finish_all()
+
+    def _mark_current_progress(self, state: str):
+        index = self.current_block_index - 1
+        self.progress_indicator.mark_current(index, state)
+
     def _run_next_block(self):
         """Запускает следующий блок сценария."""
         blocks = self.scenario.get_blocks()
         
         if self.current_block_index >= len(blocks):
+            self._finish_progress_all()
             self.status_message_requested.emit(
                 f"✅ Сценарий '{self.scenario.name}' завершён", True)
             # Разблокируем ввод
@@ -285,8 +568,10 @@ class SitePassportWidget(QWidget):
             self.url_input.setEnabled(True)
             return
         
-        block = blocks[self.current_block_index]
+        block_index = self.current_block_index
+        block = blocks[block_index]
         self.current_block_index += 1
+        self._set_progress_running(block_index)
         
         # Добавляем карточку блока
         box = QGroupBox(f"{block.name}")
@@ -392,12 +677,14 @@ class SitePassportWidget(QWidget):
             self.status_message_requested.emit(
                 f"❌ {self.domain} недоступен: {verdict.label}", True)
         
+        self._mark_current_progress("completed")
         # Кнопка перехода к следующему блоку (пошаговое управление)
         btn_next = QPushButton("Перейти к поиску стратегии →")
         btn_next.clicked.connect(self._run_next_block)
         self._diagnosis_result_layout.addWidget(btn_next)
     
     def _on_diagnosis_error(self, error_msg: str):
+        self._mark_current_progress("error")
         if self._diagnosis_worker is not None:
             self._diagnosis_worker.deleteLater()
         self._diagnosis_worker = None
@@ -471,6 +758,7 @@ class SitePassportWidget(QWidget):
         """Останавливает блокчек по запросу пользователя."""
         if self._blockcheck_worker is not None:
             self._blockcheck_worker.cancel()
+            self._mark_current_progress("stopped")
             self.status_message_requested.emit("⏹ Останавливаю блокчек...", True)
             if hasattr(self, '_blockcheck_stop_btn'):
                 self._blockcheck_stop_btn.setEnabled(False)
@@ -525,6 +813,7 @@ class SitePassportWidget(QWidget):
             
             self.status_message_requested.emit(
                 f"✅ Найдено {len(result.strategies)} стратегий", True)
+            self._mark_current_progress("completed")
         else:
             error_msg = result.error or "Неизвестная ошибка"
             status_label = QLabel(f"❌ {error_msg}")
@@ -533,6 +822,7 @@ class SitePassportWidget(QWidget):
             
             self.status_message_requested.emit(
                 f"❌ Стратегии не найдены: {error_msg}", True)
+            self._mark_current_progress("error")
         
         # Отключаем кнопку остановки (блокчек завершён)
         if hasattr(self, '_blockcheck_stop_btn'):
@@ -543,6 +833,7 @@ class SitePassportWidget(QWidget):
         self.results_layout.addWidget(btn_next)
     
     def _on_blockcheck_error(self, error_msg: str):
+        self._mark_current_progress("error")
         if self._blockcheck_worker is not None:
             self._blockcheck_worker.deleteLater()
         self._blockcheck_worker = None
@@ -616,6 +907,7 @@ class SitePassportWidget(QWidget):
         
         self.scenario = None
         self.current_block_index = 0
+        self._clear_progress_layout()
         self._diagnosis_result = None
         self._found_strategy = None
         self._found_strategies = []
