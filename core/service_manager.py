@@ -23,26 +23,16 @@ class ServiceManager:
         self._backup_name: Optional[str] = None
     
     def prepare_before_block(self, block, domain: str, password: str) -> tuple[bool, str]:
-        """Подготовка перед выполнением блока.
-        
-        Анализирует флаги блока и выполняет необходимые действия:
-        - Сохранение текущей стратегии
-        - Создание бэкапа конфига
-        - Остановка сервиса
-        
-        Args:
-            block: ScenarioBlock с флагами
-            domain: домен для контекста
-            password: пароль sudo
-            
-        Returns:
-            (успех, сообщение)
-        """
+        """Подготовка перед выполнением блока."""
         flags = block.flags if hasattr(block, 'flags') else block
+        
+        print(f"[DEBUG SM] prepare_before_block: flags={flags}")
+        print(f"[DEBUG SM] stop_service flag = {flags.get('stop_service', False)}")
         
         # Сохраняем текущее состояние сервиса
         status = service.get_status()
         self._service_was_active = status.active
+        print(f"[DEBUG SM] service_was_active = {self._service_was_active}")
         
         # Сохраняем текущую стратегию для возможного восстановления
         ok, msg, current_strategy = config.read_current_strategy(password)
@@ -57,9 +47,13 @@ class ServiceManager:
         
         # Если нужно остановить сервис
         if flags.get('stop_service', False) and self._service_was_active:
+            print(f"[DEBUG SM] Останавливаем сервис...")
             ok_stop, msg_stop = service.stop(password)
+            print(f"[DEBUG SM] stop result: ok={ok_stop}, msg={msg_stop}")
             if not ok_stop:
                 return False, f"Не удалось остановить сервис: {msg_stop}"
+        else:
+            print(f"[DEBUG SM] Пропускаем остановку (stop_service={flags.get('stop_service', False)}, was_active={self._service_was_active})")
         
         return True, "Подготовка завершена"
     
