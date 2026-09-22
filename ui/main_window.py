@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QTabWidget, QGroupBox, QSizePolicy
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QThread
+from PyQt6.QtCore import Qt, pyqtSignal, QThread, QTimer
 from PyQt6.QtGui import QFont
 
 # Импорты ядра
@@ -127,6 +127,11 @@ class MainWindow(QMainWindow):
         # Активный воркер (для предотвращения одновременных операций)
         self._worker = None
         
+        # Таймер независимой проверки статуса сервиса (каждые 2 сек)
+        self._status_timer = QTimer(self)
+        self._status_timer.timeout.connect(self._on_status_timer)
+        self._status_timer.start(2000)
+
         # Начальное состояние — читаем реальный статус
         self.refresh_service_status()
     
@@ -185,6 +190,13 @@ class MainWindow(QMainWindow):
         self.btn_stop.setEnabled(enabled)
         self.btn_restart.setEnabled(enabled)
     
+    def _on_status_timer(self):
+        """Периодическая проверка статуса. Пропускается во время фоновых операций."""
+        if self._worker is not None and self._worker.isRunning():
+            return
+        self.refresh_service_status()
+
+
     def refresh_service_status(self):
         """Читает текущий статус сервиса и обновляет индикатор."""
         try:
