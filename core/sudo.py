@@ -5,6 +5,8 @@ ZapretPass Core - Sudo
 Управление привилегиями: запрос пароля, кэширование, выполнение команд.
 """
 import subprocess
+import threading
+import time
 import shutil
 from typing import Optional, Callable
 
@@ -23,6 +25,7 @@ class SudoManager:
     
     def __init__(self):
         self._password: Optional[str] = None
+        self._keep_alive_thread: Optional[threading.Thread] = None
         self._password_dialog: Optional[Callable[[], Optional[str]]] = None
     
     def set_password_dialog(self, dialog_func: Callable[[], Optional[str]]):
@@ -55,10 +58,33 @@ class SudoManager:
         password = self._password_dialog()
         if password and self._verify_password(password):
             self._password = password
+            self._start_keep_alive()
             return password
         
         return None
     
+    def _start_keep_alive(self):
+        """Запускает фоновый поток для продления кэша sudo."""
+        if self._keep_alive_thread and self._keep_alive_thread.is_alive():
+            return
+        
+        def keep_alive():
+            while self._password:
+                try:
+                    subprocess.run(
+                        ["sudo", "-S", "-v"],
+                        input=self._password + "\n",
+                        capture_output=True,
+                        text=True,
+                        timeout=5
+                    )
+                except Exception:
+                    pass
+                time.sleep(240)  # 4 минуты
+        
+        self._keep_alive_thread = threading.Thread(target=keep_alive, daemon=True)
+        self._keep_alive_thread.start()
+
     def clear_cache(self):
         """Очищает кэш пароля."""
         self._password = None
