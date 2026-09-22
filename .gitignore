@@ -29,3 +29,9 @@ data/
 # Временные файлы передачи контекста
 docs/HANDOFF_RELIABILITY.md
 whitelist.txt
+
+# Local workspace
+Work/
+
+# Runtime logs
+data/logs/
