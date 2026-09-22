@@ -10,7 +10,8 @@ from PyQt6.QtWidgets import (
     QFrame, QSizePolicy, QComboBox, QTextEdit, QRadioButton,
     QButtonGroup
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QThread
+from PyQt6.QtCore import Qt, pyqtSignal, QThread, QTimer, QPoint
+import threading
 from PyQt6.QtGui import QFont, QPalette
 import re
 from typing import Optional
@@ -54,6 +55,7 @@ class BlockcheckWorker(QThread):
         self.settings = settings
         self.password = password
         self._cancelled = False
+        self._cancel_event = threading.Event()
     
     def run(self):
         try:
@@ -64,10 +66,11 @@ class BlockcheckWorker(QThread):
                 settings=self.settings,
                 password=self.password,
                 on_output=self._on_output,
-                fast_mode=(self.settings.mode == "1")
+                fast_mode=(self.settings.mode == "1"),
+                cancel_event=self._cancel_event
             )
-            if not self._cancelled:
-                self.blockcheck_finished.emit(result)
+            # Отправляем результат всегда (включая отмену), чтобы обновить UI
+            self.blockcheck_finished.emit(result)
         except Exception as e:
             if not self._cancelled:
                 self.blockcheck_error.emit(str(e))
@@ -78,6 +81,7 @@ class BlockcheckWorker(QThread):
     
     def cancel(self):
         self._cancelled = True
+        self._cancel_event.set()
 
 
 class SitePassportWidget(QWidget):
@@ -123,6 +127,7 @@ class SitePassportWidget(QWidget):
         self.results_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.results_layout.setSpacing(8)
         
+        self.scroll_area = scroll
         scroll.setWidget(self.results_container)
         main_layout.addWidget(scroll, stretch=1)
         
@@ -139,6 +144,7 @@ class SitePassportWidget(QWidget):
         self._diagnosis_result = None
         self._found_strategy = None
         self._found_strategies = []
+        self._active_block = None
         
         # UI элементы
         self._scenario_box = None
@@ -219,6 +225,10 @@ class SitePassportWidget(QWidget):
     
     def _start_selected_scenario(self):
         """Запускает выбранный сценарий."""
+        # Блокируем ввод
+        self.btn_proceed.setEnabled(False)
+        self.url_input.setEnabled(False)
+        """Запускает выбранный сценарий."""
         from core import scenarios
         
         # Находим выбранный сценарий
@@ -248,6 +258,21 @@ class SitePassportWidget(QWidget):
         # Запускаем первый блок
         self._run_next_block()
     
+
+
+    def _set_active_block(self, box):
+        """Выделяет активный блок, снимает выделение с предыдущего."""
+        # Снимаем выделение с предыдущего активного блока
+        if getattr(self, "_active_block", None) is not None:
+            self._active_block.setStyleSheet("")
+        # Цвет акцента из системной палитры (не хардкодим RGB)
+        accent = self.palette().color(QPalette.ColorRole.Highlight).name()
+        box.setStyleSheet(
+            f"QGroupBox {{ border: 1px solid {accent}; border-radius: 6px; margin-top: 12px; }}"
+            f"QGroupBox::title {{ font-weight: bold; color: {accent}; subcontrol-origin: margin; left: 10px; padding: 0 4px; }}"
+        )
+        self._active_block = box
+
     def _run_next_block(self):
         """Запускает следующий блок сценария."""
         blocks = self.scenario.get_blocks()
@@ -255,6 +280,9 @@ class SitePassportWidget(QWidget):
         if self.current_block_index >= len(blocks):
             self.status_message_requested.emit(
                 f"✅ Сценарий '{self.scenario.name}' завершён", True)
+            # Разблокируем ввод
+            self.btn_proceed.setEnabled(True)
+            self.url_input.setEnabled(True)
             return
         
         block = blocks[self.current_block_index]
@@ -265,6 +293,9 @@ class SitePassportWidget(QWidget):
         layout = QVBoxLayout(box)
         
         self.results_layout.addWidget(box)
+        # Автоскролл к новому блоку
+        QTimer.singleShot(50, lambda b=box: self.scroll_area.ensureWidgetVisible(b))
+        self._set_active_block(box)
         
         # Выполняем блок по типу
         if block.block_type == "diagnosis":
@@ -361,9 +392,10 @@ class SitePassportWidget(QWidget):
             self.status_message_requested.emit(
                 f"❌ {self.domain} недоступен: {verdict.label}", True)
         
-        # Автоматически переходим к следующему блоку через 1.5 сек
-        from PyQt6.QtCore import QTimer
-        QTimer.singleShot(1500, self._run_next_block)
+        # Кнопка перехода к следующему блоку (пошаговое управление)
+        btn_next = QPushButton("Перейти к поиску стратегии →")
+        btn_next.clicked.connect(self._run_next_block)
+        self._diagnosis_result_layout.addWidget(btn_next)
     
     def _on_diagnosis_error(self, error_msg: str):
         if self._diagnosis_worker is not None:
@@ -398,20 +430,27 @@ class SitePassportWidget(QWidget):
         self._blockcheck_output.setStyleSheet("font-family: monospace; font-size: 9pt;")
         layout.addWidget(self._blockcheck_output)
         
+        # Кнопка остановки блокчека
+        self._blockcheck_stop_btn = QPushButton("⏹ Остановить блокчек")
+        self._blockcheck_stop_btn.clicked.connect(self._stop_blockcheck)
+        layout.addWidget(self._blockcheck_stop_btn)
+        
         # Запускаем воркер
         from core import blockcheck, sudo
         password = sudo.manager.get_password()
         
-        # Подготовка перед блоком (остановка сервиса если нужно)
-        class BlockProxy:
-            flags = flags
-        ok_prep, msg_prep = service_manager.manager.prepare_before_block(
-            BlockProxy(), self.domain, password)
-        if not ok_prep:
-            layout.addWidget(QLabel(f"❌ {msg_prep}"))
-            return
+        # Сначала проверяем пароль
         if password is None:
             layout.addWidget(QLabel("❌ Пароль не предоставлен"))
+            return
+        
+        # Подготовка перед блоком (остановка сервиса если нужно)
+        print(f"[DEBUG UI] Вызываем prepare_before_block с паролем")
+        ok_prep, msg_prep = service_manager.manager.prepare_before_block(
+            flags, self.domain, password)
+        print(f"[DEBUG UI] prepare_before_block вернул: ok={ok_prep}, msg={msg_prep}")
+        if not ok_prep:
+            layout.addWidget(QLabel(f"❌ {msg_prep}"))
             return
         
         settings = blockcheck.BlockcheckSettings(
@@ -427,6 +466,15 @@ class SitePassportWidget(QWidget):
             lambda r: self._on_blockcheck_finished(r, flags))
         self._blockcheck_worker.blockcheck_error.connect(self._on_blockcheck_error)
         self._blockcheck_worker.start()
+    
+    def _stop_blockcheck(self):
+        """Останавливает блокчек по запросу пользователя."""
+        if self._blockcheck_worker is not None:
+            self._blockcheck_worker.cancel()
+            self.status_message_requested.emit("⏹ Останавливаю блокчек...", True)
+            if hasattr(self, '_blockcheck_stop_btn'):
+                self._blockcheck_stop_btn.setEnabled(False)
+                self._blockcheck_stop_btn.setText("⏳ Останавливаю...")
     
     def _on_blockcheck_started(self):
         self.status_message_requested.emit(
@@ -449,11 +497,9 @@ class SitePassportWidget(QWidget):
         block_result = {
             'found_strategy': result.strategies[0] if result.strategies else None
         }
-        class BlockProxy:
-            flags = flags
         if password:
             service_manager.manager.cleanup_after_block(
-                BlockProxy(), self.domain, password, block_result)
+                flags, self.domain, password, block_result)
         
         if result.success:
             self._found_strategies = result.strategies
@@ -488,9 +534,13 @@ class SitePassportWidget(QWidget):
             self.status_message_requested.emit(
                 f"❌ Стратегии не найдены: {error_msg}", True)
         
-        # Переходим к следующему блоку
-        from PyQt6.QtCore import QTimer
-        QTimer.singleShot(2000, self._run_next_block)
+        # Отключаем кнопку остановки (блокчек завершён)
+        if hasattr(self, '_blockcheck_stop_btn'):
+            self._blockcheck_stop_btn.setEnabled(False)
+        # Кнопка перехода к следующему блоку (пошаговое управление)
+        btn_next = QPushButton("Перейти к следующему блоку →")
+        btn_next.clicked.connect(self._run_next_block)
+        self.results_layout.addWidget(btn_next)
     
     def _on_blockcheck_error(self, error_msg: str):
         if self._blockcheck_worker is not None:
@@ -569,3 +619,4 @@ class SitePassportWidget(QWidget):
         self._diagnosis_result = None
         self._found_strategy = None
         self._found_strategies = []
+        self._active_block = None
