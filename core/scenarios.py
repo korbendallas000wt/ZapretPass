@@ -113,7 +113,7 @@ class ScenarioRegistry:
                     flags={
                         "stop_service": True,
                         "mode": "fast",
-                        "apply_after": True,
+                        "apply_after": False,
                         "restart_service": True,
                     },
                 ),
