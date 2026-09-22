@@ -6,6 +6,7 @@ ZapretPass Core - Blockcheck
 """
 import subprocess
 import signal
+import threading
 import os
 from dataclasses import dataclass, field
 from typing import Optional, Callable
@@ -104,7 +105,8 @@ def run_blockcheck(
     password: str,
     on_output: Optional[Callable[[str], None]] = None,
     fast_mode: bool = False,
-    timeout: int = 1800  # 30 минут по умолчанию
+    timeout: int = 1800,  # 30 минут по умолчанию
+    cancel_event: Optional[threading.Event] = None
 ) -> BlockcheckResult:
     """Запускает blockcheck.sh и возвращает результат.
     
@@ -185,6 +187,17 @@ def run_blockcheck(
         # Читаем вывод в реальном времени
         try:
             for line in process.stdout:
+                # Проверка отмены пользователем
+                if cancel_event is not None and cancel_event.is_set():
+                    try:
+                        os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+                    except Exception:
+                        pass
+                    return BlockcheckResult(
+                        success=False,
+                        output="".join(output_lines),
+                        error="Блокчек остановлен пользователем"
+                    )
                 output_lines.append(line)
                 
                 if on_output:
