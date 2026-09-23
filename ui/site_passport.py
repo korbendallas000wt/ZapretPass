@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QThread, QTimer, QPoint, QRectF, QPointF
 import threading
-from PyQt6.QtGui import QFont, QPalette, QPainter, QPen, QBrush
+from PyQt6.QtGui import QColor, QFont, QPalette, QPainter, QPen, QBrush
 import re
 from typing import Optional
 
@@ -87,6 +87,13 @@ class BlockcheckWorker(QThread):
 class ScenarioProgressIndicator(QWidget):
     """Горизонтальный индикатор этапов сценария: линия + круглые точки."""
 
+    # Семантические цвета индикатора.
+    # Для этого элемента сознательно отступаем от полностью системной палитры:
+    # состояния должны читаться одинаково в разных темах.
+    COLOR_COMPLETED = QColor("#2ecc71")
+    COLOR_RUNNING = QColor("#3498db")
+    COLOR_ERROR = QColor("#e74c3c")
+
     WAITING = "waiting"
     RUNNING = "running"
     COMPLETED = "completed"
@@ -98,7 +105,7 @@ class ScenarioProgressIndicator(QWidget):
         self.setMouseTracking(True)
         self._items = []
         self._points = []
-        self.setFixedHeight(38)
+        self.setFixedHeight(30)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.set_placeholder(False, False)
 
@@ -174,46 +181,36 @@ class ScenarioProgressIndicator(QWidget):
         }.get(state, state)
 
     def _appearance(self, state: str):
-        """Возвращает (цвет контура, цвет заливки или None, цвет текста, bold)."""
+        """Возвращает (цвет контура, цвет заливки, цвет текста, bold)."""
         pal = self.palette()
+        window = pal.color(QPalette.ColorRole.Window)
 
         if state == self.RUNNING:
-            accent = pal.color(QPalette.ColorRole.Highlight)
-            text = pal.color(QPalette.ColorRole.HighlightedText)
-            return accent, accent, text, True
+            return self.COLOR_RUNNING, self.COLOR_RUNNING, QColor("#ffffff"), True
 
         if state == self.COMPLETED:
-            text = pal.color(QPalette.ColorRole.Text)
-            return text, None, text, False
+            return self.COLOR_COMPLETED, self.COLOR_COMPLETED, QColor("#111111"), False
 
         if state == self.ERROR:
-            bright = pal.color(QPalette.ColorRole.BrightText)
-            base = pal.color(QPalette.ColorRole.Base)
-            return bright, bright, base, True
+            return self.COLOR_ERROR, self.COLOR_ERROR, QColor("#ffffff"), True
 
         if state == self.STOPPED:
-            mid = pal.color(QPalette.ColorRole.Mid)
-            return mid, None, mid, False
+            return self.COLOR_ERROR, self.COLOR_ERROR, QColor("#ffffff"), True
 
         placeholder = pal.color(QPalette.ColorRole.PlaceholderText)
-        return placeholder, None, placeholder, False
+        return placeholder, window, placeholder, False
 
     def _segment_color(self, left_state: str, right_state: str):
-        pal = self.palette()
+        """Цвет соединительной линии.
 
-        if self.ERROR in (left_state, right_state):
-            return pal.color(QPalette.ColorRole.BrightText)
+        Линия несёт только факт пройденного пути:
+        - зелёная, если левая точка уже завершена, а правая ещё не в ожидании;
+        - нейтральная во всех остальных случаях.
+        """
+        if left_state == self.COMPLETED and right_state != self.WAITING:
+            return self.COLOR_COMPLETED
 
-        if self.STOPPED in (left_state, right_state):
-            return pal.color(QPalette.ColorRole.Mid)
-
-        if right_state == self.RUNNING or left_state == self.RUNNING:
-            return pal.color(QPalette.ColorRole.Highlight)
-
-        if left_state == self.COMPLETED:
-            return pal.color(QPalette.ColorRole.Text)
-
-        return pal.color(QPalette.ColorRole.PlaceholderText)
+        return self.palette().color(QPalette.ColorRole.PlaceholderText)
 
     def _point_at(self, pos):
         best = None
@@ -242,8 +239,8 @@ class ScenarioProgressIndicator(QWidget):
         h = float(self.height())
         w = float(self.width())
 
-        r = max(9.0, min(h * 0.42, 18.0))
-        margin = r + 6.0
+        r = max(7.0, min(h * 0.34, 12.0))
+        margin = r + 4.0
         y = h / 2.0
 
         if n == 1:
@@ -253,7 +250,7 @@ class ScenarioProgressIndicator(QWidget):
             step = available / float(n - 1)
             xs = [margin + i * step for i in range(n)]
 
-        line_width = max(2.0, h * 0.08)
+        line_width = max(2.0, h * 0.065)
 
         base_color = self._segment_color(self.WAITING, self.WAITING)
         painter.setPen(QPen(base_color, line_width))
@@ -264,7 +261,7 @@ class ScenarioProgressIndicator(QWidget):
             painter.setPen(QPen(color, line_width))
             painter.drawLine(QPointF(xs[i], y), QPointF(xs[i + 1], y))
 
-        circle_width = max(2.0, h * 0.07)
+        circle_width = max(1.5, h * 0.055)
 
         for i, item in enumerate(self._items):
             state = item[2]
@@ -279,7 +276,7 @@ class ScenarioProgressIndicator(QWidget):
             painter.drawEllipse(QPointF(xs[i], y), r, r)
 
             font = self.font()
-            font.setPixelSize(max(10, int(r * 1.05)))
+            font.setPixelSize(max(9, int(r * 1.0)))
             font.setBold(bold)
             painter.setFont(font)
             painter.setPen(QPen(text_color))
@@ -293,11 +290,8 @@ class ScenarioProgressIndicator(QWidget):
         index = self._point_at(event.position())
 
         if index is not None:
-            name, description, state = self._items[index]
-            lines = [f"{index + 1}. {name}", self._state_label(state)]
-            if description:
-                lines.append(description)
-            QToolTip.showText(event.globalPosition().toPoint(), "\n".join(lines), self)
+            name, _description, _state = self._items[index]
+            QToolTip.showText(event.globalPosition().toPoint(), name, self)
         else:
             QToolTip.hideText()
 
@@ -341,7 +335,7 @@ class SitePassportWidget(QWidget):
         main_layout.addWidget(input_box)
         
         # 1a. Фиксированный индикатор этапов сценария (вне скролла)
-        self.progress_box = QGroupBox("")
+        self.progress_box = QGroupBox("Индикатор прогресса")
         self.progress_layout = QVBoxLayout(self.progress_box)
         self.progress_layout.setContentsMargins(8, 4, 8, 4)
         self.progress_layout.setSpacing(0)
@@ -350,7 +344,6 @@ class SitePassportWidget(QWidget):
         self.progress_layout.addWidget(self.progress_indicator)
         self.progress_indicator.set_placeholder(False, False)
 
-        self.url_input.textChanged.connect(lambda *_: self._update_progress_placeholder())
         main_layout.addWidget(self.progress_box)
         
         # 2. Область результатов (скроллируемая)
@@ -453,11 +446,9 @@ class SitePassportWidget(QWidget):
         btn_start = QPushButton("▶ Начать")
         btn_start.setMinimumHeight(40)
         btn_start.clicked.connect(self._start_selected_scenario)
-        self.scenario_button_group.buttonClicked.connect(lambda *_: self._update_progress_placeholder())
         layout.addWidget(btn_start)
         
         self.results_layout.addWidget(self._scenario_box)
-        self._update_progress_placeholder()
         
         self.status_message_requested.emit(
             f"🎯 Выбор сценария для {self.domain}", False)
@@ -514,25 +505,13 @@ class SitePassportWidget(QWidget):
         self._active_block = box
 
     def _update_progress_placeholder(self):
-        """Обновляет две точки-заглушки до запуска сценария."""
-        if getattr(self, "scenario", None) is not None:
-            return
-
-        domain_ready = bool(self.url_input.text().strip())
-
-        scenario_ready = False
-        group = getattr(self, "scenario_button_group", None)
-        if group is not None:
-            try:
-                scenario_ready = group.checkedButton() is not None
-            except RuntimeError:
-                scenario_ready = False
-
-        self.progress_indicator.set_placeholder(domain_ready, scenario_ready)
+        """Заглушка не реагирует на ввод домена и выбор сценария."""
+        if getattr(self, "scenario", None) is None:
+            self.progress_indicator.set_placeholder(False, False)
 
     def _clear_progress_layout(self):
         """Сбрасывает индикатор в начальное заглушечное состояние."""
-        self.progress_box.setTitle("")
+        self.progress_box.setTitle("Индикатор прогресса")
         self.progress_indicator.set_placeholder(False, False)
 
     def _create_scenario_progress(self, blocks):
@@ -543,7 +522,7 @@ class SitePassportWidget(QWidget):
         if self.scenario is not None:
             title = getattr(self.scenario, "name", "")
 
-        self.progress_box.setTitle(title)
+        self.progress_box.setTitle(title or "Индикатор прогресса")
 
     def _set_progress_running(self, index: int):
         self.progress_indicator.set_running(index)
@@ -555,9 +534,16 @@ class SitePassportWidget(QWidget):
         index = self.current_block_index - 1
         self.progress_indicator.mark_current(index, state)
 
+    def _hide_scenario_transition_buttons(self):
+        """Скрывает кнопки перехода после перехода к следующему блоку."""
+        for btn in self.results_container.findChildren(QPushButton):
+            if btn.property("scenario_transition_button"):
+                btn.hide()
+
     def _run_next_block(self):
         """Запускает следующий блок сценария."""
         blocks = self.scenario.get_blocks()
+        self._hide_scenario_transition_buttons()
         
         if self.current_block_index >= len(blocks):
             self._finish_progress_all()
@@ -679,7 +665,8 @@ class SitePassportWidget(QWidget):
         
         self._mark_current_progress("completed")
         # Кнопка перехода к следующему блоку (пошаговое управление)
-        btn_next = QPushButton("Перейти к поиску стратегии →")
+        btn_next = QPushButton("Далее")
+        btn_next.setProperty("scenario_transition_button", True)
         btn_next.clicked.connect(self._run_next_block)
         self._diagnosis_result_layout.addWidget(btn_next)
     
@@ -731,6 +718,23 @@ class SitePassportWidget(QWidget):
             layout.addWidget(QLabel("❌ Пароль не предоставлен"))
             return
         
+        # Preflight: сторонние DPI-bypass процессы делают блокчек невалидным
+        from core import preflight
+        ok_preflight, msg_preflight = preflight.ensure_no_foreign_dpi_bypass()
+        print(f"[DEBUG UI] preflight вернул: ok={ok_preflight}, msg={msg_preflight}")
+        if not ok_preflight:
+            preflight_label = QLabel(f"❌ {msg_preflight}")
+            preflight_label.setWordWrap(True)
+            layout.addWidget(preflight_label)
+            self._mark_current_progress("error")
+            self.status_message_requested.emit(
+                "❌ Блокчек не запущен: обнаружены сторонние DPI-bypass процессы",
+                True,
+            )
+            self.btn_proceed.setEnabled(True)
+            self.url_input.setEnabled(True)
+            return
+
         # Подготовка перед блоком (остановка сервиса если нужно)
         print(f"[DEBUG UI] Вызываем prepare_before_block с паролем")
         ok_prep, msg_prep = service_manager.manager.prepare_before_block(
@@ -778,6 +782,9 @@ class SitePassportWidget(QWidget):
             self._blockcheck_worker.deleteLater()
         self._blockcheck_worker = None
         self._blockcheck_progress.hide()
+        if getattr(self, "_blockcheck_stop_btn", None) is not None:
+            self._blockcheck_stop_btn.setEnabled(False)
+            self._blockcheck_stop_btn.hide()
         
         # Завершение после блока (применение стратегии, перезапуск сервиса)
         from core import sudo
@@ -828,7 +835,8 @@ class SitePassportWidget(QWidget):
         if hasattr(self, '_blockcheck_stop_btn'):
             self._blockcheck_stop_btn.setEnabled(False)
         # Кнопка перехода к следующему блоку (пошаговое управление)
-        btn_next = QPushButton("Перейти к следующему блоку →")
+        btn_next = QPushButton("Далее")
+        btn_next.setProperty("scenario_transition_button", True)
         btn_next.clicked.connect(self._run_next_block)
         self.results_layout.addWidget(btn_next)
     
@@ -838,6 +846,9 @@ class SitePassportWidget(QWidget):
             self._blockcheck_worker.deleteLater()
         self._blockcheck_worker = None
         self._blockcheck_progress.hide()
+        if getattr(self, "_blockcheck_stop_btn", None) is not None:
+            self._blockcheck_stop_btn.setEnabled(False)
+            self._blockcheck_stop_btn.hide()
         
         status_label = QLabel(f"⚠️ Ошибка блокчека: {error_msg}")
         status_label.setStyleSheet("color: #e74c3c;")
@@ -851,7 +862,8 @@ class SitePassportWidget(QWidget):
         layout.addWidget(QLabel("(блок в разработке — будет подключён к core/sniffer.py)"))
         
         # Заглушка для теста
-        btn_next = QPushButton("Перейти к следующему блоку →")
+        btn_next = QPushButton("Далее")
+        btn_next.setProperty("scenario_transition_button", True)
         btn_next.clicked.connect(self._run_next_block)
         layout.addWidget(btn_next)
     
@@ -860,7 +872,8 @@ class SitePassportWidget(QWidget):
         layout.addWidget(QLabel("🧪 Тестирование стратегий"))
         layout.addWidget(QLabel("(блок в разработке)"))
         
-        btn_next = QPushButton("Перейти к следующему блоку →")
+        btn_next = QPushButton("Далее")
+        btn_next.setProperty("scenario_transition_button", True)
         btn_next.clicked.connect(self._run_next_block)
         layout.addWidget(btn_next)
     
@@ -871,7 +884,8 @@ class SitePassportWidget(QWidget):
         else:
             layout.addWidget(QLabel("🎯 Нечего применять"))
         
-        btn_next = QPushButton("Перейти к следующему блоку →")
+        btn_next = QPushButton("Далее")
+        btn_next.setProperty("scenario_transition_button", True)
         btn_next.clicked.connect(self._run_next_block)
         layout.addWidget(btn_next)
     

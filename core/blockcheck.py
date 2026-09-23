@@ -7,6 +7,8 @@ ZapretPass Core - Blockcheck
 import subprocess
 import signal
 import threading
+
+from core import process_registry
 import os
 from dataclasses import dataclass, field
 from typing import Optional, Callable
@@ -99,6 +101,80 @@ def detect_first_success(output_lines: list[str]) -> Optional[str]:
     return None
 
 
+def _get_pgid(process) -> int:
+    try:
+        return os.getpgid(process.pid)
+    except Exception:
+        return process.pid
+
+
+def _kill_process_group(pgid: int, sig: int, password: str = "") -> bool:
+    """Убивает группу процессов; при нехватке прав пытается использовать sudo."""
+    try:
+        os.killpg(pgid, sig)
+        return True
+    except PermissionError:
+        pass
+    except Exception:
+        return False
+
+    try:
+        result = subprocess.run(
+            ["sudo", "-n", "/bin/kill", f"-{sig}", f"-{pgid}"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            check=False,
+        )
+        if result.returncode == 0:
+            return True
+    except Exception:
+        pass
+
+    if not password:
+        return False
+
+    try:
+        result = subprocess.run(
+            ["sudo", "-S", "/bin/kill", f"-{sig}", f"-{pgid}"],
+            input=(password + "\n").encode(),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            check=False,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def _cancel_watchdog(process, cancel_event, password: str, grace_seconds: float = 3.0):
+    """Убивает блокчек по cancel_event, даже если чтение stdout заблокировано."""
+    import time
+
+    while not cancel_event.is_set():
+        if process.poll() is not None:
+            return
+        time.sleep(0.2)
+
+    pgid = _get_pgid(process)
+    _kill_process_group(pgid, signal.SIGTERM, password)
+
+    try:
+        process.wait(timeout=grace_seconds)
+    except subprocess.TimeoutExpired:
+        _kill_process_group(pgid, signal.SIGKILL, password)
+        try:
+            process.wait(timeout=2.0)
+        except Exception:
+            pass
+    finally:
+        try:
+            process_registry.unregister(process.pid)
+        except Exception:
+            pass
+
+
 def run_blockcheck(
     domain: str,
     settings: BlockcheckSettings,
@@ -127,6 +203,9 @@ def run_blockcheck(
             error="Пароль не предоставлен"
         )
     
+    if cancel_event is None:
+        cancel_event = threading.Event()
+
     # Формируем команду запуска
     force_prefix = "SCANLEVEL=force " if settings.force else ""
     shell_cmd = f"cd {config.ZAPRET_DIR} && {force_prefix}./blockcheck.sh {domain}"
@@ -156,6 +235,24 @@ def run_blockcheck(
             preexec_fn=os.setsid  # для корректного завершения группы процессов
         )
         
+        try:
+            process_registry.register(
+                pid=process.pid,
+                pgid=_get_pgid(process),
+                kind="blockcheck",
+                cmdline=" ".join(cmd),
+            )
+        except Exception:
+            pass
+
+        watchdog = threading.Thread(
+            target=_cancel_watchdog,
+            args=(process, cancel_event, password),
+            kwargs={"grace_seconds": 3.0},
+            daemon=True,
+        )
+        watchdog.start()
+
         # Сначала отправляем пароль для sudo -S
         import time
         try:
@@ -189,8 +286,9 @@ def run_blockcheck(
             for line in process.stdout:
                 # Проверка отмены пользователем
                 if cancel_event is not None and cancel_event.is_set():
+                    _kill_process_group(_get_pgid(process), signal.SIGTERM, password)
                     try:
-                        os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+                        process_registry.unregister(process.pid)
                     except Exception:
                         pass
                     return BlockcheckResult(
@@ -209,18 +307,27 @@ def run_blockcheck(
                     if detected:
                         first_success = detected
                         # Прерываем процесс через SIGINT (Ctrl+C)
-                        try:
-                            os.killpg(os.getpgid(process.pid), signal.SIGINT)
-                        except Exception:
-                            pass
+                        _kill_process_group(_get_pgid(process), signal.SIGINT, password)
                         break
             
             # Ждём завершения процесса
             try:
                 process.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
                 try:
-                    os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+                    process_registry.unregister(process.pid)
+                except Exception:
+                    pass
+                if cancel_event is not None and cancel_event.is_set():
+                    return BlockcheckResult(
+                        success=False,
+                        first_success=first_success,
+                        output="".join(output_lines),
+                        error="Блокчек остановлен пользователем"
+                    )
+            except subprocess.TimeoutExpired:
+                _kill_process_group(_get_pgid(process), signal.SIGTERM, password)
+                try:
+                    process_registry.unregister(process.pid)
                 except Exception:
                     pass
                 return BlockcheckResult(
@@ -231,6 +338,13 @@ def run_blockcheck(
                 )
         
         except Exception as e:
+            if cancel_event is not None and cancel_event.is_set():
+                return BlockcheckResult(
+                    success=False,
+                    first_success=first_success,
+                    output="".join(output_lines),
+                    error="Блокчек остановлен пользователем"
+                )
             return BlockcheckResult(
                 success=False,
                 first_success=first_success,
