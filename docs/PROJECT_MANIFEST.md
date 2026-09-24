@@ -4,12 +4,15 @@
 
 ## Архитектура
 
-Приложение разделено на два слоя:
+Приложение разделено на три слоя:
 
 1. core/ — ядро, бизнес-логика без привязки к UI
-2. ui/ — Qt6-интерфейс (в разработке)
+2. core/scenarios.py — Workflow Engine, описание сценариев как данных (не импортирует Qt)
+3. ui/ — Qt6-интерфейс, исполняет сценарии через блоки
 
-Принцип: ни один модуль core/ не импортирует Qt. Это позволяет тестировать логику отдельно и менять интерфейс без переписывания ядра.
+Принцип: ни один модуль core/ не импортирует Qt. Сценарии описываются декларативно (ScenarioBlock + flags), UI интерпретирует их. Это позволяет тестировать логику отдельно и менять интерфейс без переписывания ядра.
+
+Точка входа: zapretpass.py — single-instance lock, инициализация логирования, подключение диалога пароля, запуск MainWindow.
 
 ## Карта модулей ядра
 
@@ -79,6 +82,38 @@ core/checker.py — Проверка доступности сайтов
 - check_multiple(domains, timeout, ipv4, on_result) — проверка списка доменов
 - classify(result) — классификация результата (ok/partial/blocked/unknown)
 
+core/scenarios.py — Workflow Engine (сценарии визарда)
+- ScenarioBlock — dataclass: block_type (diagnosis/blockcheck/sniffer/test/apply/save), flags, name, description
+- Scenario — dataclass: id, name, description, icon, blocks[]
+- ScenarioRegistry — реестр сценариев, предопределённые: fix, expand, deep, quick
+- registry — глобальный экземпляр ScenarioRegistry
+- Флаги блоков: stop_service, apply_after, restart_service, backup_config, restore_config, mode, use_current_strategy
+
+core/service_manager.py — Менеджер сервиса для блоков сценариев
+- ServiceManager — подготовка перед блоком (бэкап, остановка), завершение после блока (применение, перезапуск)
+- prepare_before_block(block, domain, password) — анализ флагов, сохранение контекста
+- cleanup_after_block(block, domain, password, result) — применение стратегии, рестарт по флагам
+- manager — глобальный экземпляр ServiceManager
+
+core/preflight.py — Предстартовые проверки окружения
+- DpiBypassProcess — dataclass: pid, ppid, user, comm, cmdline, cgroup, service_managed
+- list_dpi_bypass_processes() — поиск nfqws/tpws/blockcheck.sh через /proc
+- foreign_dpi_bypass_processes() — процессы вне zapret.service
+- ensure_no_foreign_dpi_bypass() — проверка перед блокчеком
+- ensure_no_dpi_bypass_processes() — полная проверка
+
+core/process_registry.py — Реестр процессов обхода DPI
+- _cached_sudo_password() — получение кэшированного пароля из SudoManager без диалога
+- _kill_group(pgid, sig, password) — убийство группы процессов с fallback (os.killpg → sudo -n → sudo -S)
+- cleanup_stale() — очистка процессов от предыдущих запусков
+- terminate_all() — завершение всех зарегистрированных процессов при выходе
+
+core/logger.py — Централизованное логирование
+- setup_logging(level, debug_mode) — настройка: основной лог + debug-лог + консоль
+- get_logger(name) — получение логгера для модуля
+- Ротация: 5 МБ, 3 бэкапа
+- Файлы: data/logs/zapretpass.log, data/logs/zapretpass_debug.log
+
 
 ---
 
@@ -119,6 +154,19 @@ strategies может быть списком списков (для совме�
 
 ### data/sniffer_results/{domain}.txt — результаты сниффинга
 Текстовый файл с заголовком "# SNI Results for: {target_domain}" и списком найденных базовых доменов, по одному на строку.
+
+### data/sites/{domain}.json — паспорт сайта
+```json
+{
+  "domain": "youtube.com",
+  "auxiliary_domains": ["googlevideo.com", "ytimg.com"],
+  "strategy": "nfqws --dpi-desync=fake,multidisorder",
+  "status": "working",
+  "last_check": "2026-09-23T14:30:00",
+  "scenario_used": "fix"
+}
+```
+Хранит результат работы визарда «Паспорт сайта»: основной домен, вспомогательные домены, рабочую стратегию, статус и последний сценарий.
 
 ---
 
@@ -235,6 +283,43 @@ tshark+curl не воспроизводят цепочку запросов бр
 - timeout: 8 секунд
 - ipv4: True
 - user_agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36
+
+---
+
+## Интерфейс (ui/)
+
+Qt6-интерфейс на PyQt6. Точка входа: zapretpass.py.
+
+### zapretpass.py — точка входа
+- Single-instance lock через QLockFile
+- process_registry.cleanup_stale() при старте
+- process_registry.terminate_all() при выходе
+- Подключение password_dialog к sudo.manager.set_password_dialog()
+
+### ui/main_window.py — главное окно
+- MainWindow(QMainWindow) — 3 вкладки + нижняя панель управления
+- Вкладка 1: 📋 Паспорт сайта (SitePassportWidget)
+- Вкладка 2: 🌐 Мои сайты (заглушка)
+- Вкладка 3: ⚙️ Дополнительно (заглушка)
+- Нижняя панель: строка статуса + индикатор (светофор) + кнопки Старт/Стоп/Рестарт
+- ServiceWorker(QThread) — фоновые операции с сервисом
+- Таймер проверки статуса каждые 2 секунды (пропускается во время операций)
+
+### ui/site_passport.py — визард «Паспорт сайта»
+- SitePassportWidget(QWidget) — исполнение сценариев из core.scenarios
+- ScenarioProgressIndicator — горизонтальный индикатор этапов (линия + круглые точки)
+- DiagnosisWorker(QThread) — фоновая проверка доступности через core.checker
+- BlockcheckWorker(QThread) — фоновый blockcheck с возможностью отмены
+- Пошаговое управление: кнопка «Далее» после каждого блока
+- Preflight-проверка перед блокчеком (ensure_no_foreign_dpi_bypass)
+- Интеграция с service_manager для подготовки/завершения блоков
+
+### ui/password_dialog.py — диалог пароля
+- get_password_from_user() — кроссплатформенный запрос пароля (kdialog/QInputDialog)
+- Подключается к sudo.manager.set_password_dialog() в точке входа
+
+### ui/service_controller.py — контроллер сервиса
+- Независимый таймер проверки статуса для UI-компонентов
 
 ---
 
