@@ -7,7 +7,7 @@ ZapretPass Core - Blockcheck
 import subprocess
 import signal
 import threading
-
+import time
 from core import process_registry
 import os
 from dataclasses import dataclass, field
@@ -101,15 +101,58 @@ def detect_first_success(output_lines: list[str]) -> Optional[str]:
     return None
 
 
-def _get_pgid(process) -> int:
+def _proc_state_and_starttime(pid: int) -> tuple[Optional[str], Optional[str]]:
+    """Возвращает state и starttime процесса из /proc/PID/stat."""
+    if pid is None or pid <= 0:
+        return None, None
+
+    try:
+        with open(f"/proc/{pid}/stat", "r", encoding="utf-8", errors="ignore") as f:
+            stat = f.read()
+    except OSError:
+        return None, None
+
+    close = stat.rfind(")")
+    if close == -1:
+        return None, None
+
+    fields = stat[close + 1:].split()
+    if len(fields) < 20:
+        return None, None
+
+    # После comm: state=0, ppid=1, pgrp=2, ..., starttime=19.
+    return fields[0], fields[19]
+
+
+def _pid_alive(pid: int, expected_start_time: Optional[str] = None) -> bool:
+    """Возвращает True, если PID жив и совпадает с ожидаемым starttime."""
+    state, start_time = _proc_state_and_starttime(pid)
+    if state is None:
+        return False
+    if state in ("Z", "X"):
+        return False
+    if expected_start_time is not None and start_time != expected_start_time:
+        return False
+    return True
+
+
+def _is_process_alive(process, expected_start_time: Optional[str] = None) -> bool:
+    return process is not None and _pid_alive(process.pid, expected_start_time)
+
+
+def _get_pgid(process, expected_start_time: Optional[str] = None) -> Optional[int]:
+    if not _is_process_alive(process, expected_start_time):
+        return None
     try:
         return os.getpgid(process.pid)
     except Exception:
-        return process.pid
+        return None
 
 
-def _kill_process_group(pgid: int, sig: int, password: str = "") -> bool:
+def _kill_process_group(pgid: Optional[int], sig: int, password: str = "") -> bool:
     """Убивает группу процессов; при нехватке прав пытается использовать sudo."""
+    if pgid is None:
+        return False
     try:
         os.killpg(pgid, sig)
         return True
@@ -148,31 +191,97 @@ def _kill_process_group(pgid: int, sig: int, password: str = "") -> bool:
         return False
 
 
-def _cancel_watchdog(process, cancel_event, password: str, grace_seconds: float = 3.0):
-    """Убивает блокчек по cancel_event, даже если чтение stdout заблокировано."""
-    import time
-
-    while not cancel_event.is_set():
-        if process.poll() is not None:
-            return
-        time.sleep(0.2)
-
-    pgid = _get_pgid(process)
-    _kill_process_group(pgid, signal.SIGTERM, password)
-
+def _unregister_process(process) -> None:
+    if process is None:
+        return
     try:
-        process.wait(timeout=grace_seconds)
-    except subprocess.TimeoutExpired:
-        _kill_process_group(pgid, signal.SIGKILL, password)
-        try:
-            process.wait(timeout=2.0)
-        except Exception:
-            pass
-    finally:
-        try:
-            process_registry.unregister(process.pid)
-        except Exception:
-            pass
+        process_registry.unregister(process.pid)
+    except Exception:
+        pass
+
+
+def _terminate_process_group_gracefully(
+    process,
+    password: str,
+    first_signal: int = signal.SIGTERM,
+    grace_seconds: float = 3.0,
+    expected_start_time: Optional[str] = None,
+) -> bool:
+    """Останавливает группу процессов: first_signal -> SIGTERM -> SIGKILL.
+
+    Не использует process.wait(), чтобы не конкурировать с основным потоком.
+    Проверка живости привязана к starttime, чтобы не тронуть переиспользованный PID.
+    """
+    if not _is_process_alive(process, expected_start_time):
+        _unregister_process(process)
+        return True
+
+    _kill_process_group(_get_pgid(process, expected_start_time), first_signal, password)
+
+    # После SIGINT даём короткий шанс, после SIGTERM — полный grace.
+    wait_seconds = 1.0 if first_signal == signal.SIGINT else grace_seconds
+    deadline = time.monotonic() + wait_seconds
+    while time.monotonic() < deadline and _is_process_alive(process, expected_start_time):
+        time.sleep(0.1)
+
+    if _is_process_alive(process, expected_start_time) and first_signal == signal.SIGINT:
+        _kill_process_group(_get_pgid(process, expected_start_time), signal.SIGTERM, password)
+        deadline = time.monotonic() + grace_seconds
+        while time.monotonic() < deadline and _is_process_alive(process, expected_start_time):
+            time.sleep(0.1)
+
+    if _is_process_alive(process, expected_start_time):
+        _kill_process_group(_get_pgid(process, expected_start_time), signal.SIGKILL, password)
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and _is_process_alive(process, expected_start_time):
+            time.sleep(0.1)
+
+    _unregister_process(process)
+    return not _is_process_alive(process, expected_start_time)
+
+
+def _termination_watchdog(
+    process,
+    cancel_event: Optional[threading.Event],
+    timeout_event: Optional[threading.Event],
+    fast_stop_event: Optional[threading.Event],
+    password: str,
+    grace_seconds: float = 3.0,
+    timeout_seconds: Optional[float] = None,
+    expected_start_time: Optional[str] = None,
+) -> None:
+    """Независимо от stdout следит за отменой, таймаутом и fast-stop."""
+    if process is None:
+        return
+
+    deadline = None if timeout_seconds is None else time.monotonic() + float(timeout_seconds)
+
+    while True:
+        if not _is_process_alive(process, expected_start_time):
+            _unregister_process(process)
+            return
+
+        if cancel_event is not None and cancel_event.is_set():
+            _terminate_process_group_gracefully(
+                process, password, signal.SIGTERM, grace_seconds, expected_start_time
+            )
+            return
+
+        if fast_stop_event is not None and fast_stop_event.is_set():
+            _terminate_process_group_gracefully(
+                process, password, signal.SIGINT, grace_seconds, expected_start_time
+            )
+            return
+
+        if deadline is not None and time.monotonic() >= deadline:
+            if timeout_event is not None:
+                timeout_event.set()
+            _terminate_process_group_gracefully(
+                process, password, signal.SIGTERM, grace_seconds, expected_start_time
+            )
+            return
+
+        time.sleep(0.2)
 
 
 def run_blockcheck(
@@ -205,6 +314,8 @@ def run_blockcheck(
     
     if cancel_event is None:
         cancel_event = threading.Event()
+    timeout_event = threading.Event()
+    fast_stop_event = threading.Event()
 
     # Формируем команду запуска
     force_prefix = "SCANLEVEL=force " if settings.force else ""
@@ -224,6 +335,10 @@ def run_blockcheck(
         settings.mode,
     ]
     
+    output_lines = []
+    first_success = None
+    process = None
+    expected_start_time = None
     try:
         process = subprocess.Popen(
             cmd,
@@ -236,25 +351,35 @@ def run_blockcheck(
         )
         
         try:
-            process_registry.register(
-                pid=process.pid,
-                pgid=_get_pgid(process),
-                kind="blockcheck",
-                cmdline=" ".join(cmd),
-            )
+            expected_start_time = process_registry._proc_start_time(process.pid)
+        except Exception:
+            expected_start_time = None
+
+        try:
+            pgid = _get_pgid(process, expected_start_time)
+            if pgid is not None:
+                process_registry.register(
+                    pid=process.pid,
+                    pgid=pgid,
+                    kind="blockcheck",
+                    cmdline=" ".join(cmd),
+                )
         except Exception:
             pass
 
         watchdog = threading.Thread(
-            target=_cancel_watchdog,
-            args=(process, cancel_event, password),
-            kwargs={"grace_seconds": 3.0},
+            target=_termination_watchdog,
+            args=(process, cancel_event, timeout_event, fast_stop_event, password),
+            kwargs={
+                "grace_seconds": 3.0,
+                "timeout_seconds": timeout,
+                "expected_start_time": expected_start_time,
+            },
             daemon=True,
         )
         watchdog.start()
 
         # Сначала отправляем пароль для sudo -S
-        import time
         try:
             process.stdin.write(password + "\n")
             process.stdin.flush()
@@ -278,24 +403,14 @@ def run_blockcheck(
         except Exception:
             pass  # Процесс мог завершиться раньше
         
-        output_lines = []
-        first_success = None
-        
+        # output_lines и first_success уже инициализированы до Popen
+
         # Читаем вывод в реальном времени
         try:
             for line in process.stdout:
-                # Проверка отмены пользователем
-                if cancel_event is not None and cancel_event.is_set():
-                    _kill_process_group(_get_pgid(process), signal.SIGTERM, password)
-                    try:
-                        process_registry.unregister(process.pid)
-                    except Exception:
-                        pass
-                    return BlockcheckResult(
-                        success=False,
-                        output="".join(output_lines),
-                        error="Блокчек остановлен пользователем"
-                    )
+                # Отмена/таймаут обрабатывает watchdog; здесь только выходим из чтения.
+                if (cancel_event is not None and cancel_event.is_set()) or timeout_event.is_set():
+                    break
                 output_lines.append(line)
                 
                 if on_output:
@@ -306,38 +421,34 @@ def run_blockcheck(
                     detected = detect_first_success(output_lines)
                     if detected:
                         first_success = detected
-                        # Прерываем процесс через SIGINT (Ctrl+C)
-                        _kill_process_group(_get_pgid(process), signal.SIGINT, password)
+                        # Останавливаем блокчек через watchdog: SIGINT -> SIGTERM -> SIGKILL.
+                        fast_stop_event.set()
                         break
             
-            # Ждём завершения процесса
+            # Дожидаемся завершения. Жёсткий таймаут, пользовательская отмена и fast-stop
+            # обрабатываются watchdog-потоком независимо от stdout.
             try:
-                process.wait(timeout=timeout)
-                try:
-                    process_registry.unregister(process.pid)
-                except Exception:
-                    pass
-                if cancel_event is not None and cancel_event.is_set():
-                    return BlockcheckResult(
-                        success=False,
-                        first_success=first_success,
-                        output="".join(output_lines),
-                        error="Блокчек остановлен пользователем"
-                    )
+                process.wait(timeout=10)
             except subprocess.TimeoutExpired:
-                _kill_process_group(_get_pgid(process), signal.SIGTERM, password)
+                # Страховка на случай, если watchdog по какой-то причине не добил процесс.
+                _terminate_process_group_gracefully(
+                    process, password, signal.SIGTERM, 3.0, expected_start_time
+                )
                 try:
-                    process_registry.unregister(process.pid)
+                    process.wait(timeout=3)
                 except Exception:
                     pass
+            finally:
+                _unregister_process(process)
+
+            if timeout_event.is_set():
                 return BlockcheckResult(
                     success=False,
                     first_success=first_success,
                     output="".join(output_lines),
                     error=f"Таймаут ({timeout} сек)"
                 )
-        
-        except Exception as e:
+
             if cancel_event is not None and cancel_event.is_set():
                 return BlockcheckResult(
                     success=False,
@@ -345,6 +456,40 @@ def run_blockcheck(
                     output="".join(output_lines),
                     error="Блокчек остановлен пользователем"
                 )
+        
+        except Exception as e:
+            # При сбое чтения/парсинга всё равно пытаемся корректно остановить owned-процессы.
+            if process is not None:
+                try:
+                    if fast_stop_event.is_set():
+                        _terminate_process_group_gracefully(
+                            process, password, signal.SIGINT, 3.0, expected_start_time
+                        )
+                    else:
+                        _terminate_process_group_gracefully(
+                            process, password, signal.SIGTERM, 3.0, expected_start_time
+                        )
+                except Exception:
+                    pass
+                finally:
+                    _unregister_process(process)
+
+            if process is not None and timeout_event.is_set():
+                return BlockcheckResult(
+                    success=False,
+                    first_success=first_success,
+                    output="".join(output_lines),
+                    error=f"Таймаут ({timeout} сек)"
+                )
+
+            if process is not None and cancel_event is not None and cancel_event.is_set():
+                return BlockcheckResult(
+                    success=False,
+                    first_success=first_success,
+                    output="".join(output_lines),
+                    error="Блокчек остановлен пользователем"
+                )
+
             return BlockcheckResult(
                 success=False,
                 first_success=first_success,
