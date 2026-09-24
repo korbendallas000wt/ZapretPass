@@ -6,12 +6,92 @@ ZapretPass Core - Applier
 
 Все операции требуют пароль sudo.
 """
+import re
 import shutil
+import glob
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from . import config
 
+# Импортируем функции управления конфигом
+from .config import (
+    backup_config, cleanup_old_backups, list_backups,
+    restore_backup, restore_from_backup, _sudo_cp, _filter_sudo_stderr
+)
+
+
+
+# ============================================================================
+# ВАЛИДАЦИЯ СТРАТЕГИЙ
+# ============================================================================
+
+def validate_strategy(strategy: str) -> tuple[bool, str]:
+    """Проверяет корректность стратегии перед записью.
+    
+    Args:
+        strategy: строка стратегии (nfqws/tpws с параметрами).
+        
+    Returns:
+        (валидна, сообщение_об_ошибке).
+    """
+    if not strategy or not strategy.strip():
+        return False, "Стратегия пустая"
+    
+    strategy_stripped = strategy.strip()
+    
+    # Проверка префикса
+    if not (strategy_stripped.startswith("nfqws") or strategy_stripped.startswith("tpws")):
+        return False, f"Стратегия должна начинаться с nfqws или tpws, получено: {strategy_stripped[:30]}"
+    
+    # Определяем тип
+    is_nfqws = strategy_stripped.startswith("nfqws")
+    params_part = strategy_stripped[5:].strip() if is_nfqws else strategy_stripped[4:].strip()
+    
+    if not params_part:
+        return False, f"Стратегия {strategy_stripped.split()[0]} не содержит параметров"
+    
+    # Проверка потерянных запятых (например, "fake multisplit" вместо "fake,multisplit")
+    # Ищем паттерн: --dpi-desync=word1 word2 (пробел вместо запятой между значениями)
+    desync_match = re.search(r'--dpi-desync=(\S+)\s+(\S+)', params_part)
+    if desync_match:
+        # Проверяем, не является ли второе слово другим параметром
+        word1, word2 = desync_match.groups()
+        if not word2.startswith('--'):
+            return False, f"Возможная потерянная запятая в --dpi-desync={word1} {word2} (должно быть {word1},{word2})"
+    
+    # Проверка незакрытых кавычек
+    quote_count = params_part.count('"')
+    if quote_count % 2 != 0:
+        return False, "Непарное количество кавычек в стратегии"
+    
+    # Проверка обязательных параметров
+    if is_nfqws:
+        # Для nfqws обязательно наличие --dpi-desync (основной параметр обхода)
+        if '--dpi-desync=' not in params_part:
+            return False, "nfqws стратегия должна содержать --dpi-desync= (параметр обхода)"
+        
+        # Проверяем, что --dpi-desync содержит валидные значения
+        desync_values_match = re.search(r'--dpi-desync=([^\s]+)', params_part)
+        if desync_values_match:
+            values = desync_values_match.group(1).split(',')
+            valid_values = {'fake', 'multisplit', 'multidisorder', 'disorder', 'fooling', 'syndata'}
+            for val in values:
+                # Значения могут быть в формате fake,fooling=md5sig
+                base_val = val.split('=')[0]
+                if base_val not in valid_values:
+                    return False, f"Невалидное значение --dpi-desync: {base_val} (допустимы: {', '.join(sorted(valid_values))})"
+    else:
+        # Для tpws должно быть --hostcase или --disorder или другие параметры
+        if '--hostcase' not in params_part and '--disorder' not in params_part and '--hostdot' not in params_part:
+            return False, "tpws стратегия должна содержать --hostcase, --disorder или --hostdot"
+    
+    # Проверка на опасные символы (защита от инъекций)
+    if any(char in params_part for char in [';', '|', '`', '$(']):
+        return False, "Стратегия содержит опасные символы: ; | ` $("
+    
+    return True, "Стратегия валидна"
 
 # ============================================================================
 # ПРИМЕНЕНИЕ WHITELIST
@@ -33,7 +113,7 @@ def apply_whitelist(password: str) -> tuple[bool, str]:
     if not content.strip():
         return False, "❌ Белый список пуст"
     
-    return _sudo_cp(
+    return config._sudo_cp(
         str(config.WHITELIST_FILE),
         str(config.IPSET_USER),
         password,
@@ -66,9 +146,9 @@ def apply_mode(mode: str, password: str) -> tuple[bool, str]:
         return False, f"❌ Шаблон конфига не найден: {src.name}"
     
     # Бэкап текущего конфига перед заменой
-    _backup_config(password)
+    config.backup_config(password)
     
-    return _sudo_cp(
+    return config._sudo_cp(
         str(src),
         str(config.CONFIG_FILE),
         password,
@@ -93,19 +173,17 @@ def apply_strategy(strategy: str, password: str) -> tuple[bool, str]:
     Returns:
         (успех, сообщение).
     """
-    if not strategy:
-        return False, "❌ Пустая стратегия"
+    # Валидация стратегии перед записью
+    is_valid, validation_msg = validate_strategy(strategy)
+    if not is_valid:
+        return False, f"❌ Валидация не пройдена: {validation_msg}"
     
-    # Валидация: стратегия должна начинаться с nfqws или tpws
+    # Убираем префикс для записи в конфиг
     strategy_stripped = strategy.strip()
-    if not (strategy_stripped.startswith("nfqws") or strategy_stripped.startswith("tpws")):
-        return False, f"❌ Некорректный формат стратегии: {strategy[:50]}"
-    
-    # Убираем префикс
     params = strategy_stripped.replace("nfqws ", "").replace("tpws ", "").strip()
     
     # Бэкап перед модификацией
-    ok_backup, msg_backup = _backup_config(password)
+    ok_backup, msg_backup = config.backup_config(password)
     if not ok_backup:
         return False, f"❌ Не удалось сделать бэкап: {msg_backup}"
     
@@ -144,7 +222,7 @@ def apply_strategy(strategy: str, password: str) -> tuple[bool, str]:
         if process.returncode == 0:
             return True, f"✅ Стратегия применена ({var_name})"
         
-        error_msg = _filter_sudo_stderr(stderr)
+        error_msg = config._filter_sudo_stderr(stderr)
         return False, f"❌ Не удалось записать стратегию: {error_msg}"
     
     except Exception as e:
@@ -159,8 +237,10 @@ def apply_all(
     mode: str,
     strategy: Optional[str],
     password: str,
-    restart_service: bool = True
-) -> tuple[bool, str, list[str]]:
+    restart_service: bool = True,
+    verify: bool = False,
+    test_domains: Optional[list[str]] = None
+) -> tuple[bool, str, list[str], Optional[tuple[bool, str]], Optional[tuple[bool, str, list]]]:
     """Применяет все настройки: режим, whitelist (для whitelist-режима), стратегию.
     
     Args:
@@ -170,7 +250,7 @@ def apply_all(
         restart_service: нужно ли перезапускать сервис после применения.
         
     Returns:
-        (успех, итоговое_сообщение, список_шагов).
+        (успех, итоговое_сообщение, список_шагов, верификация, smoke_тест).
     """
     steps = []
     success = True
@@ -179,14 +259,14 @@ def apply_all(
     ok, msg = apply_mode(mode, password)
     steps.append(f"[1/3] Режим: {msg}")
     if not ok:
-        return False, msg, steps
+        return False, msg, steps, None, None
     
     # 2. Для whitelist-режима — обновляем whitelist
     if mode == "whitelist":
         ok, msg = apply_whitelist(password)
         steps.append(f"[2/3] Whitelist: {msg}")
         if not ok:
-            return False, msg, steps
+            return False, msg, steps, None, None
     else:
         steps.append("[2/3] Whitelist: пропущен (режим global)")
     
@@ -195,7 +275,7 @@ def apply_all(
         ok, msg = apply_strategy(strategy, password)
         steps.append(f"[3/3] Стратегия: {msg}")
         if not ok:
-            return False, msg, steps
+            return False, msg, steps, None, None
     else:
         steps.append("[3/3] Стратегия: не задана, пропущена")
     
@@ -205,81 +285,29 @@ def apply_all(
         ok, msg = service.restart(password)
         steps.append(f"[рестарт] {msg}")
         if not ok:
-            return False, msg, steps
+            return False, msg, steps, None, None
     
-    return True, "✅ Все настройки применены", steps
-
-
-# ============================================================================
-# ВНУТРЕННИЕ ФУНКЦИИ
-# ============================================================================
-
-def _backup_config(password: str) -> tuple[bool, str]:
-    """Делает бэкап текущего конфига в config.backup."""
-    if not config.CONFIG_FILE.exists():
-        return False, "Конфиг не существует"
-    
-    try:
-        ok, stdout, stderr = _sudo_cp(
-            str(config.CONFIG_FILE),
-            str(config.CONFIG_BACKUP),
-            password,
-            success_msg="Бэкап создан"
-        )
-        return ok, stderr if not ok else "OK"
-    except Exception as e:
-        return False, str(e)
-
-
-def _sudo_cp(src: str, dst: str, password: str, success_msg: str) -> tuple[bool, str]:
-    """Выполняет sudo cp src dst."""
-    if not password:
-        return False, "Пароль не предоставлен"
-    
-    try:
-        import subprocess
-        process = subprocess.Popen(
-            ['sudo', '-S', 'cp', src, dst],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-        stdout, stderr = process.communicate(input=password + "\n", timeout=30)
+    # 5. Верификация применения (если запрошена)
+    verification_result = None
+    if verify:
+        ver_ok, ver_msg = verify_after_apply(password)
+        steps.append(f"[верификация] {ver_msg}")
+        verification_result = (ver_ok, ver_msg)
         
-        if process.returncode == 0:
-            return True, success_msg
+        if not ver_ok:
+            # Верификация не прошла — это проблема, но конфиг уже применён
+            return False, f"⚠️ Применение завершено, но верификация не удалась: {ver_msg}", steps, verification_result, None
+    
+    # 6. Smoke-тест доступности (если переданы домены)
+    smoke_test_result = None
+    if test_domains:
+        smoke_ok, smoke_msg, smoke_results = smoke_test_sites(test_domains, password)
+        steps.append(f"[smoke-тест] {smoke_msg}")
+        smoke_test_result = (smoke_ok, smoke_msg, smoke_results)
         
-        error_msg = _filter_sudo_stderr(stderr)
-        return False, error_msg
+        if not smoke_ok:
+            # Smoke-тест провален — предлагаем откат
+            return False, f"⚠️ Стратегия применена, но smoke-тест не удался: {smoke_msg}. Рекомендуется откат.", steps, verification_result, smoke_test_result
     
-    except Exception as e:
-        return False, str(e)
+    return True, "✅ Все настройки применены", steps, verification_result, smoke_test_result
 
-
-def _filter_sudo_stderr(stderr: str) -> str:
-    """Фильтрует служебные строки sudo из stderr."""
-    if not stderr:
-        return "Неизвестная ошибка"
-    
-    filtered = []
-    for line in stderr.splitlines():
-        if "[sudo]" in line or "password for" in line.lower():
-            continue
-        if line.strip():
-            filtered.append(line.strip())
-    
-    return "\n".join(filtered) if filtered else "Неизвестная ошибка"
-
-
-def restore_from_backup(password: str) -> tuple[bool, str]:
-    """Восстанавливает конфиг из бэкапа (откат)."""
-    if not config.CONFIG_BACKUP.exists():
-        return False, "❌ Бэкап не найден"
-    
-    return _sudo_cp(
-        str(config.CONFIG_BACKUP),
-        str(config.CONFIG_FILE),
-        password,
-        success_msg="✅ Конфиг восстановлен из бэкапа"
-    )
