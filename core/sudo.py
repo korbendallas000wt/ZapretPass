@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+import logging
+logger = logging.getLogger(__name__)
+
 """
 ZapretPass Core - Sudo
 Управление привилегиями: запрос пароля, кэширование, выполнение команд.
@@ -37,11 +40,14 @@ class SudoManager:
         """
         self._password_dialog = dialog_func
     
-    def get_password(self) -> Optional[str]:
+    def get_password(self, max_retries: int = 3) -> Optional[str]:
         """Возвращает пароль, запрашивая его если нужно.
         
+        Args:
+            max_retries: Максимальное количество попыток ввода неверного пароля.
+            
         Returns:
-            Пароль (str) или None если пользователь отказался.
+            Пароль (str) или None если пользователь отказался или превышено число попыток.
         """
         if self._password is not None:
             # Проверяем, что кэшированный пароль всё ещё валидный
@@ -55,12 +61,19 @@ class SudoManager:
         if self._password_dialog is None:
             return None
         
-        password = self._password_dialog()
-        if password and self._verify_password(password):
-            self._password = password
-            self._start_keep_alive()
-            return password
-        
+        for attempt in range(max_retries):
+            password = self._password_dialog()
+            if password is None:
+                return None  # Пользователь нажал Отмена
+                
+            if self._verify_password(password):
+                self._password = password
+                self._start_keep_alive()
+                return password
+                
+            logger.warning(f"Invalid password attempt {attempt + 1}/{max_retries}")
+            
+        logger.error("Max password retries exceeded.")
         return None
     
     def _start_keep_alive(self):
@@ -169,8 +182,11 @@ class SudoManager:
     # ========================================================================
     
     def _verify_password(self, password: str) -> bool:
-        """Проверяет валидность пароля через sudo -v."""
+        """Проверяет валидность пароля через sudo -v (с принудительным сбросом кэша)."""
         try:
+            # Принудительно сбрасываем кэш, чтобы пароль реально проверялся
+            subprocess.run(['sudo', '-k'], capture_output=True, timeout=2)
+            
             process = subprocess.Popen(
                 ['sudo', '-S', '-v'],
                 stdin=subprocess.PIPE,
@@ -179,8 +195,15 @@ class SudoManager:
                 text=True
             )
             _, stderr = process.communicate(input=password + "\n", timeout=5)
-            return process.returncode == 0
-        except Exception:
+            
+            success = process.returncode == 0
+            if not success:
+                logger.warning(f"sudo password verification failed: {stderr.strip()}")
+            else:
+                logger.info("sudo password verified successfully")
+            return success
+        except Exception as e:
+            logger.error(f"sudo password verification error: {e}")
             return False
     
     def _verify_cached_password(self) -> bool:

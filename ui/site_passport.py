@@ -715,7 +715,7 @@ class SitePassportWidget(QWidget):
         
         # Сначала проверяем пароль
         if password is None:
-            layout.addWidget(QLabel("❌ Пароль не предоставлен"))
+            layout.addWidget(QLabel("❌ Неверный пароль или отмена. Блокчек не запущен."))
             return
         
         # Preflight: сторонние DPI-bypass процессы делают блокчек невалидным
@@ -795,6 +795,8 @@ class SitePassportWidget(QWidget):
         if password:
             service_manager.manager.cleanup_after_block(
                 flags, self.domain, password, block_result)
+        else:
+            print("[WARN] Пароль не получен для пост-обработки блокчека. Сервис может остаться остановленным.")
         
         if result.success:
             self._found_strategies = result.strategies
