@@ -29,8 +29,6 @@ data/**/*.json
 data/**/*.txt
 data/logs/**/*.log
 
-# Временные файлы передачи контекста
-docs/HANDOFF_RELIABILITY.md
 whitelist.txt
 
 # Local workspace
