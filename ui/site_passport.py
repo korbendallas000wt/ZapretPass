@@ -715,7 +715,21 @@ class SitePassportWidget(QWidget):
         
         # Сначала проверяем пароль
         if password is None:
-            layout.addWidget(QLabel("❌ Неверный пароль или отмена. Блокчек не запущен."))
+            reason = sudo.manager.last_failure_reason()
+
+            if reason == "locked":
+                self._show_password_cooldown(layout, int(sudo.manager.seconds_until_unlock()))
+            elif reason == "cancelled":
+                layout.addWidget(QLabel("⏹ Ввод пароля отменён. Блокчек не запущен."))
+            elif reason == "empty":
+                layout.addWidget(QLabel("❌ Диалог вернул пустой пароль. Блокчек не запущен."))
+            elif reason == "no_dialog":
+                layout.addWidget(QLabel("❌ Не удалось показать диалог ввода пароля. Блокчек не запущен."))
+            elif reason == "expired":
+                layout.addWidget(QLabel("⚠ Кэш sudo-пароля истёк. Нужен новый пароль."))
+            else:
+                layout.addWidget(QLabel("❌ Неверный пароль. Блокчек не запущен."))
+
             return
         
         # Preflight: сторонние DPI-bypass процессы делают блокчек невалидным
@@ -758,6 +772,38 @@ class SitePassportWidget(QWidget):
         self._blockcheck_worker.blockcheck_error.connect(self._on_blockcheck_error)
         self._blockcheck_worker.start()
     
+    def _show_password_cooldown(self, layout, seconds: int):
+        from PyQt6.QtCore import QTimer
+
+        seconds = max(1, int(seconds))
+
+        label = QLabel(
+            f"⛔ Слишком много неверных попыток ввода пароля. "
+            f"Повторный запрос будет доступен через {seconds} сек."
+        )
+        label.setWordWrap(True)
+        label.setStyleSheet("color: #e67e22; font-weight: bold;")
+        layout.addWidget(label)
+
+        timer = QTimer(label)
+        timer.setInterval(1000)
+
+        def tick():
+            nonlocal seconds
+            seconds -= 1
+
+            if seconds <= 0:
+                label.setText("✅ Ограничение снято. Можно попробовать снова.")
+                timer.stop()
+            else:
+                label.setText(
+                    f"⛔ Слишком много неверных попыток ввода пароля. "
+                    f"Повторный запрос будет доступен через {seconds} сек."
+                )
+
+        timer.timeout.connect(tick)
+        timer.start()
+
     def _stop_blockcheck(self):
         """Останавливает блокчек по запросу пользователя."""
         if self._blockcheck_worker is not None:

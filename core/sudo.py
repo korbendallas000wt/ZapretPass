@@ -9,6 +9,7 @@ ZapretPass Core - Sudo
 """
 import subprocess
 import threading
+import os
 import time
 import shutil
 from typing import Optional, Callable
@@ -30,6 +31,11 @@ class SudoManager:
         self._password: Optional[str] = None
         self._keep_alive_thread: Optional[threading.Thread] = None
         self._password_dialog: Optional[Callable[[], Optional[str]]] = None
+        self._failed_attempts: int = 0
+        self._locked_until: float = 0.0
+        self._last_failure_reason: str = "none"
+        self.max_attempts: int = int(os.environ.get("ZAPRETPASS_SUDO_MAX_ATTEMPTS", "3"))
+        self.lockout_seconds: int = int(os.environ.get("ZAPRETPASS_SUDO_LOCKOUT_SECONDS", "30"))
     
     def set_password_dialog(self, dialog_func: Callable[[], Optional[str]]):
         """Устанавливает функцию для запроса пароля.
@@ -40,42 +46,71 @@ class SudoManager:
         """
         self._password_dialog = dialog_func
     
-    def get_password(self, max_retries: int = 3) -> Optional[str]:
+    def get_password(self, max_retries: Optional[int] = None) -> Optional[str]:
         """Возвращает пароль, запрашивая его если нужно.
-        
+
         Args:
-            max_retries: Максимальное количество попыток ввода неверного пароля.
-            
+            max_retries: Необязательное ограничение попыток для одного вызова.
+                По умолчанию используется self.max_attempts.
+
         Returns:
-            Пароль (str) или None если пользователь отказался или превышено число попыток.
+            Пароль (str) или None если пользователь отказался, пароль неверный,
+            диалог вернул пустое значение или включена временная блокировка.
         """
+        if self.is_locked():
+            self._last_failure_reason = "locked"
+            return None
+
+        # Если блокировка истекла — сбрасываем счётчик и разрешаем повторный ввод.
+        if self._locked_until > 0.0 and not self.is_locked():
+            self.reset_failure_state()
+
         if self._password is not None:
-            # Проверяем, что кэшированный пароль всё ещё валидный
             if self._verify_cached_password():
+                self.reset_failure_state()
+                self._last_failure_reason = "ok"
                 return self._password
             else:
-                # Пароль истёк или неверный — сбрасываем кэш
                 self._password = None
-        
-        # Запрашиваем новый пароль
+                self._last_failure_reason = "expired"
+
         if self._password_dialog is None:
+            self._last_failure_reason = "no_dialog"
             return None
-        
-        for attempt in range(max_retries):
+
+        attempt_limit = self.max_attempts if max_retries is None else int(max_retries)
+        remaining = max(0, attempt_limit - self._failed_attempts)
+
+        if remaining == 0:
+            self._register_invalid_password()
+            return None
+
+        for _ in range(remaining):
             password = self._password_dialog()
+
             if password is None:
-                return None  # Пользователь нажал Отмена
-                
+                self._last_failure_reason = "cancelled"
+                return None
+
+            if password == "":
+                self._last_failure_reason = "empty"
+                return None
+
             if self._verify_password(password):
                 self._password = password
                 self._start_keep_alive()
+                self.reset_failure_state()
+                self._last_failure_reason = "ok"
                 return password
-                
-            logger.warning(f"Invalid password attempt {attempt + 1}/{max_retries}")
-            
-        logger.error("Max password retries exceeded.")
+
+            self._register_invalid_password()
+            if self.is_locked():
+                return None
+
+        self._last_failure_reason = "invalid"
         return None
-    
+
+
     def _start_keep_alive(self):
         """Запускает фоновый поток для продления кэша sudo."""
         if self._keep_alive_thread and self._keep_alive_thread.is_alive():
@@ -102,6 +137,36 @@ class SudoManager:
         """Очищает кэш пароля."""
         self._password = None
     
+    def is_locked(self) -> bool:
+        return time.monotonic() < self._locked_until
+
+    def seconds_until_unlock(self) -> float:
+        if not self.is_locked():
+            return 0.0
+        return max(0.0, self._locked_until - time.monotonic())
+
+    def last_failure_reason(self) -> str:
+        return self._last_failure_reason
+
+    def reset_failure_state(self) -> None:
+        self._failed_attempts = 0
+        self._locked_until = 0.0
+        self._last_failure_reason = "none"
+
+    def _register_invalid_password(self) -> None:
+        self._failed_attempts += 1
+        self._last_failure_reason = "invalid"
+        logger.warning(
+            f"Invalid sudo password attempt {self._failed_attempts}/{self.max_attempts}"
+        )
+        if self._failed_attempts >= self.max_attempts:
+            self._locked_until = time.monotonic() + float(self.lockout_seconds)
+            self._last_failure_reason = "locked"
+            logger.error(
+                f"sudo password input locked for {self.lockout_seconds}s "
+                f"after {self._failed_attempts} failed attempts"
+            )
+
     def verify_password(self, password: str) -> bool:
         """Проверяет валидность пароля через sudo -v.
         
