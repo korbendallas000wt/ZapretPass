@@ -79,7 +79,8 @@ def _qt_password_dialog(prompt: str) -> Optional[str]:
         dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
         
         if dialog.exec():
-            return dialog.textValue()
+            text = dialog.textValue()
+            return text if text else None
         return None
     except Exception:
         return None
@@ -93,7 +94,8 @@ def _kdialog_password(prompt: str) -> Optional[str]:
             capture_output=True, text=True, timeout=120
         )
         if result.returncode == 0:
-            return result.stdout.strip()
+            text = result.stdout.strip()
+            return text if text else None
         return None
     except Exception:
         return None
@@ -107,7 +109,8 @@ def _zenity_password(prompt: str) -> Optional[str]:
             capture_output=True, text=True, timeout=120
         )
         if result.returncode == 0:
-            return result.stdout.strip()
+            text = result.stdout.strip()
+            return text if text else None
         return None
     except Exception:
         return None
@@ -121,7 +124,8 @@ def _lxqt_password(prompt: str) -> Optional[str]:
             capture_output=True, text=True, timeout=120
         )
         if result.returncode == 0:
-            return result.stdout.strip()
+            text = result.stdout.strip()
+            return text if text else None
         return None
     except Exception:
         return None
@@ -140,9 +144,10 @@ def _pkexec_password(prompt: str) -> Optional[str]:
             capture_output=True, text=True, timeout=120
         )
         if result.returncode == 0:
-            # polkit авторизовал пользователя, но пароль не вернул
-            # Возвращаем пустую строку — реальный пароль будет запрошен через sudo -S
-            return ""
+            # polkit авторизовал пользователя, но пароль не вернул.
+            # Контракт Optional[str] запрещает пустую строку — возвращаем None,
+            # чтобы система перешла к терминальному вводу.
+            return None
         return None
     except Exception:
         return None
@@ -152,7 +157,8 @@ def _terminal_password(prompt: str) -> Optional[str]:
     """Запрос пароля в терминале (последний шанс)."""
     try:
         import getpass
-        return getpass.getpass(prompt + " ")
+        text = getpass.getpass(prompt + " ")
+        return text if text else None
     except (EOFError, KeyboardInterrupt):
         return None
     except Exception:

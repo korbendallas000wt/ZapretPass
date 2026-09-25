@@ -13,6 +13,7 @@ import os
 import time
 import shutil
 from typing import Optional, Callable
+from .auth_limits import AuthLimits
 
 
 class SudoManager:
@@ -29,13 +30,14 @@ class SudoManager:
     
     def __init__(self):
         self._password: Optional[str] = None
+        self._auth_limits = AuthLimits()
         self._keep_alive_thread: Optional[threading.Thread] = None
         self._password_dialog: Optional[Callable[[], Optional[str]]] = None
         self._failed_attempts: int = 0
         self._locked_until: float = 0.0
         self._last_failure_reason: str = "none"
-        self.max_attempts: int = int(os.environ.get("ZAPRETPASS_SUDO_MAX_ATTEMPTS", "3"))
-        self.lockout_seconds: int = int(os.environ.get("ZAPRETPASS_SUDO_LOCKOUT_SECONDS", "30"))
+        self.max_attempts: int = self._auth_limits.max_attempts
+        self.lockout_seconds: int = self._auth_limits.lockout_seconds if self._auth_limits.faillock_active else 30
     
     def set_password_dialog(self, dialog_func: Callable[[], Optional[str]]):
         """Устанавливает функцию для запроса пароля.
@@ -57,6 +59,13 @@ class SudoManager:
             Пароль (str) или None если пользователь отказался, пароль неверный,
             диалог вернул пустое значение или включена временная блокировка.
         """
+        # Проверяем системную блокировку учётки (faillock)
+        if self._auth_limits.is_account_locked():
+            remaining = self._auth_limits.get_lock_remaining_seconds()
+            logger.error(f"Account locked by system (faillock). Remaining: {remaining}s")
+            self._last_failure_reason = "system_locked"
+            return None
+
         if self.is_locked():
             self._last_failure_reason = "locked"
             return None
@@ -145,6 +154,16 @@ class SudoManager:
             return 0.0
         return max(0.0, self._locked_until - time.monotonic())
 
+    def get_system_lock_info(self) -> dict:
+        """Возвращает информацию о системной блокировке для UI."""
+        return {
+            "is_locked": self._auth_limits.is_account_locked(),
+            "remaining_seconds": self._auth_limits.get_lock_remaining_seconds(),
+            "max_attempts": self._auth_limits.max_attempts,
+            "warn_threshold": self._auth_limits.warn_threshold,
+            "faillock_active": self._auth_limits.faillock_active,
+        }
+
     def last_failure_reason(self) -> str:
         return self._last_failure_reason
 
@@ -154,6 +173,12 @@ class SudoManager:
         self._last_failure_reason = "none"
 
     def _register_invalid_password(self) -> None:
+        # Предупреждение на предпоследней попытке перед системной блокировкой
+        if self._failed_attempts + 1 == self._auth_limits.warn_threshold:
+            logger.warning(
+                f"⚠ Last attempt before system lockout! "
+                f"Next incorrect password will lock account for {self._auth_limits.lockout_seconds}s"
+            )
         self._failed_attempts += 1
         self._last_failure_reason = "invalid"
         logger.warning(
