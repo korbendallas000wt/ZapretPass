@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-import logging
-logger = logging.getLogger(__name__)
 
 """
 ZapretPass Core - Sudo
@@ -14,6 +12,9 @@ import time
 import shutil
 from typing import Optional, Callable
 from .auth_limits import AuthLimits
+from .logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class SudoManager:

@@ -11,6 +11,9 @@ from pathlib import Path
 from typing import Tuple, List
 import subprocess
 import time
+from .logger import get_logger
+
+log = get_logger(__name__)
 
 DPI_BYPASS_COMMS = {"nfqws", "tpws"}
 BLOCKCHECK_MARKER = "blockcheck.sh"
@@ -130,6 +133,7 @@ def _kill_pid(pid: int, password: str) -> Tuple[bool, str]:
 
 
 def kill_foreign_dpi_bypass(password: str) -> Tuple[int, List[str]]:
+    log.info("Зачистка leftover-процессов DPI-bypass")
     """Убивает все leftover-процессы DPI-bypass (кроме zapret.service).
     
     Args:
@@ -152,6 +156,7 @@ def kill_foreign_dpi_bypass(password: str) -> Tuple[int, List[str]]:
         else:
             errors.append(err)
     
+    log.info(f"Зачищено {killed} процессов, ошибок: {len(errors)}")
     return killed, errors
 
 

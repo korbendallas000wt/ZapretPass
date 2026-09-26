@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import QApplication, QMessageBox
 from ui.main_window import MainWindow
 from ui.password_dialog import get_password_from_user
 from core import preflight, sudo
+from core.logger import setup_logging
 
 
 def _acquire_single_instance_lock():
@@ -39,6 +40,7 @@ def _acquire_single_instance_lock():
 
 
 def main():
+    setup_logging()
     app = QApplication(sys.argv)
     app.setApplicationName("ZapretPass")
     app.setApplicationDisplayName("ZapretPass")

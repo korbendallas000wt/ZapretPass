@@ -9,7 +9,7 @@ import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-# Имя логгера приложения
+# Имя корневого логгера приложения
 LOGGER_NAME = "zapretpass"
 
 # Путь к логам
@@ -21,24 +21,24 @@ LOG_FILE_DEBUG = LOG_DIR / "zapretpass_debug.log"
 MAX_LOG_SIZE = 5 * 1024 * 1024  # 5 МБ
 BACKUP_COUNT = 3                # храним 3 последних файла
 
-
 def setup_logging(level: int = logging.INFO, debug_mode: bool = False):
     """Настраивает логирование приложения.
     
-    Создаёт два логгера:
-    - Основной: пишет в файл и консоль (уровень из аргумента)
-    - Debug-файл: пишет ВСЁ (уровень DEBUG) для диагностики крашей
+    Создаёт корневой логгер 'zapretpass' с тремя хендлерами:
+    - Основной файл (уровень из аргумента)
+    - Debug-файл (всё для диагностики)
+    - Консоль (WARNING или DEBUG)
     
-    Args:
-        level: уровень логирования для консоли.
-        debug_mode: True для подробного логирования в консоль.
+    Все модули должны использовать get_logger(__name__) для создания
+    дочерних логгеров, которые автоматически наследуют эти хендлеры.
     """
     # Создаём папку логов
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     
     # Получаем корневой логгер приложения
     logger = logging.getLogger(LOGGER_NAME)
-    logger.setLevel(logging.DEBUG)  # логгер ловит всё, фильтруют хендлеры
+    logger.setLevel(logging.DEBUG)  # ловит всё, фильтруют хендлеры
+    logger.propagate = False  # не дублировать в root-логгер Python
     
     # Очищаем старые хендлеры (при повторном вызове setup)
     logger.handlers.clear()
@@ -49,7 +49,7 @@ def setup_logging(level: int = logging.INFO, debug_mode: bool = False):
         datefmt="%Y-%m-%d %H:%M:%S"
     )
     
-    # Хендлер 1: основной лог-файл (уровень из аргумента)
+    # Хендлер 1: основной лог-файл
     file_handler = RotatingFileHandler(
         LOG_FILE, maxBytes=MAX_LOG_SIZE, backupCount=BACKUP_COUNT, encoding="utf-8"
     )
@@ -57,7 +57,7 @@ def setup_logging(level: int = logging.INFO, debug_mode: bool = False):
     file_handler.setFormatter(fmt)
     logger.addHandler(file_handler)
     
-    # Хендлер 2: debug-файл (пишет всё для диагностики)
+    # Хендлер 2: debug-файл (пишет всё)
     debug_handler = RotatingFileHandler(
         LOG_FILE_DEBUG, maxBytes=MAX_LOG_SIZE, backupCount=BACKUP_COUNT, encoding="utf-8"
     )
@@ -65,7 +65,7 @@ def setup_logging(level: int = logging.INFO, debug_mode: bool = False):
     debug_handler.setFormatter(fmt)
     logger.addHandler(debug_handler)
     
-    # Хендлер 3: консоль (уровень зависит от режима)
+    # Хендлер 3: консоль
     console_handler = logging.StreamHandler(sys.stderr)
     console_handler.setLevel(logging.DEBUG if debug_mode else logging.WARNING)
     console_handler.setFormatter(fmt)
@@ -76,13 +76,15 @@ def setup_logging(level: int = logging.INFO, debug_mode: bool = False):
     logger.info(f"Лог-файл: {LOG_FILE}")
     logger.info(f"Debug-файл: {LOG_FILE_DEBUG}")
 
-
-def get_logger(name: str = LOGGER_NAME):
-    """Возвращает логгер для модуля.
+def get_logger(name: str):
+    """Возвращает дочерний логгер для модуля.
+    
+    Создаёт логгер вида 'zapretpass.<имя_модуля>', который автоматически
+    наследует хендлеры от корневого логгера 'zapretpass'.
     
     Использование в модулях:
         from core.logger import get_logger
-        log = get_logger(__name__)
+        log = get_logger(__name__)  # создаст "zapretpass.core.sudo"
         log.info("Сообщение")
     """
-    return logging.getLogger(name)
+    return logging.getLogger(f"{LOGGER_NAME}.{name}")

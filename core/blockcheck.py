@@ -13,6 +13,9 @@ from dataclasses import dataclass, field
 from typing import Optional, Callable
 
 from . import config
+from .logger import get_logger
+
+log = get_logger(__name__)
 
 
 @dataclass
@@ -331,6 +334,8 @@ def run_blockcheck(
             success=False,
             error="Пароль не предоставлен"
         )
+
+    log.info(f"Запуск blockcheck для домена: {domain}")
     
     if cancel_event is None:
         cancel_event = threading.Event()
