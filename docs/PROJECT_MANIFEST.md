@@ -31,6 +31,11 @@ core/service.py — Управление systemd-сервисом zapret
 - is_enabled() — проверка автозапуска без sudo
 
 core/sudo.py — Запрос и кэширование пароля
+core/auth_limits.py — Лимиты попыток аутентификации
+- get_max_attempts() — максимальное количество попыток ввода пароля
+- get_lockout_duration() — длительность блокировки после превышения лимита
+- check_lockout_status() — проверка текущего статуса блокировки
+- Интеграция с sudo.py для предотвращения brute-force атак
 - SudoManager — класс для работы с привилегиями
 - set_password_dialog(func) — установка callback для запроса пароля (kdialog, Qt-диалог)
 - get_password() — получение пароля с кэшированием и проверкой валидности
@@ -95,18 +100,12 @@ core/service_manager.py — Менеджер сервиса для блоков 
 - cleanup_after_block(block, domain, password, result) — применение стратегии, рестарт по флагам
 - manager — глобальный экземпляр ServiceManager
 
-core/preflight.py — Предстартовые проверки окружения
+core/preflight.py — Предстартовые проверки окружения и автокилл foreign-процессов
 - DpiBypassProcess — dataclass: pid, ppid, user, comm, cmdline, cgroup, service_managed
 - list_dpi_bypass_processes() — поиск nfqws/tpws/blockcheck.sh через /proc
 - foreign_dpi_bypass_processes() — процессы вне zapret.service
 - ensure_no_foreign_dpi_bypass() — проверка перед блокчеком
 - ensure_no_dpi_bypass_processes() — полная проверка
-
-core/process_registry.py — Реестр процессов обхода DPI
-- _cached_sudo_password() — получение кэшированного пароля из SudoManager без диалога
-- _kill_group(pgid, sig, password) — убийство группы процессов с fallback (os.killpg → sudo -n → sudo -S)
-- cleanup_stale() — очистка процессов от предыдущих запусков
-- terminate_all() — завершение всех зарегистрированных процессов при выходе
 
 core/logger.py — Централизованное логирование
 - setup_logging(level, debug_mode) — настройка: основной лог + debug-лог + консоль
@@ -292,8 +291,8 @@ Qt6-интерфейс на PyQt6. Точка входа: zapretpass.py.
 
 ### zapretpass.py — точка входа
 - Single-instance lock через QLockFile
-- process_registry.cleanup_stale() при старте
-- process_registry.terminate_all() при выходе
+- preflight.kill_foreign_dpi_bypass() при старте
+- preflight.killforeign_dpi_bypass() при выходе
 - Подключение password_dialog к sudo.manager.set_password_dialog()
 
 ### ui/main_window.py — главное окно
