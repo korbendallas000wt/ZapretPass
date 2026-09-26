@@ -562,6 +562,7 @@ class SitePassportWidget(QWidget):
         # Добавляем карточку блока
         box = QGroupBox(f"{block.name}")
         layout = QVBoxLayout(box)
+        self._current_block_layout = layout  # Сохраняем для доступа из обработчиков
         
         self.results_layout.addWidget(box)
         # Автоскролл к новому блоку
@@ -715,12 +716,29 @@ class SitePassportWidget(QWidget):
         
         # Сначала проверяем пароль
         if password is None:
-            layout.addWidget(QLabel("❌ Пароль не предоставлен"))
+            reason = sudo.manager.last_failure_reason()
+
+            if reason == "locked":
+                self._show_password_cooldown(layout, int(sudo.manager.seconds_until_unlock()))
+            elif reason == "system_locked":
+                lock_info = sudo.manager.get_system_lock_info()
+                self._show_system_lockout(layout, lock_info)
+            elif reason == "cancelled":
+                layout.addWidget(QLabel("⏹ Ввод пароля отменён. Блокчек не запущен."))
+            elif reason == "empty":
+                layout.addWidget(QLabel("❌ Диалог вернул пустой пароль. Блокчек не запущен."))
+            elif reason == "no_dialog":
+                layout.addWidget(QLabel("❌ Не удалось показать диалог ввода пароля. Блокчек не запущен."))
+            elif reason == "expired":
+                layout.addWidget(QLabel("⚠ Кэш sudo-пароля истёк. Нужен новый пароль."))
+            else:
+                layout.addWidget(QLabel("❌ Неверный пароль. Блокчек не запущен."))
+
             return
         
-        # Preflight: сторонние DPI-bypass процессы делают блокчек невалидным
+        # Preflight: автокилл leftover-процессов перед блокчеком
         from core import preflight
-        ok_preflight, msg_preflight = preflight.ensure_no_foreign_dpi_bypass()
+        ok_preflight, msg_preflight = preflight.ensure_no_foreign_dpi_bypass(password)
         print(f"[DEBUG UI] preflight вернул: ok={ok_preflight}, msg={msg_preflight}")
         if not ok_preflight:
             preflight_label = QLabel(f"❌ {msg_preflight}")
@@ -758,6 +776,90 @@ class SitePassportWidget(QWidget):
         self._blockcheck_worker.blockcheck_error.connect(self._on_blockcheck_error)
         self._blockcheck_worker.start()
     
+    def _show_password_cooldown(self, layout, seconds: int):
+        from PyQt6.QtCore import QTimer
+
+        seconds = max(1, int(seconds))
+
+        label = QLabel(
+            f"⛔ Слишком много неверных попыток ввода пароля. "
+            f"Повторный запрос будет доступен через {seconds} сек."
+        )
+        label.setWordWrap(True)
+        label.setStyleSheet("color: #e67e22; font-weight: bold;")
+        layout.addWidget(label)
+
+        timer = QTimer(label)
+        timer.setInterval(1000)
+
+        def tick():
+            nonlocal seconds
+            seconds -= 1
+
+            if seconds <= 0:
+                label.setText("✅ Ограничение снято. Можно попробовать снова.")
+                timer.stop()
+            else:
+                label.setText(
+                    f"⛔ Слишком много неверных попыток ввода пароля. "
+                    f"Повторный запрос будет доступен через {seconds} сек."
+                )
+
+        timer.timeout.connect(tick)
+        timer.start()
+
+    def _show_system_lockout(self, layout, lock_info: dict):
+        """Показывает системную блокировку учётки (faillock) с таймером."""
+        from PyQt6.QtCore import QTimer
+
+        remaining = max(1, int(lock_info.get("remaining_seconds", 0)))
+        max_attempts = lock_info.get("max_attempts", 3)
+        lockout_seconds = lock_info.get("remaining_seconds", 0)
+
+        # Форматируем время: минуты + секунды
+        def format_time(sec: int) -> str:
+            m, s = divmod(sec, 60)
+            if m > 0:
+                return f"{m} мин {s} сек"
+            return f"{s} сек"
+
+        label = QLabel(
+            f"🔒 Учётная запись заблокирована системой (faillock) "
+            f"после {max_attempts} неверных попыток.\n"
+            f"Разблокировка через: {format_time(remaining)}"
+        )
+        label.setWordWrap(True)
+        label.setStyleSheet("color: #c0392b; font-weight: bold; font-size: 11pt;")
+        layout.addWidget(label)
+
+        # Помечаем блок как ошибку и разблокируем ввод
+        self._mark_current_progress("error")
+        self.btn_proceed.setEnabled(True)
+        self.url_input.setEnabled(True)
+        self.status_message_requested.emit(
+            f"🔒 Учётка заблокирована системой. Ожидание {format_time(remaining)}", True)
+
+        timer = QTimer(label)
+        timer.setInterval(1000)
+
+        def tick():
+            nonlocal remaining
+            remaining -= 1
+
+            if remaining <= 0:
+                label.setText("✅ Учётная запись разблокирована. Можно повторить попытку.")
+                label.setStyleSheet("color: #27ae60; font-weight: bold; font-size: 11pt;")
+                timer.stop()
+            else:
+                label.setText(
+                    f"🔒 Учётная запись заблокирована системой (faillock) "
+                    f"после {max_attempts} неверных попыток.\n"
+                    f"Разблокировка через: {format_time(remaining)}"
+                )
+
+        timer.timeout.connect(tick)
+        timer.start()
+
     def _stop_blockcheck(self):
         """Останавливает блокчек по запросу пользователя."""
         if self._blockcheck_worker is not None:
@@ -795,6 +897,8 @@ class SitePassportWidget(QWidget):
         if password:
             service_manager.manager.cleanup_after_block(
                 flags, self.domain, password, block_result)
+        else:
+            print("[WARN] Пароль не получен для пост-обработки блокчека. Сервис может остаться остановленным.")
         
         if result.success:
             self._found_strategies = result.strategies
@@ -835,10 +939,14 @@ class SitePassportWidget(QWidget):
         if hasattr(self, '_blockcheck_stop_btn'):
             self._blockcheck_stop_btn.setEnabled(False)
         # Кнопка перехода к следующему блоку (пошаговое управление)
+        # Добавляем в layout текущего блока, а не в общий контейнер
         btn_next = QPushButton("Далее")
         btn_next.setProperty("scenario_transition_button", True)
         btn_next.clicked.connect(self._run_next_block)
-        self.results_layout.addWidget(btn_next)
+        if hasattr(self, '_current_block_layout') and self._current_block_layout is not None:
+            self._current_block_layout.addWidget(btn_next)
+        else:
+            self.results_layout.addWidget(btn_next)
     
     def _on_blockcheck_error(self, error_msg: str):
         self._mark_current_progress("error")
@@ -890,12 +998,63 @@ class SitePassportWidget(QWidget):
         layout.addWidget(btn_next)
     
     def _run_save_block(self, box: QGroupBox, layout: QVBoxLayout, flags: dict):
-        """Блок сохранения (заглушка)."""
+        """Блок сохранения (заглушка). Финальный блок сценария."""
         layout.addWidget(QLabel(f"💾 Сохранение паспорта для {self.domain}"))
         layout.addWidget(QLabel("(блок в разработке)"))
         
+        # Кнопка завершения сценария
+        btn_finish = QPushButton("✅ Готово")
+        btn_finish.setMinimumHeight(40)
+        btn_finish.setProperty("scenario_transition_button", True)
+        btn_finish.clicked.connect(self._finish_scenario)
+        layout.addWidget(btn_finish)
+        
+        self._finish_progress_all()
         self.status_message_requested.emit(
             f"✅ Сценарий '{self.scenario.name}' завершён", True)
+
+    def _finish_scenario(self):
+        """Завершает сценарий и возвращает приложение к выбору нового домена."""
+        # Останавливаем активные воркеры
+        if self._diagnosis_worker is not None:
+            if self._diagnosis_worker.isRunning():
+                self._diagnosis_worker.quit()
+                self._diagnosis_worker.wait(1000)
+            self._diagnosis_worker.deleteLater()
+            self._diagnosis_worker = None
+        
+        if self._blockcheck_worker is not None:
+            self._blockcheck_worker.cancel()
+            if self._blockcheck_worker.isRunning():
+                self._blockcheck_worker.quit()
+                self._blockcheck_worker.wait(1000)
+            self._blockcheck_worker.deleteLater()
+            self._blockcheck_worker = None
+        
+        # Очищаем область результатов
+        while self.results_layout.count():
+            item = self.results_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        
+        # Сбрасываем состояние
+        self.scenario = None
+        self.current_block_index = 0
+        self._clear_progress_layout()
+        self._diagnosis_result = None
+        self._found_strategy = None
+        self._found_strategies = []
+        self._active_block = None
+        self._scenario_box = None
+        
+        # Разблокируем ввод домена
+        self.btn_proceed.setEnabled(True)
+        self.url_input.setEnabled(True)
+        self.url_input.clear()
+        self.url_input.setFocus()
+        
+        self.status_message_requested.emit(
+            "🌐 Введите адрес сайта для нового сценария", False)
     
     def _clear_results(self):
         """Очищает область результатов."""
