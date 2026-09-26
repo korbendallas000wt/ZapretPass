@@ -78,6 +78,8 @@ class SudoManager:
             if self._verify_cached_password():
                 self.reset_failure_state()
                 self._last_failure_reason = "ok"
+                # Гарантируем что keep-alive поток жив при каждом возврате пароля
+                self._start_keep_alive()
                 return self._password
             else:
                 self._password = None
@@ -128,15 +130,19 @@ class SudoManager:
         def keep_alive():
             while self._password:
                 try:
-                    subprocess.run(
+                    result = subprocess.run(
                         ["sudo", "-S", "-v"],
                         input=self._password + "\n",
                         capture_output=True,
                         text=True,
                         timeout=5
                     )
-                except Exception:
-                    pass
+                    if result.returncode == 0:
+                        logger.debug("keep-alive: sudo -v успешен")
+                    else:
+                        logger.warning(f"keep-alive: sudo -v вернул {result.returncode}: {result.stderr.strip()}")
+                except Exception as e:
+                    logger.error(f"keep-alive: ошибка выполнения: {e}")
                 time.sleep(240)  # 4 минуты
         
         self._keep_alive_thread = threading.Thread(target=keep_alive, daemon=True)
