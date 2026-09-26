@@ -719,6 +719,9 @@ class SitePassportWidget(QWidget):
 
             if reason == "locked":
                 self._show_password_cooldown(layout, int(sudo.manager.seconds_until_unlock()))
+            elif reason == "system_locked":
+                lock_info = sudo.manager.get_system_lock_info()
+                self._show_system_lockout(layout, lock_info)
             elif reason == "cancelled":
                 layout.addWidget(QLabel("⏹ Ввод пароля отменён. Блокчек не запущен."))
             elif reason == "empty":
@@ -799,6 +802,58 @@ class SitePassportWidget(QWidget):
                 label.setText(
                     f"⛔ Слишком много неверных попыток ввода пароля. "
                     f"Повторный запрос будет доступен через {seconds} сек."
+                )
+
+        timer.timeout.connect(tick)
+        timer.start()
+
+    def _show_system_lockout(self, layout, lock_info: dict):
+        """Показывает системную блокировку учётки (faillock) с таймером."""
+        from PyQt6.QtCore import QTimer
+
+        remaining = max(1, int(lock_info.get("remaining_seconds", 0)))
+        max_attempts = lock_info.get("max_attempts", 3)
+        lockout_seconds = lock_info.get("remaining_seconds", 0)
+
+        # Форматируем время: минуты + секунды
+        def format_time(sec: int) -> str:
+            m, s = divmod(sec, 60)
+            if m > 0:
+                return f"{m} мин {s} сек"
+            return f"{s} сек"
+
+        label = QLabel(
+            f"🔒 Учётная запись заблокирована системой (faillock) "
+            f"после {max_attempts} неверных попыток.\n"
+            f"Разблокировка через: {format_time(remaining)}"
+        )
+        label.setWordWrap(True)
+        label.setStyleSheet("color: #c0392b; font-weight: bold; font-size: 11pt;")
+        layout.addWidget(label)
+
+        # Помечаем блок как ошибку и разблокируем ввод
+        self._mark_current_progress("error")
+        self.btn_proceed.setEnabled(True)
+        self.url_input.setEnabled(True)
+        self.status_message_requested.emit(
+            f"🔒 Учётка заблокирована системой. Ожидание {format_time(remaining)}", True)
+
+        timer = QTimer(label)
+        timer.setInterval(1000)
+
+        def tick():
+            nonlocal remaining
+            remaining -= 1
+
+            if remaining <= 0:
+                label.setText("✅ Учётная запись разблокирована. Можно повторить попытку.")
+                label.setStyleSheet("color: #27ae60; font-weight: bold; font-size: 11pt;")
+                timer.stop()
+            else:
+                label.setText(
+                    f"🔒 Учётная запись заблокирована системой (faillock) "
+                    f"после {max_attempts} неверных попыток.\n"
+                    f"Разблокировка через: {format_time(remaining)}"
                 )
 
         timer.timeout.connect(tick)
