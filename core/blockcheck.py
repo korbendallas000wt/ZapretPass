@@ -8,7 +8,6 @@ import subprocess
 import signal
 import threading
 import time
-from core import process_registry
 import os
 from dataclasses import dataclass, field
 from typing import Optional, Callable
@@ -192,12 +191,33 @@ def _kill_process_group(pgid: Optional[int], sig: int, password: str = "") -> bo
 
 
 def _unregister_process(process) -> None:
-    if process is None:
-        return
+    """Заглушка: process_registry удалён.
+
+    Очистка leftover-процессов теперь выполняется через core/preflight.py.
+    """
+    pass
+
+
+def _proc_start_time(pid: int):
+    """Возвращает starttime из /proc/PID/stat.
+
+    Защита от переиспользования PID после смерти процесса.
+    """
+    from pathlib import Path
     try:
-        process_registry.unregister(process.pid)
-    except Exception:
-        pass
+        stat = Path(f"/proc/{pid}/stat").read_text(errors="ignore")
+    except OSError:
+        return None
+
+    close = stat.rfind(")")
+    if close == -1:
+        return None
+
+    fields = stat[close + 1:].split()
+    if len(fields) < 20:
+        return None
+
+    return fields[19]
 
 
 def _terminate_process_group_gracefully(
@@ -351,21 +371,9 @@ def run_blockcheck(
         )
         
         try:
-            expected_start_time = process_registry._proc_start_time(process.pid)
+            expected_start_time = _proc_start_time(process.pid)
         except Exception:
             expected_start_time = None
-
-        try:
-            pgid = _get_pgid(process, expected_start_time)
-            if pgid is not None:
-                process_registry.register(
-                    pid=process.pid,
-                    pgid=pgid,
-                    kind="blockcheck",
-                    cmdline=" ".join(cmd),
-                )
-        except Exception:
-            pass
 
         watchdog = threading.Thread(
             target=_termination_watchdog,

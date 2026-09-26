@@ -10,7 +10,7 @@ from PyQt6.QtCore import QDir, QLockFile, QStandardPaths
 from PyQt6.QtWidgets import QApplication, QMessageBox
 from ui.main_window import MainWindow
 from ui.password_dialog import get_password_from_user
-from core import process_registry, sudo
+from core import preflight, sudo
 
 
 def _acquire_single_instance_lock():
@@ -47,14 +47,30 @@ def main():
     if lock is None:
         sys.exit(0)
 
-    # Удаляем/убиваем процессы, оставленные предыдущими запусками приложения.
+    # Зачищаем leftover-процессы от предыдущих запусков.
+    # Используем sudo -n (без запроса пароля) — если кэш активен.
+    # Если кэш не активен — не страшно, перед блокчеком будет полноценная зачистка.
     try:
-        process_registry.cleanup_stale()
-    except Exception:
-        pass
+        killed, errors = preflight.kill_foreign_dpi_bypass(password="")
+        if killed > 0:
+            print(f"[STARTUP] Зачищено {killed} leftover-процессов", flush=True)
+        if errors:
+            print(f"[STARTUP] Ошибки зачистки: {errors}", flush=True)
+    except Exception as e:
+        print(f"[STARTUP] Зачистка не выполнена: {e}", flush=True)
 
-    # При выходе убиваем только процессы, запущенные этим приложением.
-    app.aboutToQuit.connect(process_registry.terminate_all)
+    # При выходе зачищаем все leftover-процессы (кроме zapret.service).
+    def _cleanup_on_exit():
+        try:
+            password = sudo.manager.get_password()
+            if password:
+                killed, errors = preflight.kill_foreign_dpi_bypass(password=password)
+                if killed > 0:
+                    print(f"[EXIT] Зачищено {killed} процессов при выходе", flush=True)
+        except Exception:
+            pass
+    
+    app.aboutToQuit.connect(_cleanup_on_exit)
 
     # Подключаем кроссплатформенный диалог пароля к ядру
     sudo.manager.set_password_dialog(get_password_from_user)
