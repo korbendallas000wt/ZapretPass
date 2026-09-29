@@ -46,6 +46,7 @@ class BlockcheckWorker(QThread):
     
     blockcheck_started = pyqtSignal()
     output_line = pyqtSignal(str)
+    progress_updated = pyqtSignal(int)  # текущее количество AVAILABLE
     blockcheck_finished = pyqtSignal(object)
     blockcheck_error = pyqtSignal(str)
     
@@ -56,6 +57,7 @@ class BlockcheckWorker(QThread):
         self.password = password
         self._cancelled = False
         self._cancel_event = threading.Event()
+        self._available_count = 0  # счётчик AVAILABLE
     
     def run(self):
         try:
@@ -78,10 +80,19 @@ class BlockcheckWorker(QThread):
     def _on_output(self, line: str):
         if not self._cancelled:
             self.output_line.emit(line)
+            # Подсчитываем AVAILABLE (есть и в AVAILABLE, и в UNAVAILABLE)
+            if "AVAILABLE" in line:
+                self._available_count += 1
+                self.progress_updated.emit(self._available_count)
     
     def cancel(self):
         self._cancelled = True
         self._cancel_event.set()
+    
+    @property
+    def available_count(self) -> int:
+        """Возвращает текущее количество AVAILABLE."""
+        return self._available_count
 
 
 class ScenarioProgressIndicator(QWidget):
@@ -380,6 +391,10 @@ class SitePassportWidget(QWidget):
         # Ссылки на активные воркеры
         self._diagnosis_worker = None
         self._blockcheck_worker = None
+        
+        # Атрибуты для прогресса блокчека
+        self._blockcheck_max_checks = 0
+        self._blockcheck_exceeded = False
         
         # Данные, передаваемые между блоками
         self._diagnosis_result = None
@@ -714,17 +729,29 @@ class SitePassportWidget(QWidget):
         )
         layout.addWidget(info_label)
         
-        # Прогресс
-        self._blockcheck_progress = QProgressBar()
-        self._blockcheck_progress.setRange(0, 0)
-        layout.addWidget(self._blockcheck_progress)
-        
         # Вывод
         self._blockcheck_output = QTextEdit()
         self._blockcheck_output.setReadOnly(True)
         self._blockcheck_output.setMaximumHeight(200)
         self._blockcheck_output.setStyleSheet("font-family: monospace; font-size: 9pt;")
         layout.addWidget(self._blockcheck_output)
+        
+        # Прогресс (перемещён ниже поля вывода)
+        progress_layout = QHBoxLayout()
+        self._blockcheck_progress = QProgressBar()
+        self._blockcheck_progress.setRange(0, 0)
+        self._blockcheck_progress.setTextVisible(True)
+        self._blockcheck_progress.setFormat("%v / %m проверок")
+        progress_layout.addWidget(self._blockcheck_progress, stretch=1)
+        
+        # Индикатор превышения (скрыт по умолчанию)
+        self._blockcheck_exceeded_label = QLabel("⚠")
+        self._blockcheck_exceeded_label.setToolTip("<span style='font-size: 9pt;'>Определяется среднее значение для вашей сети</span>")
+        self._blockcheck_exceeded_label.setStyleSheet("color: #f39c12; font-size: 14pt; font-weight: bold;")
+        self._blockcheck_exceeded_label.hide()
+        progress_layout.addWidget(self._blockcheck_exceeded_label)
+        
+        layout.addLayout(progress_layout)
         
         # Кнопка остановки блокчека
         self._blockcheck_stop_btn = QPushButton("⏹ Остановить блокчек")
@@ -786,12 +813,22 @@ class SitePassportWidget(QWidget):
         settings = blockcheck.BlockcheckSettings(
             mode="1" if mode == "fast" else "2" if mode == "standard" else "3"
         )
+        self._blockcheck_settings = settings  # сохраняем для обновления статистики
+        
+        # Получаем максимум из статистики
+        from core import blockcheck_stats
+        self._blockcheck_max_checks = blockcheck_stats.get_max_checks(settings)
+        self._blockcheck_exceeded = False
+        self._blockcheck_progress.setRange(0, self._blockcheck_max_checks)
+        self._blockcheck_progress.setValue(0)
+        self._blockcheck_progress.setStyleSheet("")  # сбрасываем цвет
         
         self._blockcheck_worker = BlockcheckWorker(
             domain=self.domain, settings=settings, password=password
         )
         self._blockcheck_worker.blockcheck_started.connect(self._on_blockcheck_started)
         self._blockcheck_worker.output_line.connect(self._on_blockcheck_output)
+        self._blockcheck_worker.progress_updated.connect(self._on_blockcheck_progress)
         self._blockcheck_worker.blockcheck_finished.connect(
             lambda r: self._on_blockcheck_finished(r, flags))
         self._blockcheck_worker.blockcheck_error.connect(self._on_blockcheck_error)
@@ -900,11 +937,36 @@ class SitePassportWidget(QWidget):
         scrollbar = self._blockcheck_output.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
     
+    
+    def _on_blockcheck_progress(self, count: int):
+        """Обработчик обновления прогресса блокчека."""
+        if not self._blockcheck_progress:
+            return
+        
+        self._blockcheck_progress.setValue(count)
+        
+        # Проверяем превышение максимума
+        if count > self._blockcheck_max_checks:
+            # Показываем индикатор превышения
+            if hasattr(self, '_blockcheck_exceeded_label'):
+                self._blockcheck_exceeded_label.show()
+            
+            # Расширяем максимум на 20 при каждом превышении
+            new_max = ((count // 20) + 1) * 20  # округляем вверх до кратного 20
+            if new_max > self._blockcheck_max_checks:
+                self._blockcheck_max_checks = new_max
+                self._blockcheck_progress.setRange(0, new_max)
+                self._blockcheck_progress.setValue(count)
     def _on_blockcheck_finished(self, result, flags: dict):
+        # Сохраняем количество проверок до удаления воркера
+        actual_checks = 0
         if self._blockcheck_worker is not None:
+            actual_checks = self._blockcheck_worker.available_count
             self._blockcheck_worker.deleteLater()
         self._blockcheck_worker = None
         self._blockcheck_progress.hide()
+        if hasattr(self, '_blockcheck_exceeded_label'):
+            self._blockcheck_exceeded_label.hide()
         if getattr(self, "_blockcheck_stop_btn", None) is not None:
             self._blockcheck_stop_btn.setEnabled(False)
             self._blockcheck_stop_btn.hide()
@@ -922,6 +984,11 @@ class SitePassportWidget(QWidget):
             print("[WARN] Пароль не получен для пост-обработки блокчека. Сервис может остаться остановленным.")
         
         if result.success:
+            # Обновляем статистику блокчека
+            if actual_checks > 0 and getattr(self, '_blockcheck_settings', None):
+                from core import blockcheck_stats
+                blockcheck_stats.update_stats(self._blockcheck_settings, actual_checks)
+            
             self._found_strategies = result.strategies
             self._found_strategy = result.strategies[0] if result.strategies else None
             
@@ -975,6 +1042,8 @@ class SitePassportWidget(QWidget):
             self._blockcheck_worker.deleteLater()
         self._blockcheck_worker = None
         self._blockcheck_progress.hide()
+        if hasattr(self, '_blockcheck_exceeded_label'):
+            self._blockcheck_exceeded_label.hide()
         if getattr(self, "_blockcheck_stop_btn", None) is not None:
             self._blockcheck_stop_btn.setEnabled(False)
             self._blockcheck_stop_btn.hide()
