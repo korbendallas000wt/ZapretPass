@@ -313,7 +313,7 @@ def run_blockcheck(
     password: str,
     on_output: Optional[Callable[[str], None]] = None,
     fast_mode: bool = False,
-    timeout: int = 1800,  # 30 минут по умолчанию
+    timeout: Optional[int] = None,  # Без ограничения по времени
     cancel_event: Optional[threading.Event] = None
 ) -> BlockcheckResult:
     """Запускает blockcheck.sh и возвращает результат.
