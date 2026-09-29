@@ -19,6 +19,15 @@ import threading
 from typing import Optional
 
 
+class PasswordDialogCancelled(Exception):
+    """Пользователь явно отменил ввод пароля.
+    
+    Это отличается от ошибки/недоступности диалога:
+    при отмене НЕ нужно переходить к следующему способу ввода.
+    """
+    pass
+
+
 def get_password_from_user(prompt: str = "Введите пароль администратора:") -> Optional[str]:
     """Запрашивает пароль у пользователя подходящим для окружения способом.
     
@@ -30,9 +39,14 @@ def get_password_from_user(prompt: str = "Введите пароль админ
     """
     # 1. Если запущены из Qt-приложения — используем QInputDialog
     if _is_qt_available():
-        result = _qt_password_dialog(prompt)
-        if result is not None:
-            return result
+        try:
+            return _qt_password_dialog(prompt)
+        except PasswordDialogCancelled:
+            # Пользователь явно отменил ввод — НЕ идём в системные диалоги
+            return None
+        except Exception:
+            # Диалог не смог показаться — пробуем другие способы
+            pass
     
     # 2. Определяем desktop environment
     desktop = os.environ.get("XDG_CURRENT_DESKTOP", "").lower()
@@ -67,23 +81,25 @@ def _is_qt_available() -> bool:
 
 
 def _qt_password_dialog(prompt: str) -> Optional[str]:
-    """Запрос пароля через Qt-диалог (работает в любом окружении с Qt)."""
-    try:
-        from PyQt6.QtWidgets import QInputDialog, QLineEdit
-        from PyQt6.QtCore import Qt
-        
-        dialog = QInputDialog()
-        dialog.setWindowTitle("ZapretPass")
-        dialog.setLabelText(prompt)
-        dialog.setTextEchoMode(QLineEdit.EchoMode.Password)
-        dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
-        
-        if dialog.exec():
-            text = dialog.textValue()
-            return text if text else None
-        return None
-    except Exception:
-        return None
+    """Запрос пароля через Qt-диалог (работает в любом окружении с Qt).
+    
+    Raises:
+        PasswordDialogCancelled: пользователь явно нажал «Отмена».
+        Другие исключения: диалог не смог показаться (нужен fallback).
+    """
+    from PyQt6.QtWidgets import QInputDialog, QLineEdit
+    from PyQt6.QtCore import Qt
+    
+    dialog = QInputDialog()
+    dialog.setWindowTitle("ZapretPass")
+    dialog.setLabelText(prompt)
+    dialog.setTextEchoMode(QLineEdit.EchoMode.Password)
+    dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
+    
+    if dialog.exec():
+        text = dialog.textValue()
+        return text if text else None
+    raise PasswordDialogCancelled()
 
 
 def _kdialog_password(prompt: str) -> Optional[str]:

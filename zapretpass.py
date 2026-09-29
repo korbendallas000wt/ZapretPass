@@ -64,11 +64,12 @@ def main():
     # При выходе зачищаем все leftover-процессы (кроме zapret.service).
     def _cleanup_on_exit():
         try:
-            password = sudo.manager.get_password()
-            if password:
-                killed, errors = preflight.kill_foreign_dpi_bypass(password=password)
-                if killed > 0:
-                    print(f"[EXIT] Зачищено {killed} процессов при выходе", flush=True)
+            # Используем sudo -n (без запроса пароля).
+            # Если кэш пароля активен — зачистка сработает, если нет — пропустим.
+            # Это предотвращает неожиданный запрос пароля при закрытии приложения.
+            killed, errors = preflight.kill_foreign_dpi_bypass(password="")
+            if killed > 0:
+                print(f"[EXIT] Зачищено {killed} процессов при выходе", flush=True)
         except Exception:
             pass
     

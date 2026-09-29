@@ -110,18 +110,22 @@ class ScenarioProgressIndicator(QWidget):
         self.set_placeholder(False, False)
 
     def set_placeholder(self, domain_ready: bool, scenario_ready: bool):
-        """Две точки-заглушки до формирования реального сценария."""
+        """Пять точек-заглушек до формирования реального сценария.
+        
+        Точка 0: ввод адреса сайта (номер "0")
+        Точки 1-4: следующие этапы (номера "?")
+        """
         self._items = [
             [
-                "Введите адрес сайта",
+                "Выберите сценарий" if domain_ready else "Введите адрес сайта",
                 "",
                 self.COMPLETED if domain_ready else self.WAITING,
+                "0",  # номер для отображения
             ],
-            [
-                "Выберите сценарий",
-                "",
-                self.COMPLETED if scenario_ready else self.WAITING,
-            ],
+            ["", "", self.WAITING, "?"],
+            ["", "", self.WAITING, "?"],
+            ["", "", self.WAITING, "?"],
+            ["", "", self.WAITING, "?"],
         ]
         self._points = []
         self.update()
@@ -282,7 +286,9 @@ class ScenarioProgressIndicator(QWidget):
             painter.setPen(QPen(text_color))
 
             text_rect = QRectF(xs[i] - r, y - r, 2.0 * r, 2.0 * r)
-            painter.drawText(text_rect, Qt.AlignmentFlag.AlignCenter, str(i + 1))
+            # Номер этапа: из item[3] если есть, иначе i+1
+            label = item[3] if len(item) > 3 else str(i + 1)
+            painter.drawText(text_rect, Qt.AlignmentFlag.AlignCenter, label)
 
             self._points.append((xs[i], y, r))
 
@@ -290,8 +296,13 @@ class ScenarioProgressIndicator(QWidget):
         index = self._point_at(event.position())
 
         if index is not None:
-            name, _description, _state = self._items[index]
-            QToolTip.showText(event.globalPosition().toPoint(), name, self)
+            item = self._items[index]
+            name = item[0] if len(item) > 0 else ""
+            # Показываем тултип только если имя непустое
+            if name:
+                QToolTip.showText(event.globalPosition().toPoint(), name, self)
+            else:
+                QToolTip.hideText()
         else:
             QToolTip.hideText()
 
@@ -335,7 +346,7 @@ class SitePassportWidget(QWidget):
         main_layout.addWidget(input_box)
         
         # 1a. Фиксированный индикатор этапов сценария (вне скролла)
-        self.progress_box = QGroupBox("Индикатор прогресса")
+        self.progress_box = QGroupBox("Индикатор сценария")
         self.progress_layout = QVBoxLayout(self.progress_box)
         self.progress_layout.setContentsMargins(8, 4, 8, 4)
         self.progress_layout.setSpacing(0)
@@ -411,6 +422,9 @@ class SitePassportWidget(QWidget):
         
         # Очищаем предыдущие результаты
         self._clear_results()
+        
+        # Отмечаем точку 0 как завершённую ПОСЛЕ очистки
+        self.set_domain_entered()
         
         # Создаём UI выбора сценария
         self._scenario_box = QGroupBox("🎯 Выберите сценарий")
@@ -511,8 +525,15 @@ class SitePassportWidget(QWidget):
 
     def _clear_progress_layout(self):
         """Сбрасывает индикатор в начальное заглушечное состояние."""
-        self.progress_box.setTitle("Индикатор прогресса")
+        self.progress_box.setTitle("Индикатор сценария")
         self.progress_indicator.set_placeholder(False, False)
+
+    def set_domain_entered(self):
+        """Отмечает точку 0 как завершённую после ввода домена."""
+        if len(self.progress_indicator._items) > 0:
+            self.progress_indicator._items[0][0] = "Выберите сценарий"
+            self.progress_indicator._items[0][2] = self.progress_indicator.COMPLETED
+            self.progress_indicator.update()
 
     def _create_scenario_progress(self, blocks):
         """Строит реальный индикатор по блокам сценария."""
