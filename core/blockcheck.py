@@ -453,7 +453,7 @@ def run_blockcheck(
                     pass
             finally:
                 _unregister_process(process)
-
+                # Радикальная зачистка: убиваем ВСЕ процессы nfqws/tpws, которые мог оставить blockcheck.sh
             if timeout_event.is_set():
                 return BlockcheckResult(
                     success=False,

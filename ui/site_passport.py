@@ -60,6 +60,7 @@ class BlockcheckWorker(QThread):
         self._available_count = 0  # счётчик AVAILABLE
     
     def run(self):
+        result = None
         try:
             self.blockcheck_started.emit()
             from core import blockcheck
@@ -71,11 +72,19 @@ class BlockcheckWorker(QThread):
                 fast_mode=(self.settings.mode == "1"),
                 cancel_event=self._cancel_event
             )
-            # Отправляем результат всегда (включая отмену), чтобы обновить UI
-            self.blockcheck_finished.emit(result)
         except Exception as e:
             if not self._cancelled:
                 self.blockcheck_error.emit(str(e))
+        finally:
+            # Радикальная зачистка: убиваем ВСЕ процессы nfqws/tpws
+            # ВАЖНО: делаем это ДО emit, чтобы поток успел завершиться
+            # до того, как UI вызовет deleteLater() на воркере
+            from core import preflight
+            preflight.kill_all_dpi_bypass(self.password)
+        
+        # Отправляем результат ПОСЛЕ зачистки, когда поток почти завершён
+        if result is not None:
+            self.blockcheck_finished.emit(result)
     
     def _on_output(self, line: str):
         if not self._cancelled:
@@ -784,9 +793,21 @@ class SitePassportWidget(QWidget):
 
             return
         
-        # Preflight: автокилл leftover-процессов перед блокчеком
+        # Подготовка перед блоком (сохранение состояния сервиса + остановка)
+        # ВАЖНО: вызываем ДО убийства процессов, чтобы корректно запомнить,
+        # был ли сервис активен
+        print(f"[DEBUG UI] Вызываем prepare_before_block с паролем")
+        ok_prep, msg_prep = service_manager.manager.prepare_before_block(
+            flags, self.domain, password)
+        print(f"[DEBUG UI] prepare_before_block вернул: ok={ok_prep}, msg={msg_prep}")
+        if not ok_prep:
+            layout.addWidget(QLabel(f"❌ {msg_prep}"))
+            return
+
+        # Preflight: добивание остатков после остановки сервиса
+        # Теперь безопасно, т.к. состояние сервиса уже сохранено
         from core import preflight
-        ok_preflight, msg_preflight = preflight.ensure_no_foreign_dpi_bypass(password)
+        ok_preflight, msg_preflight = preflight.kill_all_dpi_bypass(password)
         print(f"[DEBUG UI] preflight вернул: ok={ok_preflight}, msg={msg_preflight}")
         if not ok_preflight:
             preflight_label = QLabel(f"❌ {msg_preflight}")
@@ -794,20 +815,11 @@ class SitePassportWidget(QWidget):
             layout.addWidget(preflight_label)
             self._mark_current_progress("error")
             self.status_message_requested.emit(
-                "❌ Блокчек не запущен: обнаружены сторонние DPI-bypass процессы",
+                "❌ Блокчек не запущен: не удалось зачистить процессы",
                 True,
             )
             self.btn_proceed.setEnabled(True)
             self.url_input.setEnabled(True)
-            return
-
-        # Подготовка перед блоком (остановка сервиса если нужно)
-        print(f"[DEBUG UI] Вызываем prepare_before_block с паролем")
-        ok_prep, msg_prep = service_manager.manager.prepare_before_block(
-            flags, self.domain, password)
-        print(f"[DEBUG UI] prepare_before_block вернул: ok={ok_prep}, msg={msg_prep}")
-        if not ok_prep:
-            layout.addWidget(QLabel(f"❌ {msg_prep}"))
             return
         
         settings = blockcheck.BlockcheckSettings(

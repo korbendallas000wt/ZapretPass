@@ -15,72 +15,53 @@ from .logger import get_logger
 
 log = get_logger(__name__)
 
-DPI_BYPASS_COMMS = {"nfqws", "tpws"}
-BLOCKCHECK_MARKER = "blockcheck.sh"
 ZAPRET_CGROUP_MARKER = "zapret"  # Короткий маркер (cgroup может быть длинным)
 
-
 def _read_proc_cgroup(pid: int) -> str:
-    """Читает cgroup процесса напрямую из /proc (не обрезается)."""
+    """Читает cgroup процесса напрямую из /proc."""
     try:
         return Path(f"/proc/{pid}/cgroup").read_text(errors="ignore").strip()
     except OSError:
         return ""
 
-
-def _read_proc_comm(pid: int) -> str:
-    try:
-        return Path(f"/proc/{pid}/comm").read_text(errors="ignore").strip()
-    except OSError:
-        return ""
-
-
-def _read_proc_cmdline(pid: int) -> str:
-    try:
-        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
-        return raw.decode(errors="ignore").replace("\0", " ").strip()
-    except OSError:
-        return ""
-
-
-def _find_foreign_dpi_processes() -> List[int]:
+def _find_foreign_dpi_processes(include_service: bool = False) -> List[int]:
     """Находит PID процессов DPI-bypass, НЕ принадлежащих zapret.service."""
     foreign_pids = []
     self_pid = os.getpid()
     
-    proc_root = Path("/proc")
-    for entry in proc_root.iterdir():
-        if not entry.name.isdigit():
-            continue
-        
-        pid = int(entry.name)
-        if pid == self_pid or pid == 1:  # Пропускаем себя и init
-            continue
-        
-        comm = _read_proc_comm(pid)
-        cmdline = _read_proc_cmdline(pid)
-        
-        # Это DPI-bypass процесс?
-        is_target = (
-            comm in DPI_BYPASS_COMMS
-            or BLOCKCHECK_MARKER in cmdline
+    # Используем pgrep для надежного поиска по полной командной строке
+    try:
+        # Ищем все процессы, связанные с nfqws, tpws или blockcheck
+        result = subprocess.run(
+            ["pgrep", "-f", r"nfqws|tpws|blockcheck.sh"],
+            capture_output=True, text=True, timeout=5
         )
-        if not is_target:
+        if result.returncode == 0 and result.stdout.strip():
+            pids = [int(p) for p in result.stdout.strip().split('\n') if p.isdigit()]
+            log.debug(f"pgrep нашел PID: {pids}")
+        else:
+            return []
+    except Exception as e:
+        log.error(f"Ошибка pgrep: {e}")
+        return []
+    
+    for pid in pids:
+        if pid == self_pid or pid == 1:
             continue
         
         # Принадлежит zapret.service?
         cgroup = _read_proc_cgroup(pid)
         if ZAPRET_CGROUP_MARKER in cgroup:
-            # Это сервисный процесс — НЕ трогаем
+            log.debug(f"PID {pid} пропущен (принадлежит zapret.service)")
             continue
         
         foreign_pids.append(pid)
     
     return foreign_pids
 
-
 def _kill_pid(pid: int, password: str) -> Tuple[bool, str]:
     """Убивает один процесс: SIGTERM → ждём → SIGKILL."""
+    log.debug(f"Попытка убить PID {pid}")
     # SIGTERM
     try:
         if password:
@@ -98,12 +79,16 @@ def _kill_pid(pid: int, password: str) -> Tuple[bool, str]:
             )
         
         if result.returncode != 0:
-            return False, f"SIGTERM PID {pid}: {result.stderr.decode(errors='ignore').strip()}"
+            err_msg = result.stderr.decode(errors='ignore').strip()
+            log.warning(f"SIGTERM PID {pid} не сработал: {err_msg}")
+            # Если процесс уже мертв, kill вернет ошибку, но для нас это успех
+            if "No such process" in err_msg:
+                return True, ""
+            return False, f"SIGTERM PID {pid}: {err_msg}"
     except Exception as e:
         return False, f"SIGTERM PID {pid}: {e}"
     
-    # Ждём 2 секунды
-    time.sleep(2)
+    time.sleep(1.5)
     
     # Проверяем что процесс ещё жив
     try:
@@ -132,20 +117,58 @@ def _kill_pid(pid: int, password: str) -> Tuple[bool, str]:
         return False, f"SIGKILL PID {pid}: {e}"
 
 
-def kill_foreign_dpi_bypass(password: str) -> Tuple[int, List[str]]:
-    log.info("Зачистка leftover-процессов DPI-bypass")
-    """Убивает все leftover-процессы DPI-bypass (кроме zapret.service).
+def kill_all_dpi_bypass(password: str) -> Tuple[int, List[str]]:
+    """Жёстко убивает ВСЕ процессы nfqws/tpws (для подготовки к блокчеку и очистки после).
     
-    Args:
-        password: пароль sudo. Пустая строка = только sudo -n (кэш).
-    
-    Returns:
-        (количество убитых, список ошибок)
+    В отличие от kill_foreign_dpi_bypass, не проверяет cgroup и убивает вообще всё.
+    Используется перед blockcheck (сервис уже остановлен) и после остановки blockcheck.
     """
-    pids = _find_foreign_dpi_processes()
+    log.info("Радикальная зачистка всех DPI-bypass процессов")
+    try:
+        result = subprocess.run(
+            ["sudo", "-S", "pkill", "-9", "-f", "nfqws|tpws"],
+            input=(password + "\n").encode(),
+            capture_output=True,
+            timeout=5
+        )
+        stderr = result.stderr.decode(errors='ignore').strip()
+        
+        # pkill возвращает:
+        # 0 - процессы найдены и убиты
+        # 1 - процессы не найдены (это тоже успех — значит уже чисто)
+        # Отрицательные значения - процесс убит сигналом (артефакт, но не ошибка)
+        # Главное — проверить, остались ли процессы после убийства
+        if result.returncode in (0, 1) or result.returncode < 0:
+            # Дополнительная проверка: реально ли в системе остались процессы?
+            try:
+                check = subprocess.run(
+                    ["pgrep", "-f", "nfqws|tpws"],
+                    capture_output=True, text=True, timeout=3
+                )
+                if check.returncode != 0:  # pgrep не нашёл процессов
+                    log.info("Все DPI-bypass процессы зачищены")
+                    return 1, []
+                else:
+                    remaining = check.stdout.strip().split('\n')
+                    log.warning(f"После pkill осталось {len(remaining)} процессов: {remaining}")
+                    return 0, [f"Осталось {len(remaining)} процессов после pkill"]
+            except Exception as check_err:
+                log.warning(f"Не удалось проверить остатки процессов: {check_err}")
+                return 1, []  # предполагаем успех
+        
+        return 0, [f"pkill вернул {result.returncode}: {stderr}"]
+    except Exception as e:
+        log.error(f"Ошибка kill_all_dpi_bypass: {e}")
+        return 0, [f"Ошибка pkill: {e}"]
+
+def kill_foreign_dpi_bypass(password: str, include_service: bool = False) -> Tuple[int, List[str]]:
+    log.info("Зачистка leftover-процессов DPI-bypass")
+    pids = _find_foreign_dpi_processes(include_service=include_service)
     if not pids:
+        log.info("Leftover-процессов не найдено")
         return 0, []
     
+    log.info(f"Найдено {len(pids)} leftover-процессов: {pids}")
     killed = 0
     errors = []
     
@@ -159,14 +182,13 @@ def kill_foreign_dpi_bypass(password: str) -> Tuple[int, List[str]]:
     log.info(f"Зачищено {killed} процессов, ошибок: {len(errors)}")
     return killed, errors
 
-
-def ensure_no_foreign_dpi_bypass(password: str) -> Tuple[bool, str]:
+def ensure_no_foreign_dpi_bypass(password: str, include_service: bool = False) -> Tuple[bool, str]:
     """Автокилл + проверка. Если остались живые — возвращает ошибку."""
-    killed, errors = kill_foreign_dpi_bypass(password)
+    killed, errors = kill_foreign_dpi_bypass(password, include_service=include_service)
     
     # Проверяем что ВСЕ foreign-процессы убиты
     time.sleep(0.5)
-    remaining = _find_foreign_dpi_processes()
+    remaining = _find_foreign_dpi_processes(include_service=include_service)
     
     if remaining:
         return False, (
