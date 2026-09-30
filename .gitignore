@@ -34,3 +34,6 @@ whitelist.txt
 # Local workspace
 Work/
 
+
+# Ротированные логи
+data/logs/*.log.*
