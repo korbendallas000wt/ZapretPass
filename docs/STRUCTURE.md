@@ -69,7 +69,6 @@ ZapretPass/
 | `preflight.py` | Предстартовые проверки окружения, автокилл foreign-процессов |
 | `logger.py` | Централизованное логирование с ротацией |
 
-- [core/blockcheck_stats.py](https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/core/blockcheck_stats.py)
 
 ### `ui/` — интерфейс
 
@@ -127,6 +126,7 @@ Qt6-интерфейс, исполняет сценарии через блок�
 - [preflight.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/core/preflight.py)
 - [logger.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/core/logger.py)
 
+- [core/blockcheck_stats.py](https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/core/blockcheck_stats.py)
 ### `ui/`
 - [__init__.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/ui/__init__.py)
 - [main_window.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/ui/main_window.py)
