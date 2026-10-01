@@ -6,7 +6,7 @@ ZapretPass UI - Вкладка "Паспорт сайта"
 """
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QGroupBox, QProgressBar, QScrollArea,
+    QPushButton, QGroupBox, QProgressBar, QScrollArea, QStackedWidget,
     QFrame, QSizePolicy, QComboBox, QTextEdit, QRadioButton,
     QButtonGroup, QToolTip
 )
@@ -106,6 +106,9 @@ class BlockcheckWorker(QThread):
 
 class ScenarioProgressIndicator(QWidget):
     """Горизонтальный индикатор этапов сценария: линия + круглые точки."""
+    
+    # Сигнал клика на точку (индекс блока)
+    point_clicked = pyqtSignal(int)
 
     # Семантические цвета индикатора.
     # Для этого элемента сознательно отступаем от полностью системной палитры:
@@ -330,7 +333,13 @@ class ScenarioProgressIndicator(QWidget):
 
     def leaveEvent(self, event):
         QToolTip.hideText()
-        super().leaveEvent(event)
+
+    def mousePressEvent(self, event):
+        """Обработка клика на точку индикатора."""
+        index = self._point_at(event.position())
+        if index is not None:
+            self.point_clicked.emit(index)
+        super().mousePressEvent(event)
 
 class SitePassportWidget(QWidget):
     """Виджет вкладки "Паспорт сайта" на архитектуре сценариев."""
@@ -374,25 +383,27 @@ class SitePassportWidget(QWidget):
         self.progress_indicator = ScenarioProgressIndicator(self.progress_box)
         self.progress_layout.addWidget(self.progress_indicator)
         self.progress_indicator.set_placeholder(False, False)
+        self.progress_indicator.point_clicked.connect(self._switch_to_block)
 
         main_layout.addWidget(self.progress_box)
         
-        # 2. Область результатов (скроллируемая)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # 2. Область результатов (сцена)
+        self.scene = QStackedWidget()
+        # Сцена: каждый блок — отдельная страница
         
-        self.results_container = QWidget()
+        
+        self.results_container = QWidget()  # Контейнер для блоков внутри сцены
         self.results_layout = QVBoxLayout(self.results_container)
         self.results_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.results_layout.setSpacing(8)
         
-        self.scroll_area = scroll
-        scroll.setWidget(self.results_container)
-        main_layout.addWidget(scroll, stretch=1)
+        # Сохраняем ссылку на сцену
+        self.scene.addWidget(self.results_container)
+        main_layout.addWidget(self.scene, stretch=1)
         
         # Состояние
         self.domain = None
+        self._block_pages = []  # Список QWidget страниц для каждого блока
         self.scenario = None
         self.current_block_index = 0
         self._clear_progress_layout()
@@ -581,9 +592,15 @@ class SitePassportWidget(QWidget):
 
     def _hide_scenario_transition_buttons(self):
         """Скрывает кнопки перехода после перехода к следующему блоку."""
-        for btn in self.results_container.findChildren(QPushButton):
+        for btn in self.findChildren(QPushButton):
             if btn.property("scenario_transition_button"):
                 btn.hide()
+
+    def _switch_to_block(self, index: int):
+        """Переключение сцены на блок по индексу (клик на точку)."""
+        if 0 <= index < len(self._block_pages):
+            self.scene.setCurrentWidget(self._block_pages[index])
+
 
     def _run_next_block(self):
         """Запускает следующий блок сценария."""
@@ -604,14 +621,22 @@ class SitePassportWidget(QWidget):
         self.current_block_index += 1
         self._set_progress_running(block_index)
         
-        # Добавляем карточку блока
+        # Создаём страницу блока для сцены
+        page = QWidget()
+        page_layout = QVBoxLayout(page)
+        page_layout.setContentsMargins(0, 0, 0, 0)
+        page_layout.setSpacing(8)
+        
         box = QGroupBox(f"{block.name}")
         layout = QVBoxLayout(box)
         self._current_block_layout = layout  # Сохраняем для доступа из обработчиков
         
-        self.results_layout.addWidget(box)
-        # Автоскролл к новому блоку
-        QTimer.singleShot(50, lambda b=box: self.scroll_area.ensureWidgetVisible(b))
+        page_layout.addWidget(box)
+        page_layout.addStretch(1)  # Блок прижат к верху
+        
+        self.scene.addWidget(page)
+        self._block_pages.append(page)
+        self.scene.setCurrentWidget(page)
         self._set_active_block(box)
         
         # Выполняем блок по типу
@@ -1019,8 +1044,8 @@ class SitePassportWidget(QWidget):
             strategies_label = QLabel(strategies_text)
             strategies_label.setStyleSheet("font-family: monospace; font-size: 9pt;")
             
-            self.results_layout.addWidget(status_label)
-            self.results_layout.addWidget(strategies_label)
+            self._current_block_layout.addWidget(status_label)
+            self._current_block_layout.addWidget(strategies_label)
             
             self.status_message_requested.emit(
                 f"✅ Найдено {len(result.strategies)} стратегий", True)
@@ -1029,7 +1054,7 @@ class SitePassportWidget(QWidget):
             error_msg = result.error or "Неизвестная ошибка"
             status_label = QLabel(f"❌ {error_msg}")
             status_label.setStyleSheet("color: #e74c3c; font-weight: bold;")
-            self.results_layout.addWidget(status_label)
+            self._current_block_layout.addWidget(status_label)
             
             self.status_message_requested.emit(
                 f"❌ Стратегии не найдены: {error_msg}", True)
@@ -1062,7 +1087,7 @@ class SitePassportWidget(QWidget):
         
         status_label = QLabel(f"⚠️ Ошибка блокчека: {error_msg}")
         status_label.setStyleSheet("color: #e74c3c;")
-        self.results_layout.addWidget(status_label)
+        self._current_block_layout.addWidget(status_label)
         self.status_message_requested.emit(
             f"⚠️ Ошибка блокчека: {error_msg}", True)
     
@@ -1139,6 +1164,14 @@ class SitePassportWidget(QWidget):
             if item.widget():
                 item.widget().deleteLater()
         
+        # Удаляем страницы блоков из сцены (страница 0 — выбор сценария)
+        while self.scene.count() > 1:
+            page = self.scene.widget(1)
+            self.scene.removeWidget(page)
+            page.deleteLater()
+        self._block_pages.clear()
+        self.scene.setCurrentIndex(0)
+        
         # Сбрасываем состояние
         self.scenario = None
         self.current_block_index = 0
@@ -1179,6 +1212,14 @@ class SitePassportWidget(QWidget):
             item = self.results_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
+        
+        # Удаляем страницы блоков из сцены (страница 0 — выбор сценария)
+        while self.scene.count() > 1:
+            page = self.scene.widget(1)
+            self.scene.removeWidget(page)
+            page.deleteLater()
+        self._block_pages.clear()
+        self.scene.setCurrentIndex(0)
         
         self.scenario = None
         self.current_block_index = 0
