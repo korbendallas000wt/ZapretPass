@@ -19,6 +19,7 @@ ZapretPass/
 │   ├── auth_limits.py          Лимиты попыток аутентификации
 │   ├── strategies.py           Стратегии, пресеты, whitelist, пересечения
 │   ├── blockcheck.py           Запуск и парсинг blockcheck.sh
+│   ├── blockcheck_stats.py     Статистика проверок для детерминированного прогресса
 │   ├── applier.py              Применение стратегий, бэкапы, ротация
 │   ├── sniffer.py              Перехват SNI-доменов через tshark
 │   ├── checker.py              Проверка доступности сайтов через curl
@@ -60,12 +61,15 @@ ZapretPass/
 | `auth_limits.py` | Лимиты попыток аутентификации |
 | `strategies.py` | Стратегии, пресеты, whitelist, поиск пересечений и объединений |
 | `blockcheck.py` | Запуск и парсинг результатов `blockcheck.sh` |
+| blockcheck_stats.py | Статистика количества проверок для прогресс-бара блокчека |
 | `applier.py` | Применение стратегий, бэкапы, ротация |
 | `sniffer.py` | Перехват SNI-доменов через `tshark` |
 | `checker.py` | Проверка доступности сайтов через `curl` |
 | `scenarios.py` | Workflow Engine — сценарии визарда (декларативное описание) |
 | `preflight.py` | Предстартовые проверки окружения, автокилл foreign-процессов |
 | `logger.py` | Централизованное логирование с ротацией |
+
+- [core/blockcheck_stats.py](https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/core/blockcheck_stats.py)
 
 ### `ui/` — интерфейс
 
@@ -86,6 +90,8 @@ Qt6-интерфейс, исполняет сценарии через блок�
 | `sites/` | Паспорта сайтов: `{domain}.json` |
 | `sniffer_results/` | Результаты сниффинга: `{domain}.txt` |
 | `logs/` | Логи приложения |
+
+- **blockcheck_stats.json** — статистика количества проверок блокчека (пользовательский файл, не в git)
 
 ### `docs/` — документация
 

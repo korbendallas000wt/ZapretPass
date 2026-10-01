@@ -30,19 +30,27 @@ core/service.py — Управление systemd-сервисом zapret
 - enable/disable(password) — управление автозапуском
 - is_enabled() — проверка автозапуска без sudo
 
-core/sudo.py — Запрос и кэширование пароля
-core/auth_limits.py — Лимиты попыток аутентификации
-- get_max_attempts() — максимальное количество попыток ввода пароля
-- get_lockout_duration() — длительность блокировки после превышения лимита
-- check_lockout_status() — проверка текущего статуса блокировки
-- Интеграция с sudo.py для предотвращения brute-force атак
+core/sudo.py — Запрос, проверка и кэширование sudo-пароля
 - SudoManager — класс для работы с привилегиями
-- set_password_dialog(func) — установка callback для запроса пароля (kdialog, Qt-диалог)
-- get_password() — получение пароля с кэшированием и проверкой валидности
-- verify_password(password) — проверка через sudo -v
+- set_password_dialog(dialog_func) — установка callback запроса пароля
+- get_password(max_retries=None) — получение пароля с повторными попытками и валидацией
+- verify_password(password) — публичная проверка пароля
+- _verify_password(password) — проверка через sudo -S -v после принудительного сброса кэша sudo -k
+- _verify_cached_password() — проверка живости кэша без запроса пароля
+- _start_keep_alive() — фоновое продление sudo-кэша
+- _register_invalid_password() — учёт неудач и интеграция с лимитами auth_limits
+- clear_cache() — очистка кэша пароля
 - run_with_sudo(command, timeout) — выполнение команды с sudo
 - run_with_pkexec(command, timeout) — выполнение через pkexec
-- clear_cache() — очистка кэша пароля
+
+core/auth_limits.py — Адаптивные лимиты аутентификации
+- max_attempts — максимальное число попыток до блокировки (минимум из PAM faillock и sudo passwd_tries)
+- lockout_seconds — длительность блокировки
+- warn_threshold — номер попытки для предупреждения
+- is_account_locked() — проверка блокировки учётки через faillock
+- get_lock_remaining_seconds() — оставшееся время блокировки
+- get_system_lock_info() — сводка для UI
+- Интеграция с sudo.py: учёт неудач, предупреждения, системная блокировка
 
 core/strategies.py — Стратегии, whitelist, пресеты
 - save_blockcheck_results(domain, strategies) — сохранение результатов blockcheck
@@ -62,6 +70,14 @@ core/blockcheck.py — Запуск и парсинг blockcheck.sh
 - parse_strategies_from_output(output) — парсинг секции SUMMARY
 - detect_first_success(output_lines) — детектирование первой рабочей стратегии (для fast_mode)
 - get_supported_modes() — словарь режимов
+
+core/blockcheck_stats.py — Статистика проверок блокчека
+- STATS_FILE — data/blockcheck_stats.json
+- DEFAULT_AVG_CHECKS — базовая оценка при отсутствии статистики (100)
+- BlockcheckStats — dataclass: avg_checks, sample_count
+- get_stats_key(settings) — ключ "ipver-http-tls12-tls13-quic-mode"
+- get_max_checks(settings) — оценка максимального числа AVAILABLE для прогресс-бара
+- update_stats(settings, actual_checks) — обновление среднего значения по результатам прогона
 
 core/applier.py — Применение стратегий к конфигу
 - apply_whitelist(password) — копирование whitelist.txt в /opt/zapret/ipset/
@@ -100,18 +116,20 @@ core/service_manager.py — Менеджер сервиса для блоков 
 - cleanup_after_block(block, domain, password, result) — применение стратегии, рестарт по флагам
 - manager — глобальный экземпляр ServiceManager
 
-core/preflight.py — Предстартовые проверки окружения и автокилл foreign-процессов
-- DpiBypassProcess — dataclass: pid, ppid, user, comm, cmdline, cgroup, service_managed
-- list_dpi_bypass_processes() — поиск nfqws/tpws/blockcheck.sh через /proc
-- foreign_dpi_bypass_processes() — процессы вне zapret.service
-- ensure_no_foreign_dpi_bypass() — проверка перед блокчеком
-- ensure_no_dpi_bypass_processes() — полная проверка
+core/preflight.py — Проверка и остановка процессов обхода DPI
+- ZAPRET_CGROUP_MARKER — маркер "zapret" в cgroup для отделения сервисных процессов
+- _read_proc_cgroup(pid) — чтение cgroup процесса из /proc
+- _find_foreign_dpi_processes(include_service=False) — поиск PID nfqws/tpws/blockcheck.sh вне zapret.service
+- _kill_pid(pid, password) — остановка PID с fallback sudo -n и sudo -S
+- kill_all_dpi_bypass(password) — радикальная остановка всех DPI-bypass процессов, возвращает (count, errors)
+- kill_foreign_dpi_bypass(password, include_service=False) — остановка только сторонних/leftover процессов
+- ensure_no_foreign_dpi_bypass(password, include_service=False) — проверка и очистка перед блокчеком, возвращает (ok, message)
 
 core/logger.py — Централизованное логирование
-- setup_logging(level, debug_mode) — настройка: основной лог + debug-лог + консоль
-- get_logger(name) — получение логгера для модуля
+- setup_logging(level, debug_mode) — настройка корневого логгера zapretpass: файл, debug-файл и консоль
+- get_logger(name) — создание дочернего логгера вида zapretpass.<имя_модуля>
 - Ротация: 5 МБ, 3 бэкапа
-- Файлы: data/logs/zapretpass.log, data/logs/zapretpass_debug.log
+- Файлы: data/logs/zapretpass.log, data/logs/zapretpass_debug.log; ротация по размеру помогает собирать диагностику крашей
 
 
 ---
@@ -166,6 +184,10 @@ strategies может быть списком списков (для совме�
 }
 ```
 Хранит результат работы визарда «Паспорт сайта»: основной домен, вспомогательные домены, рабочую стратегию, статус и последний сценарий.
+
+### data/blockcheck_stats.json — статистика проверок блокчека
+Файл создаётся автоматически и хранится в data/. Ключ — комбинация настроек "ipver-http-tls12-tls13-quic-mode". Значение — среднее количество AVAILABLE проверок для repeat=1 и число измерений.
+Пример: { "4-Y-Y-N-N-1": { "avg_checks": 96.5, "sample_count": 3 } }
 
 ---
 
@@ -291,9 +313,10 @@ Qt6-интерфейс на PyQt6. Точка входа: zapretpass.py.
 
 ### zapretpass.py — точка входа
 - Single-instance lock через QLockFile
-- preflight.kill_foreign_dpi_bypass() при старте
-- preflight.killforeign_dpi_bypass() при выходе
+- Инициализация центрального логирования
 - Подключение password_dialog к sudo.manager.set_password_dialog()
+- Очистка leftover DPI-bypass процессов через core.preflight при старте
+- Завершение принадлежащих приложению DPI-bypass процессов через core.preflight при выходе
 
 ### ui/main_window.py — главное окно
 - MainWindow(QMainWindow) — 3 вкладки + нижняя панель управления
@@ -306,12 +329,15 @@ Qt6-интерфейс на PyQt6. Точка входа: zapretpass.py.
 
 ### ui/site_passport.py — визард «Паспорт сайта»
 - SitePassportWidget(QWidget) — исполнение сценариев из core.scenarios
-- ScenarioProgressIndicator — горизонтальный индикатор этапов (линия + круглые точки)
+- ScenarioProgressIndicator — горизонтальный индикатор этапов сценария
 - DiagnosisWorker(QThread) — фоновая проверка доступности через core.checker
-- BlockcheckWorker(QThread) — фоновый blockcheck с возможностью отмены
-- Пошаговое управление: кнопка «Далее» после каждого блока
-- Preflight-проверка перед блокчеком (ensure_no_foreign_dpi_bypass)
+- BlockcheckWorker(QThread) — фоновый blockcheck с отменой, прогрессом и корректным завершением потока
+- progress_updated(int) — сигнал текущего количества AVAILABLE для детерминированного прогресс-бара
+- finally до emit(blockcheck_finished) — гарантирует завершение воркера до обновления UI и предотвращает краш QThread
+- Интеграция с core.blockcheck_stats: get_max_checks() до запуска, update_stats() после успешного прогона
+- Preflight-проверка и очистка перед блокчеком через core.preflight
 - Интеграция с service_manager для подготовки/завершения блоков
+- Пошаговое управление: кнопки «Далее» и финальная «Готово»
 
 ### ui/password_dialog.py — диалог пароля
 - get_password_from_user() — кроссплатформенный запрос пароля (kdialog/QInputDialog)
