@@ -119,6 +119,7 @@ Qt6-интерфейс, исполняет сценарии через блок�
 - [auth_limits.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/core/auth_limits.py)
 - [strategies.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/core/strategies.py)
 - [blockcheck.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/core/blockcheck.py)
+- [blockcheck_stats.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/core/blockcheck_stats.py)
 - [applier.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/core/applier.py)
 - [sniffer.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/core/sniffer.py)
 - [checker.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/core/checker.py)
@@ -126,7 +127,6 @@ Qt6-интерфейс, исполняет сценарии через блок�
 - [preflight.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/core/preflight.py)
 - [logger.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/core/logger.py)
 
-- [core/blockcheck_stats.py](https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/core/blockcheck_stats.py)
 ### `ui/`
 - [__init__.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/ui/__init__.py)
 - [main_window.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/ui/main_window.py)
