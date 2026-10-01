@@ -11,6 +11,9 @@ from dataclasses import dataclass
 from typing import Optional
 
 from . import config
+from .logger import get_logger
+
+log = get_logger(__name__)
 
 
 @dataclass
@@ -34,6 +37,7 @@ _MODE_TO_INTERNAL = {
 
 
 def get_status() -> ServiceStatus:
+    log.debug("Запрос статуса сервиса zapret")
     """Возвращает текущее состояние сервиса zapret.
     
     Чтение статуса не требует sudo-прав, так как использует:
@@ -71,16 +75,19 @@ def get_status() -> ServiceStatus:
 
 
 def start(password: str) -> tuple[bool, str]:
+    log.info("Запуск сервиса zapret")
     """Запускает сервис zapret."""
     return _run_systemctl("start", password)
 
 
 def stop(password: str) -> tuple[bool, str]:
+    log.info("Остановка сервиса zapret")
     """Останавливает сервис zapret."""
     return _run_systemctl("stop", password)
 
 
 def restart(password: str) -> tuple[bool, str]:
+    log.info("Перезапуск сервиса zapret")
     """Перезапускает сервис zapret."""
     return _run_systemctl("restart", password)
 
@@ -210,6 +217,7 @@ def _run_systemctl(action: str, password: str) -> tuple[bool, str]:
         stdout, stderr = process.communicate(input=password + "\n", timeout=30)
         
         if process.returncode == 0:
+            log.info(f"systemctl {action} zapret: OK")
             return True, f"✅ systemctl {action} zapret"
         
         # Фильтруем stderr от служебных строк sudo и берём осмысленное
@@ -223,6 +231,7 @@ def _run_systemctl(action: str, password: str) -> tuple[bool, str]:
         if not error_msg:
             error_msg = "Неизвестная ошибка"
         
+        log.error(f"systemctl {action} zapret: FAILED - {error_msg}")
         return False, f"❌ {action}: {error_msg}"
     
     except subprocess.TimeoutExpired:

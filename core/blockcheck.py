@@ -13,6 +13,9 @@ from dataclasses import dataclass, field
 from typing import Optional, Callable
 
 from . import config
+from .logger import get_logger
+
+log = get_logger(__name__)
 
 
 @dataclass
@@ -310,7 +313,7 @@ def run_blockcheck(
     password: str,
     on_output: Optional[Callable[[str], None]] = None,
     fast_mode: bool = False,
-    timeout: int = 1800,  # 30 минут по умолчанию
+    timeout: Optional[int] = None,  # Без ограничения по времени
     cancel_event: Optional[threading.Event] = None
 ) -> BlockcheckResult:
     """Запускает blockcheck.sh и возвращает результат.
@@ -331,6 +334,8 @@ def run_blockcheck(
             success=False,
             error="Пароль не предоставлен"
         )
+
+    log.info(f"Запуск blockcheck для домена: {domain}")
     
     if cancel_event is None:
         cancel_event = threading.Event()
@@ -448,7 +453,7 @@ def run_blockcheck(
                     pass
             finally:
                 _unregister_process(process)
-
+                # Радикальная зачистка: убиваем ВСЕ процессы nfqws/tpws, которые мог оставить blockcheck.sh
             if timeout_event.is_set():
                 return BlockcheckResult(
                     success=False,

@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-import logging
-logger = logging.getLogger(__name__)
 
 """
 ZapretPass Core - Sudo
@@ -14,6 +12,9 @@ import time
 import shutil
 from typing import Optional, Callable
 from .auth_limits import AuthLimits
+from .logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class SudoManager:
@@ -75,15 +76,13 @@ class SudoManager:
             self.reset_failure_state()
 
         if self._password is not None:
-            if self._verify_cached_password():
-                self.reset_failure_state()
-                self._last_failure_reason = "ok"
-                # Гарантируем что keep-alive поток жив при каждом возврате пароля
-                self._start_keep_alive()
-                return self._password
-            else:
-                self._password = None
-                self._last_failure_reason = "expired"
+            # Пароль есть в памяти — просто возвращаем его.
+            # Не проверяем системный кэш sudo (timestamp_timeout), т.к. sudo -S
+            # передаёт пароль через stdin и не зависит от кэша.
+            self.reset_failure_state()
+            self._last_failure_reason = "ok"
+            self._start_keep_alive()
+            return self._password
 
         if self._password_dialog is None:
             self._last_failure_reason = "no_dialog"
@@ -107,14 +106,21 @@ class SudoManager:
                 self._last_failure_reason = "empty"
                 return None
 
-            if self._verify_password(password):
+            verify_result = self._verify_password(password)
+            if verify_result is True:
                 self._password = password
                 self._start_keep_alive()
                 self.reset_failure_state()
                 self._last_failure_reason = "ok"
                 return password
-
-            self._register_invalid_password()
+            elif verify_result is False:
+                self._register_invalid_password()
+                if self.is_locked():
+                    return None
+            else:
+                # verify_result is None (таймаут). Не считаем за ошибку, даём шанс повторить.
+                logger.warning("Проверка пароля заняла слишком много времени. Попробуйте ещё раз.")
+                continue
             if self.is_locked():
                 return None
 
@@ -295,12 +301,16 @@ class SudoManager:
             success = process.returncode == 0
             if not success:
                 logger.warning(f"sudo password verification failed: {stderr.strip()}")
+                return False
             else:
                 logger.info("sudo password verified successfully")
-            return success
+                return True
+        except subprocess.TimeoutExpired:
+            logger.error("sudo password verification timed out (system busy). Not counting as invalid.")
+            return None  # None означает "неизвестно/таймаут", а не "неверный пароль"
         except Exception as e:
             logger.error(f"sudo password verification error: {e}")
-            return False
+            return None
     
     def _verify_cached_password(self) -> bool:
         """Проверяет, что кэшированный пароль всё ещё валидный."""
@@ -310,7 +320,7 @@ class SudoManager:
         try:
             # sudo -v без ввода пароля проверяет, есть ли валидный кэш
             process = subprocess.Popen(
-                ['sudo', '-v'],
+                ['sudo', '-n', '-v'],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True

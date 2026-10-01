@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import QApplication, QMessageBox
 from ui.main_window import MainWindow
 from ui.password_dialog import get_password_from_user
 from core import preflight, sudo
+from core.logger import setup_logging
 
 
 def _acquire_single_instance_lock():
@@ -39,6 +40,7 @@ def _acquire_single_instance_lock():
 
 
 def main():
+    setup_logging()
     app = QApplication(sys.argv)
     app.setApplicationName("ZapretPass")
     app.setApplicationDisplayName("ZapretPass")
@@ -62,11 +64,12 @@ def main():
     # При выходе зачищаем все leftover-процессы (кроме zapret.service).
     def _cleanup_on_exit():
         try:
-            password = sudo.manager.get_password()
-            if password:
-                killed, errors = preflight.kill_foreign_dpi_bypass(password=password)
-                if killed > 0:
-                    print(f"[EXIT] Зачищено {killed} процессов при выходе", flush=True)
+            # Используем sudo -n (без запроса пароля).
+            # Если кэш пароля активен — зачистка сработает, если нет — пропустим.
+            # Это предотвращает неожиданный запрос пароля при закрытии приложения.
+            killed, errors = preflight.kill_foreign_dpi_bypass(password="")
+            if killed > 0:
+                print(f"[EXIT] Зачищено {killed} процессов при выходе", flush=True)
         except Exception:
             pass
     
