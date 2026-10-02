@@ -18,6 +18,7 @@ PROJECT_DIR = Path.home() / "Scripts" / "ZapretPass"
 DATA_DIR = PROJECT_DIR / "data"
 STRATEGIES_DIR = DATA_DIR / "strategies"
 SNIFFER_DIR = DATA_DIR / "sniffer_results"
+SITES_DIR = DATA_DIR / "sites"
 WHITELIST_FILE = DATA_DIR / "whitelist.txt"
 STRATEGY_CACHE = DATA_DIR / "selected_strategy.json"
 
@@ -47,7 +48,7 @@ ENGINE_DIR = PROJECT_DIR / "engine"
 
 def init_dirs():
     """Создаёт все необходимые директории проекта."""
-    for d in [DATA_DIR, STRATEGIES_DIR, SNIFFER_DIR]:
+    for d in [DATA_DIR, STRATEGIES_DIR, SNIFFER_DIR, SITES_DIR]:
         d.mkdir(parents=True, exist_ok=True)
 
     if not WHITELIST_FILE.exists():

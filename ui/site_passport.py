@@ -17,6 +17,7 @@ import re
 from typing import Optional
 
 from core import service_manager
+from core import passport
 
 
 class DiagnosisWorker(QThread):
@@ -691,6 +692,8 @@ class SitePassportWidget(QWidget):
         
         # Сохраняем результат для следующих блоков
         self._diagnosis_result = result
+        # Записываем результат диагностики в паспорт сайта
+        passport.manager.update_diagnosis(self.domain, result)
         
         self._diagnosis_status_label.setText(f"{verdict.icon} {verdict.label}")
         
@@ -1028,6 +1031,19 @@ class SitePassportWidget(QWidget):
             
             self._found_strategies = result.strategies
             self._found_strategy = result.strategies[0] if result.strategies else None
+
+            # ВРЕМЕННО: Записываем основную стратегию в паспорт сайта
+            if result.strategies:
+                mode = "fast"
+                if hasattr(self, '_blockcheck_settings') and self._blockcheck_settings:
+                    mode = getattr(self._blockcheck_settings, 'mode', 'fast')
+                passport.manager.set_primary_strategy(
+                    self.domain,
+                    result.strategies[0],
+                    mode=mode,
+                    checks_count=actual_checks,
+                    duration=0  # TODO: добавить таймер работы блокчека
+                )
             
             status_label = QLabel(
                 f"✅ Найдено стратегий: {len(result.strategies)}"
