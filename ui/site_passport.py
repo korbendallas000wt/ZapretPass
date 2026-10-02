@@ -692,8 +692,11 @@ class SitePassportWidget(QWidget):
         
         # Сохраняем результат для следующих блоков
         self._diagnosis_result = result
-        # Записываем результат диагностики в паспорт сайта
-        passport.manager.update_diagnosis(self.domain, result)
+        
+        # Создаём/обновляем паспорт ТОЛЬКО если сайт заблокирован
+        # Для "не найден" (опечатка) и "доступен" паспорт не нужен
+        if verdict.status == "blocked":
+            passport.manager.update_diagnosis(self.domain, result)
         
         self._diagnosis_status_label.setText(f"{verdict.icon} {verdict.label}")
         
@@ -701,6 +704,8 @@ class SitePassportWidget(QWidget):
             color = "#2ecc71"
         elif verdict.status == "blocked":
             color = "#e74c3c"
+        elif verdict.status == "not_found":
+            color = "#95a5a6"
         else:
             color = "#f39c12"
         

@@ -127,10 +127,10 @@ def classify(result: SiteCheckResult) -> Verdict:
             )
         if "could not resolve" in err or "name or service not known" in err:
             return Verdict(
-                status="blocked",
+                status="not_found",
                 icon="🌐",
-                label="DNS-ошибка",
-                hint="Домен не резолвится. Проверьте DNS или добавьте в whitelist."
+                label="Не найден",
+                hint="Домен не существует или не резолвится. Проверьте правильность написания."
             )
         if "connection refused" in err:
             return Verdict(
