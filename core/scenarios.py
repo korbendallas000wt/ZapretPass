@@ -106,7 +106,7 @@ class ScenarioRegistry:
             blocks=[
                 ScenarioBlock(
                     "diagnosis",
-                    flags={"stop_service": False},
+                    flags={"stop_service": True, "restart_service": True},
                 ),
                 ScenarioBlock(
                     "blockcheck",
@@ -136,7 +136,7 @@ class ScenarioRegistry:
             blocks=[
                 ScenarioBlock(
                     "diagnosis",
-                    flags={"stop_service": False},
+                    flags={"stop_service": True, "restart_service": True},
                 ),
                 ScenarioBlock(
                     "sniffer",
@@ -159,7 +159,7 @@ class ScenarioRegistry:
             blocks=[
                 ScenarioBlock(
                     "diagnosis",
-                    flags={"stop_service": False},
+                    flags={"stop_service": True, "restart_service": True},
                 ),
                 ScenarioBlock(
                     "blockcheck",
@@ -189,7 +189,7 @@ class ScenarioRegistry:
             blocks=[
                 ScenarioBlock(
                     "diagnosis",
-                    flags={"stop_service": False},
+                    flags={"stop_service": True, "restart_service": True},
                 ),
             ]
         )

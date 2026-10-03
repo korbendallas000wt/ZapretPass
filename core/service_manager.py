@@ -21,6 +21,7 @@ class ServiceManager:
         self._previous_strategy: Optional[str] = None
         self._service_was_active: bool = False
         self._backup_name: Optional[str] = None
+        self._context_initialized: bool = False
     
     def prepare_before_block(self, block, domain: str, password: str) -> tuple[bool, str]:
         """Подготовка перед выполнением блока."""
@@ -29,10 +30,14 @@ class ServiceManager:
         print(f"[DEBUG SM] prepare_before_block: flags={flags}")
         print(f"[DEBUG SM] stop_service flag = {flags.get('stop_service', False)}")
         
-        # Сохраняем текущее состояние сервиса
-        status = service.get_status()
-        self._service_was_active = status.active
-        print(f"[DEBUG SM] service_was_active = {self._service_was_active}")
+        # Сохраняем текущее состояние сервиса один раз для контекста
+        if not self._context_initialized:
+            status = service.get_status()
+            self._service_was_active = status.active
+            self._context_initialized = True
+            print(f"[DEBUG SM] service_was_active initialized = {self._service_was_active}")
+        else:
+            print(f"[DEBUG SM] using existing service_was_active = {self._service_was_active}")
         
         # Сохраняем текущую стратегию для возможного восстановления
         ok, msg, current_strategy = config.read_current_strategy(password)
@@ -98,6 +103,7 @@ class ServiceManager:
             if not ok_restart:
                 return False, f"Не удалось перезапустить сервис: {msg_restart}"
         
+        self.reset_context()
         return True, "Завершение блока завершено"
     
     def reset_context(self):
@@ -105,6 +111,7 @@ class ServiceManager:
         self._previous_strategy = None
         self._service_was_active = False
         self._backup_name = None
+        self._context_initialized = False
 
 
 # Глобальный экземпляр менеджера
