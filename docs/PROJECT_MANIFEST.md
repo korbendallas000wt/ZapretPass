@@ -10,6 +10,8 @@
 2. core/scenarios.py — Workflow Engine, описание сценариев как данных (не импортирует Qt)
 3. ui/ — Qt6-интерфейс, исполняет сценарии через блоки
 
+Центральная продуктовая сущность — паспорт сайта: накапливаемое состояние диагностики, стратегий, вспомогательных доменов и скриншотов.
+
 Принцип: ни один модуль core/ не импортирует Qt. Сценарии описываются декларативно (ScenarioBlock + flags), UI интерпретирует их. Это позволяет тестировать логику отдельно и менять интерфейс без переписывания ядра.
 
 Точка входа: zapretpass.py — single-instance lock, инициализация логирования, подключение диалога пароля, запуск MainWindow.
@@ -18,7 +20,8 @@
 
 core/config.py — Пути и инициализация
 - Константы: PROJECT_DIR, ZAPRET_DIR, CONFIG_FILE, WHITELIST_FILE и др.
-- init_dirs() — создание директорий data/
+- SITES_DIR — data/sites/ для паспортов сайтов
+- init_dirs() — создание директорий data/, включая data/sites/
 - init_config_templates() — создание config.whitelist и config.global
 - is_engine_installed() — проверка наличия /opt/zapret
 - is_self_contained() — проверка, является ли установка самодостаточной (симлинк)
@@ -101,7 +104,21 @@ core/checker.py — Проверка доступности сайтов
 - Verdict — dataclass со status, icon, label, hint
 - check_site(domain, timeout, ipv4, user_agent) — проверка через curl (HTTPS, затем HTTP)
 - check_multiple(domains, timeout, ipv4, on_result) — проверка списка доменов
-- classify(result) — классификация результата (ok/partial/blocked/unknown)
+- classify(result) — классификация результата (ok/partial/blocked/not_found/unknown)
+
+core/passport.py — Менеджер паспортов сайтов
+- Passport — dataclass: domain, created, updated, status, diagnosis, primary_strategy, auxiliary_domains, screenshots, history
+- PassportManager — центральный CRUD и атомарная запись паспортов сайтов
+- manager — глобальный экземпляр PassportManager
+- exists/get/get_or_create/create/save/delete/list_all/invalidate — базовые операции с паспортами
+- update_diagnosis(domain, result) — сохраняет результат диагностики в паспорт
+- set_primary_strategy(domain, strategy, ...) — закрепляет основную стратегию обхода
+- add_auxiliary_domain / mark_auxiliary_strategy — работа со вспомогательными доменами
+- add_screenshot / get_screenshots — подготовка к браузерным скриншотам
+- get_strategies / save_strategies / add_strategy — библиотека стратегий внутри паспорта
+- get_statistics — сводка по паспорту сайта
+- _atomic_save — запись через временный файл и rename
+- _migrate_legacy_strategies — миграция старых плоских записей
 
 core/scenarios.py — Workflow Engine (сценарии визарда)
 - ScenarioBlock — dataclass: block_type (diagnosis/blockcheck/sniffer/test/apply/save), flags, name, description
@@ -109,9 +126,12 @@ core/scenarios.py — Workflow Engine (сценарии визарда)
 - ScenarioRegistry — реестр сценариев, предопределённые: fix, expand, deep, quick
 - registry — глобальный экземпляр ScenarioRegistry
 - Флаги блоков: stop_service, apply_after, restart_service, backup_config, restore_config, mode, use_current_strategy
+- Диагностика во всех сценариях выполняется честно: stop_service=True, restart_service=True
 
 core/service_manager.py — Менеджер сервиса для блоков сценариев
 - ServiceManager — подготовка перед блоком (бэкап, остановка), завершение после блока (применение, перезапуск)
+- _context_initialized — сохраняет исходное состояние сервиса один раз на контекст блока
+- cleanup_after_block() вызывает reset_context() после завершения блока
 - prepare_before_block(block, domain, password) — анализ флагов, сохранение контекста
 - cleanup_after_block(block, domain, password, result) — применение стратегии, рестарт по флагам
 - manager — глобальный экземпляр ServiceManager
@@ -172,23 +192,42 @@ strategies может быть списком списков (для совме�
 ### data/sniffer_results/{domain}.txt — результаты сниффинга
 Текстовый файл с заголовком "# SNI Results for: {target_domain}" и списком найденных базовых доменов, по одному на строку.
 
-### data/sites/{domain}.json — паспорт сайта
+### data/sites/{domain}/ — паспорт сайта
+
+Паспорт хранится как каталог:
+- `passport.json` — метаданные, статус, диагностика, основная стратегия, вспомогательные домены, скриншоты, история
+- `strategies.json` — библиотека найденных стратегий
+- `screenshots/` — папка со скриншотами для будущего визуального накопителя
+
+Основные поля `passport.json`:
 ```json
 {
   "domain": "youtube.com",
-  "auxiliary_domains": ["googlevideo.com", "ytimg.com"],
-  "strategy": "nfqws --dpi-desync=fake,multidisorder",
-  "status": "working",
-  "last_check": "2026-09-23T14:30:00",
-  "scenario_used": "fix"
+  "created": "2026-10-03T12:00:00",
+  "updated": "2026-10-03T12:00:00",
+  "status": "blocked",
+  "diagnosis": {},
+  "primary_strategy": {},
+  "auxiliary_domains": [],
+  "screenshots": {},
+  "history": []
 }
 ```
-Хранит результат работы визарда «Паспорт сайта»: основной домен, вспомогательные домены, рабочую стратегию, статус и последний сценарий.
 
-### data/blockcheck_stats.json — статистика проверок блокчека
-Файл создаётся автоматически и хранится в data/. Ключ — комбинация настроек "ipver-http-tls12-tls13-quic-mode". Значение — среднее количество AVAILABLE проверок для repeat=1 и число измерений.
-Пример: { "4-Y-Y-N-N-1": { "avg_checks": 96.5, "sample_count": 3 } }
+`strategies.json`:
+```json
+{
+  "strategies": [
+    {
+      "command": "--filter-tcp=443 --dpi-desync=fake",
+      "source": "blockcheck",
+      "status": "candidate"
+    }
+  ]
+}
+```
 
+Запись выполняется атомарно через временный файл и rename. Старые плоские записи `data/sites/{domain}.json` мигрируются `PassportManager`.
 ---
 
 ## Внешние зависимости и пути
@@ -329,15 +368,32 @@ Qt6-интерфейс на PyQt6. Точка входа: zapretpass.py.
 
 ### ui/site_passport.py — визард «Паспорт сайта»
 - SitePassportWidget(QWidget) — исполнение сценариев из core.scenarios
-- ScenarioProgressIndicator — горизонтальный индикатор этапов сценария
+- QStackedWidget (scene) — архитектура сцены: страница 0 — выбор сценария, страницы блоков добавляются и удаляются динамически
+- _run_next_block() — создаёт QWidget-страницу для текущего блока, добавляет её в сцену, делает активной и вызывает обработчик типа блока
+- _switch_to_block(index) — переключение сцены на страницу блока по клику на индикатор; процесс воркеров при этом не прерывается
+- set_domain_entered() — отмечает нулевую точку индикатора как завершённую после ввода домена
+- ScenarioProgressIndicator — кликабельный горизонтальный индикатор этапов; point_clicked(index) переключает страницы сцены
 - DiagnosisWorker(QThread) — фоновая проверка доступности через core.checker
-- BlockcheckWorker(QThread) — фоновый blockcheck с отменой, прогрессом и корректным завершением потока
-- progress_updated(int) — сигнал текущего количества AVAILABLE для детерминированного прогресс-бара
-- finally до emit(blockcheck_finished) — гарантирует завершение воркера до обновления UI и предотвращает краш QThread
-- Интеграция с core.blockcheck_stats: get_max_checks() до запуска, update_stats() после успешного прогона
-- Preflight-проверка и очистка перед блокчеком через core.preflight
-- Интеграция с service_manager для подготовки/завершения блоков
-- Пошаговое управление: кнопки «Далее» и финальная «Готово»
+- BlockcheckWorker(QThread) — фоновый blockcheck с отменой, подсчётом AVAILABLE и сигналом progress_updated(int)
+- finally в BlockcheckWorker.run(): preflight.kill_all_dpi_bypass(password) выполняется ДО emit blockcheck_finished, чтобы поток завершался до deleteLater() в UI
+- Честная диагностика: socket.getaddrinfo() без sudo; при ошибке резолва домен помечается not_found, сервис не останавливается и паспорт не создаётся
+- Паспорт создаётся/обновляется только при вердикте blocked: passport.manager.update_diagnosis(domain, result)
+- После успешного блокчека: blockcheck_stats.update_stats(settings, actual_checks), затем временная запись passport.manager.set_primary_strategy(domain, strategies[0], mode=..., checks_count=actual_checks, duration=0) (TODO: таймер)
+- Блок save: passport.manager.get(domain) -> PassportSummaryView(domain, passport_data, on_finish=self._finish_scenario, on_new_site=self._finish_scenario)
+- _cleanup_after_diagnosis() и _cleanup_after_blockcheck() — гарантии service_manager.manager.cleanup_after_block() на finish/error/stop; используют сохранённые flags/password/cleanup_done
+- _finish_scenario() — останавливает воркеры, удаляет страницы блоков кроме начальной, сбрасывает service context и UI-состояние, возвращает ввод домена
+- _clear_results() — очищает воркеры, results_layout и страницы сцены при переходе к новому домену
+- Preflight-очистка перед привилегированными блоками: preflight.kill_all_dpi_bypass(password) после prepare_before_block и до запуска блокчека/диагностики
+- Пошаговое управление: кнопки «Далее» добавляются в layout текущего блока и помечаются property scenario_transition_button
+
+### ui/passport_view.py — финальный виджет паспорта
+- PassportSummaryView(QWidget) — каркас финального представления паспорта сайта
+- Четыре зоны: скриншот/заглушка, данные сайта, диагностика и связанные домены, основная стратегия обхода
+- Конструктор: `domain`, `passport_data`, `on_finish`, `on_new_site`
+- refresh() — пересборка вида из Passport, passport.json или dict
+- _status_text() — человекочитаемые статусы: working, blocked, not_found, unknown
+- on_finish / on_new_site — колбэки завершения сценария и перехода к новому сайту
+- Экспорт, копирование, реальные скриншоты и live-обновление пока в плане
 
 ### ui/password_dialog.py — диалог пароля
 - get_password_from_user() — кроссплатформенный запрос пароля (kdialog/QInputDialog)
