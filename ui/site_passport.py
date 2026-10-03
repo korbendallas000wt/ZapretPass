@@ -6,7 +6,7 @@ ZapretPass UI - Вкладка "Паспорт сайта"
 """
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QGroupBox, QProgressBar, QScrollArea,
+    QPushButton, QGroupBox, QProgressBar, QScrollArea, QStackedWidget,
     QFrame, QSizePolicy, QComboBox, QTextEdit, QRadioButton,
     QButtonGroup, QToolTip
 )
@@ -17,6 +17,7 @@ import re
 from typing import Optional
 
 from core import service_manager
+from core import passport
 
 
 class DiagnosisWorker(QThread):
@@ -106,6 +107,9 @@ class BlockcheckWorker(QThread):
 
 class ScenarioProgressIndicator(QWidget):
     """Горизонтальный индикатор этапов сценария: линия + круглые точки."""
+    
+    # Сигнал клика на точку (индекс блока)
+    point_clicked = pyqtSignal(int)
 
     # Семантические цвета индикатора.
     # Для этого элемента сознательно отступаем от полностью системной палитры:
@@ -330,7 +334,13 @@ class ScenarioProgressIndicator(QWidget):
 
     def leaveEvent(self, event):
         QToolTip.hideText()
-        super().leaveEvent(event)
+
+    def mousePressEvent(self, event):
+        """Обработка клика на точку индикатора."""
+        index = self._point_at(event.position())
+        if index is not None:
+            self.point_clicked.emit(index)
+        super().mousePressEvent(event)
 
 class SitePassportWidget(QWidget):
     """Виджет вкладки "Паспорт сайта" на архитектуре сценариев."""
@@ -374,25 +384,27 @@ class SitePassportWidget(QWidget):
         self.progress_indicator = ScenarioProgressIndicator(self.progress_box)
         self.progress_layout.addWidget(self.progress_indicator)
         self.progress_indicator.set_placeholder(False, False)
+        self.progress_indicator.point_clicked.connect(self._switch_to_block)
 
         main_layout.addWidget(self.progress_box)
         
-        # 2. Область результатов (скроллируемая)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # 2. Область результатов (сцена)
+        self.scene = QStackedWidget()
+        # Сцена: каждый блок — отдельная страница
         
-        self.results_container = QWidget()
+        
+        self.results_container = QWidget()  # Контейнер для блоков внутри сцены
         self.results_layout = QVBoxLayout(self.results_container)
         self.results_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.results_layout.setSpacing(8)
         
-        self.scroll_area = scroll
-        scroll.setWidget(self.results_container)
-        main_layout.addWidget(scroll, stretch=1)
+        # Сохраняем ссылку на сцену
+        self.scene.addWidget(self.results_container)
+        main_layout.addWidget(self.scene, stretch=1)
         
         # Состояние
         self.domain = None
+        self._block_pages = []  # Список QWidget страниц для каждого блока
         self.scenario = None
         self.current_block_index = 0
         self._clear_progress_layout()
@@ -581,9 +593,15 @@ class SitePassportWidget(QWidget):
 
     def _hide_scenario_transition_buttons(self):
         """Скрывает кнопки перехода после перехода к следующему блоку."""
-        for btn in self.results_container.findChildren(QPushButton):
+        for btn in self.findChildren(QPushButton):
             if btn.property("scenario_transition_button"):
                 btn.hide()
+
+    def _switch_to_block(self, index: int):
+        """Переключение сцены на блок по индексу (клик на точку)."""
+        if 0 <= index < len(self._block_pages):
+            self.scene.setCurrentWidget(self._block_pages[index])
+
 
     def _run_next_block(self):
         """Запускает следующий блок сценария."""
@@ -604,14 +622,29 @@ class SitePassportWidget(QWidget):
         self.current_block_index += 1
         self._set_progress_running(block_index)
         
-        # Добавляем карточку блока
+        # Создаём страницу блока для сцены
+        page = QWidget()
+        page_layout = QVBoxLayout(page)
+        page_layout.setContentsMargins(0, 0, 0, 0)
+        page_layout.setSpacing(8)
+        
         box = QGroupBox(f"{block.name}")
         layout = QVBoxLayout(box)
         self._current_block_layout = layout  # Сохраняем для доступа из обработчиков
         
-        self.results_layout.addWidget(box)
-        # Автоскролл к новому блоку
-        QTimer.singleShot(50, lambda b=box: self.scroll_area.ensureWidgetVisible(b))
+        if block.block_type == "save":
+            box.setSizePolicy(
+                QSizePolicy.Policy.Expanding,
+                QSizePolicy.Policy.Expanding,
+            )
+            page_layout.addWidget(box, 1)
+        else:
+            page_layout.addWidget(box)
+            page_layout.addStretch(1)  # Блок прижат к верху
+        
+        self.scene.addWidget(page)
+        self._block_pages.append(page)
+        self.scene.setCurrentWidget(page)
         self._set_active_block(box)
         
         # Выполняем блок по типу
@@ -635,26 +668,135 @@ class SitePassportWidget(QWidget):
     # =========================================================================
     
     def _run_diagnosis_block(self, box: QGroupBox, layout: QVBoxLayout, flags: dict):
-        """Блок диагностики."""
+        """Блок диагностики с честной проверкой при остановленном сервисе."""
         status_label = QLabel(f"⏳ Проверяем доступность {self.domain}...")
         status_label.setStyleSheet("font-size: 11pt; color: #3498db;")
         layout.addWidget(status_label)
         self._diagnosis_status_label = status_label
-        
+
+        info_label = QLabel("Сервис будет временно остановлен для проверки без обхода.")
+        info_label.setWordWrap(True)
+        info_label.setStyleSheet("font-size: 9pt; color: #7f8c8d;")
+        layout.addWidget(info_label)
+
         # Контейнер для результатов
         self._diagnosis_result_container = QWidget()
         self._diagnosis_result_layout = QVBoxLayout(self._diagnosis_result_container)
         self._diagnosis_result_layout.setContentsMargins(0, 10, 0, 0)
         layout.addWidget(self._diagnosis_result_container)
         self._diagnosis_result_container.hide()
-        
+
+        # Быстрая проверка существования домена без sudo и без остановки сервиса
+        import socket
+        try:
+            socket.getaddrinfo(self.domain, None, proto=socket.IPPROTO_TCP)
+        except socket.gaierror:
+            self._diagnosis_flags = {}
+            self._diagnosis_password = None
+            self._diagnosis_cleanup_done = True
+
+            self._diagnosis_status_label.setText("🌐 Не найден")
+            self._diagnosis_status_label.setStyleSheet(
+                "font-size: 12pt; color: #95a5a6; font-weight: bold;")
+
+            details_label = QLabel(
+                "❓ Домен не резолвится. Похоже на опечатку или несуществующий сайт.\n"
+                "Паспорт не создан, сервис не останавливался."
+            )
+            details_label.setWordWrap(True)
+            bg_color = self.palette().color(QPalette.ColorRole.AlternateBase).name()
+            details_label.setStyleSheet(
+                f"margin-top: 10px; padding: 8px; background-color: {bg_color}; border-radius: 4px;")
+            self._diagnosis_result_layout.addWidget(details_label)
+            self._diagnosis_result_container.show()
+
+            self._mark_current_progress("error")
+            self.status_message_requested.emit(
+                f"❓ {self.domain} не найден. Проверьте правильность домена.", True)
+            self.btn_proceed.setEnabled(True)
+            self.url_input.setEnabled(True)
+            return
+
+        # Служебный контекст для гарантированного завершения блока
+        self._diagnosis_flags = flags
+        self._diagnosis_password = None
+        self._diagnosis_cleanup_done = False
+
+        from core import sudo, preflight
+
+        password = sudo.manager.get_password()
+        if password is None:
+            self._show_password_error(
+                layout,
+                sudo.manager.last_failure_reason(),
+                "Диагностика не запущена."
+            )
+            self._mark_current_progress("error")
+            self.btn_proceed.setEnabled(True)
+            self.url_input.setEnabled(True)
+            return
+
+        self._diagnosis_password = password
+
+        ok_prep, msg_prep = service_manager.manager.prepare_before_block(
+            flags, self.domain, password)
+        if not ok_prep:
+            service_manager.manager.reset_context()
+            layout.addWidget(QLabel(f"❌ {msg_prep}"))
+            self._mark_current_progress("error")
+            self.btn_proceed.setEnabled(True)
+            self.url_input.setEnabled(True)
+            return
+
+        ok_preflight, msg_preflight = preflight.kill_all_dpi_bypass(password)
+        if not ok_preflight:
+            label = QLabel(f"❌ {msg_preflight}")
+            label.setWordWrap(True)
+            layout.addWidget(label)
+
+            self._cleanup_after_diagnosis(layout)
+
+            self._mark_current_progress("error")
+            self.status_message_requested.emit(
+                "❌ Диагностика не запущена: не удалось зачистить процессы",
+                True,
+            )
+            self.btn_proceed.setEnabled(True)
+            self.url_input.setEnabled(True)
+            return
+
         # Запускаем воркер
         self._diagnosis_worker = DiagnosisWorker(self.domain)
         self._diagnosis_worker.diagnosis_started.connect(self._on_diagnosis_started)
         self._diagnosis_worker.diagnosis_finished.connect(self._on_diagnosis_finished)
         self._diagnosis_worker.diagnosis_error.connect(self._on_diagnosis_error)
         self._diagnosis_worker.start()
-    
+
+    def _cleanup_after_diagnosis(self, layout=None):
+        """Гарантированно завершает сервисные действия после диагностики."""
+        if getattr(self, "_diagnosis_cleanup_done", False):
+            return True, "Уже завершено"
+
+        flags = getattr(self, "_diagnosis_flags", {}) or {}
+        password = getattr(self, "_diagnosis_password", None)
+
+        if not flags or not password:
+            self._diagnosis_cleanup_done = True
+            return True, "Нет сервисного контекста диагностики"
+
+        ok, msg = service_manager.manager.cleanup_after_block(
+            flags, self.domain, password)
+
+        self._diagnosis_cleanup_done = True
+        self._diagnosis_password = None
+
+        if not ok and layout is not None:
+            label = QLabel(f"⚠ Не удалось восстановить сервис после диагностики: {msg}")
+            label.setWordWrap(True)
+            label.setStyleSheet("color: #e67e22;")
+            layout.addWidget(label)
+
+        return ok, msg
     def _on_diagnosis_started(self):
         self.status_message_requested.emit(
             f"🔍 Проверяем {self.domain}...", False)
@@ -664,8 +806,16 @@ class SitePassportWidget(QWidget):
             self._diagnosis_worker.deleteLater()
         self._diagnosis_worker = None
         
+        # Гарантированно поднимаем сервис после диагностики
+        self._cleanup_after_diagnosis(getattr(self, "_current_block_layout", None))
+
         # Сохраняем результат для следующих блоков
         self._diagnosis_result = result
+        
+        # Создаём/обновляем паспорт ТОЛЬКО если сайт заблокирован
+        # Для "не найден" (опечатка) и "доступен" паспорт не нужен
+        if verdict.status == "blocked":
+            passport.manager.update_diagnosis(self.domain, result)
         
         self._diagnosis_status_label.setText(f"{verdict.icon} {verdict.label}")
         
@@ -673,6 +823,8 @@ class SitePassportWidget(QWidget):
             color = "#2ecc71"
         elif verdict.status == "blocked":
             color = "#e74c3c"
+        elif verdict.status == "not_found":
+            color = "#95a5a6"
         else:
             color = "#f39c12"
         
@@ -717,16 +869,46 @@ class SitePassportWidget(QWidget):
         self._diagnosis_result_layout.addWidget(btn_next)
     
     def _on_diagnosis_error(self, error_msg: str):
-        self._mark_current_progress("error")
         if self._diagnosis_worker is not None:
             self._diagnosis_worker.deleteLater()
         self._diagnosis_worker = None
-        self._diagnosis_status_label.setText(f"⚠️ Ошибка: {error_msg}")
+
+        self._cleanup_after_diagnosis(getattr(self, "_current_block_layout", None))
+
+        self._mark_current_progress("error")
+        self._diagnosis_status_label.setText(f"⚠ Ошибка: {error_msg}")
         self._diagnosis_status_label.setStyleSheet(
             "font-size: 12pt; color: #e74c3c;")
         self.status_message_requested.emit(
-            f"⚠️ Ошибка диагностики: {error_msg}", True)
-    
+            f"⚠ Ошибка диагностики: {error_msg}", True)
+        self.btn_proceed.setEnabled(True)
+        self.url_input.setEnabled(True)
+    def _cleanup_after_blockcheck(self, layout=None, result=None):
+        """Гарантированно завершает сервисные действия после блокчека."""
+        if getattr(self, "_blockcheck_cleanup_done", False):
+            return True, "Уже завершено"
+
+        flags = getattr(self, "_blockcheck_flags", {}) or {}
+        password = getattr(self, "_blockcheck_password", None)
+
+        if not flags or not password:
+            self._blockcheck_cleanup_done = True
+            return True, "Нет сервисного контекста блокчека"
+
+        ok, msg = service_manager.manager.cleanup_after_block(
+            flags, self.domain, password, result or {})
+
+        self._blockcheck_cleanup_done = True
+        self._blockcheck_password = None
+
+        if not ok and layout is not None:
+            label = QLabel(f"⚠ Не удалось восстановить сервис после блокчека: {msg}")
+            label.setWordWrap(True)
+            label.setStyleSheet("color: #e67e22;")
+            layout.addWidget(label)
+
+        return ok, msg
+
     def _run_blockcheck_block(self, box: QGroupBox, layout: QVBoxLayout, flags: dict):
         """Блок поиска стратегии."""
         mode = flags.get("mode", "fast")
@@ -773,26 +955,14 @@ class SitePassportWidget(QWidget):
         
         # Сначала проверяем пароль
         if password is None:
-            reason = sudo.manager.last_failure_reason()
-
-            if reason == "locked":
-                self._show_password_cooldown(layout, int(sudo.manager.seconds_until_unlock()))
-            elif reason == "system_locked":
-                lock_info = sudo.manager.get_system_lock_info()
-                self._show_system_lockout(layout, lock_info)
-            elif reason == "cancelled":
-                layout.addWidget(QLabel("⏹ Ввод пароля отменён. Блокчек не запущен."))
-            elif reason == "empty":
-                layout.addWidget(QLabel("❌ Диалог вернул пустой пароль. Блокчек не запущен."))
-            elif reason == "no_dialog":
-                layout.addWidget(QLabel("❌ Не удалось показать диалог ввода пароля. Блокчек не запущен."))
-            elif reason == "expired":
-                layout.addWidget(QLabel("⚠ Кэш sudo-пароля истёк. Нужен новый пароль."))
-            else:
-                layout.addWidget(QLabel("❌ Неверный пароль. Блокчек не запущен."))
-
+            self._show_password_error(layout, sudo.manager.last_failure_reason(), "Блокчек не запущен.")
             return
         
+        # Служебный контекст для гарантированного завершения блока
+        self._blockcheck_flags = flags
+        self._blockcheck_password = password
+        self._blockcheck_cleanup_done = False
+
         # Подготовка перед блоком (сохранение состояния сервиса + остановка)
         # ВАЖНО: вызываем ДО убийства процессов, чтобы корректно запомнить,
         # был ли сервис активен
@@ -801,6 +971,9 @@ class SitePassportWidget(QWidget):
             flags, self.domain, password)
         print(f"[DEBUG UI] prepare_before_block вернул: ok={ok_prep}, msg={msg_prep}")
         if not ok_prep:
+            service_manager.manager.reset_context()
+            self._blockcheck_cleanup_done = True
+            self._blockcheck_password = None
             layout.addWidget(QLabel(f"❌ {msg_prep}"))
             return
 
@@ -813,6 +986,8 @@ class SitePassportWidget(QWidget):
             preflight_label = QLabel(f"❌ {msg_preflight}")
             preflight_label.setWordWrap(True)
             layout.addWidget(preflight_label)
+            self._cleanup_after_blockcheck(layout=layout)
+
             self._mark_current_progress("error")
             self.status_message_requested.emit(
                 "❌ Блокчек не запущен: не удалось зачистить процессы",
@@ -844,6 +1019,9 @@ class SitePassportWidget(QWidget):
         self._blockcheck_worker.blockcheck_finished.connect(
             lambda r: self._on_blockcheck_finished(r, flags))
         self._blockcheck_worker.blockcheck_error.connect(self._on_blockcheck_error)
+        self._blockcheck_worker.finished.connect(
+            lambda: self._cleanup_after_blockcheck(layout=getattr(self, "_current_block_layout", None))
+        )
         self._blockcheck_worker.start()
     
     def _show_password_cooldown(self, layout, seconds: int):
@@ -984,17 +1162,14 @@ class SitePassportWidget(QWidget):
             self._blockcheck_stop_btn.hide()
         
         # Завершение после блока (применение стратегии, перезапуск сервиса)
-        from core import sudo
-        password = sudo.manager.get_password()
         block_result = {
             'found_strategy': result.strategies[0] if result.strategies else None
         }
-        if password:
-            service_manager.manager.cleanup_after_block(
-                flags, self.domain, password, block_result)
-        else:
-            print("[WARN] Пароль не получен для пост-обработки блокчека. Сервис может остаться остановленным.")
-        
+        self._cleanup_after_blockcheck(
+            layout=getattr(self, "_current_block_layout", None),
+            result=block_result,
+        )
+
         if result.success:
             # Обновляем статистику блокчека
             if actual_checks > 0 and getattr(self, '_blockcheck_settings', None):
@@ -1003,6 +1178,19 @@ class SitePassportWidget(QWidget):
             
             self._found_strategies = result.strategies
             self._found_strategy = result.strategies[0] if result.strategies else None
+
+            # ВРЕМЕННО: Записываем основную стратегию в паспорт сайта
+            if result.strategies:
+                mode = "fast"
+                if hasattr(self, '_blockcheck_settings') and self._blockcheck_settings:
+                    mode = getattr(self._blockcheck_settings, 'mode', 'fast')
+                passport.manager.set_primary_strategy(
+                    self.domain,
+                    result.strategies[0],
+                    mode=mode,
+                    checks_count=actual_checks,
+                    duration=0  # TODO: добавить таймер работы блокчека
+                )
             
             status_label = QLabel(
                 f"✅ Найдено стратегий: {len(result.strategies)}"
@@ -1019,8 +1207,8 @@ class SitePassportWidget(QWidget):
             strategies_label = QLabel(strategies_text)
             strategies_label.setStyleSheet("font-family: monospace; font-size: 9pt;")
             
-            self.results_layout.addWidget(status_label)
-            self.results_layout.addWidget(strategies_label)
+            self._current_block_layout.addWidget(status_label)
+            self._current_block_layout.addWidget(strategies_label)
             
             self.status_message_requested.emit(
                 f"✅ Найдено {len(result.strategies)} стратегий", True)
@@ -1029,7 +1217,7 @@ class SitePassportWidget(QWidget):
             error_msg = result.error or "Неизвестная ошибка"
             status_label = QLabel(f"❌ {error_msg}")
             status_label.setStyleSheet("color: #e74c3c; font-weight: bold;")
-            self.results_layout.addWidget(status_label)
+            self._current_block_layout.addWidget(status_label)
             
             self.status_message_requested.emit(
                 f"❌ Стратегии не найдены: {error_msg}", True)
@@ -1049,10 +1237,13 @@ class SitePassportWidget(QWidget):
             self.results_layout.addWidget(btn_next)
     
     def _on_blockcheck_error(self, error_msg: str):
-        self._mark_current_progress("error")
         if self._blockcheck_worker is not None:
             self._blockcheck_worker.deleteLater()
         self._blockcheck_worker = None
+
+        self._cleanup_after_blockcheck(layout=getattr(self, "_current_block_layout", None))
+
+        self._mark_current_progress("error")
         self._blockcheck_progress.hide()
         if hasattr(self, '_blockcheck_exceeded_label'):
             self._blockcheck_exceeded_label.hide()
@@ -1060,12 +1251,13 @@ class SitePassportWidget(QWidget):
             self._blockcheck_stop_btn.setEnabled(False)
             self._blockcheck_stop_btn.hide()
         
-        status_label = QLabel(f"⚠️ Ошибка блокчека: {error_msg}")
+        status_label = QLabel(f"⚠ Ошибка блокчека: {error_msg}")
         status_label.setStyleSheet("color: #e74c3c;")
-        self.results_layout.addWidget(status_label)
+        self._current_block_layout.addWidget(status_label)
         self.status_message_requested.emit(
-            f"⚠️ Ошибка блокчека: {error_msg}", True)
-    
+            f"⚠ Ошибка блокчека: {error_msg}", True)
+        self.btn_proceed.setEnabled(True)
+        self.url_input.setEnabled(True)
     def _run_sniffer_block(self, box: QGroupBox, layout: QVBoxLayout, flags: dict):
         """Блок сбора вспомогательных доменов (заглушка)."""
         layout.addWidget(QLabel(f"🗺️ Карта сайта для {self.domain}"))
@@ -1100,17 +1292,29 @@ class SitePassportWidget(QWidget):
         layout.addWidget(btn_next)
     
     def _run_save_block(self, box: QGroupBox, layout: QVBoxLayout, flags: dict):
-        """Блок сохранения (заглушка). Финальный блок сценария."""
-        layout.addWidget(QLabel(f"💾 Сохранение паспорта для {self.domain}"))
-        layout.addWidget(QLabel("(блок в разработке)"))
-        
-        # Кнопка завершения сценария
-        btn_finish = QPushButton("✅ Готово")
-        btn_finish.setMinimumHeight(40)
-        btn_finish.setProperty("scenario_transition_button", True)
-        btn_finish.clicked.connect(self._finish_scenario)
-        layout.addWidget(btn_finish)
-        
+        """Блок сохранения: финальный виджет паспорта сайта."""
+        try:
+            from .passport_view import PassportSummaryView
+        except ImportError:
+            from ui.passport_view import PassportSummaryView
+
+        from core import passport
+
+        passport_data = passport.manager.get(self.domain)
+
+        view = PassportSummaryView(
+            domain=self.domain,
+            passport_data=passport_data,
+            on_finish=self._finish_scenario,
+            on_new_site=self._finish_scenario,
+            parent=self,
+        )
+        view.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
+        )
+        layout.addWidget(view, 1)
+
         self._finish_progress_all()
         self.status_message_requested.emit(
             f"✅ Сценарий '{self.scenario.name}' завершён", True)
@@ -1139,11 +1343,26 @@ class SitePassportWidget(QWidget):
             if item.widget():
                 item.widget().deleteLater()
         
+        # Удаляем страницы блоков из сцены (страница 0 — выбор сценария)
+        while self.scene.count() > 1:
+            page = self.scene.widget(1)
+            self.scene.removeWidget(page)
+            page.deleteLater()
+        self._block_pages.clear()
+        self.scene.setCurrentIndex(0)
+        
         # Сбрасываем состояние
+        service_manager.manager.reset_context()
         self.scenario = None
         self.current_block_index = 0
         self._clear_progress_layout()
+        self._diagnosis_flags = {}
+        self._diagnosis_password = None
+        self._diagnosis_cleanup_done = True
         self._diagnosis_result = None
+        self._blockcheck_flags = {}
+        self._blockcheck_password = None
+        self._blockcheck_cleanup_done = True
         self._found_strategy = None
         self._found_strategies = []
         self._active_block = None
@@ -1179,6 +1398,14 @@ class SitePassportWidget(QWidget):
             item = self.results_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
+        
+        # Удаляем страницы блоков из сцены (страница 0 — выбор сценария)
+        while self.scene.count() > 1:
+            page = self.scene.widget(1)
+            self.scene.removeWidget(page)
+            page.deleteLater()
+        self._block_pages.clear()
+        self.scene.setCurrentIndex(0)
         
         self.scenario = None
         self.current_block_index = 0

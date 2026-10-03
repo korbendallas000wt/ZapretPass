@@ -23,6 +23,7 @@ ZapretPass/
 │   ├── applier.py              Применение стратегий, бэкапы, ротация
 │   ├── sniffer.py              Перехват SNI-доменов через tshark
 │   ├── checker.py              Проверка доступности сайтов через curl
+│   ├── passport.py             Менеджер паспортов сайтов и атомарное сохранение
 │   ├── scenarios.py            Workflow Engine — сценарии визарда
 │   ├── preflight.py            Предстартовые проверки окружения
 │   └── logger.py               Централизованное логирование с ротацией
@@ -30,11 +31,12 @@ ZapretPass/
 │   ├── __init__.py
 │   ├── main_window.py          Главное окно приложения
 │   ├── site_passport.py        Визард «Паспорт сайта»
+│   ├── passport_view.py        Финальный виджет паспорта сайта
 │   ├── password_dialog.py      Диалог запроса пароля sudo
 │   └── service_controller.py   Контроллер статуса сервиса для UI
 ├── data/                       Данные приложения
 │   ├── strategies/             Результаты blockcheck: {domain}.json
-│   ├── sites/                  Паспорта сайтов: {domain}.json
+│   ├── sites/                  Паспорта сайтов: {domain}/passport.json, strategies.json, screenshots/
 │   ├── sniffer_results/        Результаты сниффинга: {domain}.txt
 │   └── logs/                   Логи приложения
 ├── docs/                       Документация проекта
@@ -65,6 +67,7 @@ ZapretPass/
 | `applier.py` | Применение стратегий, бэкапы, ротация |
 | `sniffer.py` | Перехват SNI-доменов через `tshark` |
 | `checker.py` | Проверка доступности сайтов через `curl` |
+| `passport.py` | Менеджер паспортов сайтов: атомарная запись, история, стратегии, скриншоты |
 | `scenarios.py` | Workflow Engine — сценарии визарда (декларативное описание) |
 | `preflight.py` | Предстартовые проверки окружения, автокилл foreign-процессов |
 | `logger.py` | Централизованное логирование с ротацией |
@@ -72,12 +75,13 @@ ZapretPass/
 
 ### `ui/` — интерфейс
 
-Qt6-интерфейс, исполняет сценарии через блоки.
+Qt6-интерфейс приложения. Вкладка «Паспорт сайта» построена на сцене `QStackedWidget`: блоки отображаются как отдельные страницы, индикатор этапов позволяет переключаться между ними.
 
 | Файл | Описание |
 |---|---|
 | `main_window.py` | Главное окно приложения |
 | `site_passport.py` | Визард «Паспорт сайта» |
+| `passport_view.py` | Финальный виджет паспорта сайта |
 | `password_dialog.py` | Диалог запроса пароля sudo |
 | `service_controller.py` | Контроллер статуса сервиса для UI |
 
@@ -86,7 +90,7 @@ Qt6-интерфейс, исполняет сценарии через блок�
 | Директория | Содержимое |
 |---|---|
 | `strategies/` | Результаты blockcheck: `{domain}.json` |
-| `sites/` | Паспорта сайтов: `{domain}.json` |
+| `sites/` | Паспорта сайтов: каталоги `{domain}/` с `passport.json`, `strategies.json`, `screenshots/` |
 | `sniffer_results/` | Результаты сниффинга: `{domain}.txt` |
 | `logs/` | Логи приложения |
 
@@ -123,6 +127,7 @@ Qt6-интерфейс, исполняет сценарии через блок�
 - [applier.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/core/applier.py)
 - [sniffer.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/core/sniffer.py)
 - [checker.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/core/checker.py)
+- [passport.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/core/passport.py)
 - [scenarios.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/core/scenarios.py)
 - [preflight.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/core/preflight.py)
 - [logger.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/core/logger.py)
@@ -131,6 +136,7 @@ Qt6-интерфейс, исполняет сценарии через блок�
 - [__init__.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/ui/__init__.py)
 - [main_window.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/ui/main_window.py)
 - [site_passport.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/ui/site_passport.py)
+- [passport_view.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/ui/passport_view.py)
 - [password_dialog.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/ui/password_dialog.py)
 - [service_controller.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/ui/service_controller.py)
 
