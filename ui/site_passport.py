@@ -632,8 +632,15 @@ class SitePassportWidget(QWidget):
         layout = QVBoxLayout(box)
         self._current_block_layout = layout  # Сохраняем для доступа из обработчиков
         
-        page_layout.addWidget(box)
-        page_layout.addStretch(1)  # Блок прижат к верху
+        if block.block_type == "save":
+            box.setSizePolicy(
+                QSizePolicy.Policy.Expanding,
+                QSizePolicy.Policy.Expanding,
+            )
+            page_layout.addWidget(box, 1)
+        else:
+            page_layout.addWidget(box)
+            page_layout.addStretch(1)  # Блок прижат к верху
         
         self.scene.addWidget(page)
         self._block_pages.append(page)
@@ -1285,17 +1292,29 @@ class SitePassportWidget(QWidget):
         layout.addWidget(btn_next)
     
     def _run_save_block(self, box: QGroupBox, layout: QVBoxLayout, flags: dict):
-        """Блок сохранения (заглушка). Финальный блок сценария."""
-        layout.addWidget(QLabel(f"💾 Сохранение паспорта для {self.domain}"))
-        layout.addWidget(QLabel("(блок в разработке)"))
-        
-        # Кнопка завершения сценария
-        btn_finish = QPushButton("✅ Готово")
-        btn_finish.setMinimumHeight(40)
-        btn_finish.setProperty("scenario_transition_button", True)
-        btn_finish.clicked.connect(self._finish_scenario)
-        layout.addWidget(btn_finish)
-        
+        """Блок сохранения: финальный виджет паспорта сайта."""
+        try:
+            from .passport_view import PassportSummaryView
+        except ImportError:
+            from ui.passport_view import PassportSummaryView
+
+        from core import passport
+
+        passport_data = passport.manager.get(self.domain)
+
+        view = PassportSummaryView(
+            domain=self.domain,
+            passport_data=passport_data,
+            on_finish=self._finish_scenario,
+            on_new_site=self._finish_scenario,
+            parent=self,
+        )
+        view.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
+        )
+        layout.addWidget(view, 1)
+
         self._finish_progress_all()
         self.status_message_requested.emit(
             f"✅ Сценарий '{self.scenario.name}' завершён", True)
