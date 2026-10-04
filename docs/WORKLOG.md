@@ -116,3 +116,59 @@
 
 После этого ты будешь в контексте и сможешь продолжить работу.
 
+
+---
+
+## Сессия 2026-10-04 — Детерминированные ID стратегий и schema_version
+
+### Что сделано
+
+#### 1. Детерминированные идентификаторы стратегий
+Проблема: длинные команды `nfqws --dpi-desync=...` нечитаемы, а порядковая нумерация не работает при обмене паспортами.
+
+Решение:
+- Создан `StrategyParser` в `core/passport.py`
+- Формат ID: `<type>/ttl=<ttl>/<hash4>` (например, `fake/ttl=4/1576`)
+- Алиас: `<type>/ttl=<ttl>` (например, `fake/ttl=4`)
+- ID детерминированный: одна стратегия у разных пользователей получит один ID
+
+#### 2. Schema version и provider
+Добавлены в модель `Passport`:
+- `schema_version: int = 1` — версия схемы паспорта
+- `provider: str = ""` — провайдер (пока пустой, для будущего автоопределения)
+
+#### 3. Новый формат стратегий
+Старый формат:
+```json
+{"strategy": "nfqws --dpi-desync=...", "found_at": "..."}
+```
+
+Новый формат:
+```json
+{
+  "id": "fake/ttl=4/1576",
+  "alias": "fake/ttl=4",
+  "command": "nfqws --dpi-desync=...",
+  "found_at": "..."
+}
+```
+
+#### 4. Обновлённые методы
+- `set_primary_strategy()` — сохраняет `id`, `alias`, `command`
+- `add_strategy()` — генерирует ID/алиас при добавлении
+- `_migrate_legacy_strategies()` — генерирует ID при миграции старых данных
+- `mark_auxiliary_strategy()` — сохраняет `strategy_id`, `strategy_alias`, `strategy_command`
+
+#### 5. Миграция данных
+- `data/sites/youtube.com/passport.json` обновлён на новый формат
+- Добавлены `schema_version: 1` и `provider: ""`
+
+#### 6. Обновление UI
+- `ui/passport_view.py` показывает алиас стратегии вместо полной команды
+- Полная команда доступна в tooltip
+- Вспомогательные домены показывают `strategy_alias`
+
+### Файлы
+- `core/passport.py` — парсер, миграция, обновлённые методы
+- `ui/passport_view.py` — чтение нового формата, отображение алиасов
+- `data/sites/youtube.com/passport.json` — мигрирован

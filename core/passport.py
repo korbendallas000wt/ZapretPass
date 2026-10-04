@@ -19,6 +19,42 @@ import shutil
 import tempfile
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
+
+import hashlib
+import re
+
+
+class StrategyParser:
+    """Парсер команд nfqws/tpws в читаемые идентификаторы.""" 
+
+    @staticmethod
+    def generate_id(command: str) -> str:
+        """Генерирует детерминированный ID стратегии."""
+        # Извлекаем тип desync
+        desync_match = re.search(r'--dpi-desync=([^\s]+)', command)
+        desync_type = desync_match.group(1) if desync_match else "unknown"
+
+        # Извлекаем TTL
+        ttl_match = re.search(r'--dpi-desync-ttl=(\d+)', command)
+        ttl = ttl_match.group(1) if ttl_match else "no_ttl"
+
+        # Хэш для уникальности (первые 4 символа MD5)
+        hash_suffix = hashlib.md5(command.encode()).hexdigest()[:4]
+
+        # Формируем ID
+        return f"{desync_type}/ttl={ttl}/{hash_suffix}"
+
+    @staticmethod
+    def generate_alias(command: str) -> str:
+        """Генерирует человекочитаемый алиас."""
+        desync_match = re.search(r'--dpi-desync=([^\s]+)', command)
+        desync_type = desync_match.group(1) if desync_match else "unknown"
+
+        ttl_match = re.search(r'--dpi-desync-ttl=(\d+)', command)
+        ttl = ttl_match.group(1) if ttl_match else "no_ttl"
+
+        return f"{desync_type}/ttl={ttl}"
+
 from pathlib import Path
 from typing import Optional, Any
 
@@ -33,6 +69,12 @@ class Passport:
     created: str = ""
     updated: str = ""
     status: str = "unknown"  # "unknown", "blocked", "partial", "working"
+    
+    # Версия схемы паспорта
+    schema_version: int = 1
+    
+    # Провайдер (пока пустой)
+    provider: str = ""
     
     # Результат диагностики
     diagnosis: dict = field(default_factory=dict)
@@ -110,6 +152,8 @@ class PassportManager:
                 created=data.get("created", ""),
                 updated=data.get("updated", ""),
                 status=data.get("status", "unknown"),
+                schema_version=data.get("schema_version", 1),
+                provider=data.get("provider", ""),
                 diagnosis=data.get("diagnosis", {}),
                 primary_strategy=data.get("primary_strategy", {}),
                 auxiliary_domains=data.get("auxiliary_domains", []),
@@ -229,8 +273,13 @@ class PassportManager:
         """Назначает основную стратегию."""
         passport = self.get_or_create(domain)
         
+        strategy_id = StrategyParser.generate_id(strategy)
+        strategy_alias = StrategyParser.generate_alias(strategy)
+        
         passport.primary_strategy = {
-            "strategy": strategy,
+            "id": strategy_id,
+            "alias": strategy_alias,
+            "command": strategy,
             "found_at": datetime.now().isoformat(),
             "mode": mode,
             "checks_count": checks_count,
@@ -286,7 +335,9 @@ class PassportManager:
         for entry in passport.auxiliary_domains:
             if entry.get("domain") == aux_domain:
                 entry["has_strategy"] = True
-                entry["strategy"] = strategy
+                entry["strategy_id"] = StrategyParser.generate_id(strategy)
+                entry["strategy_alias"] = StrategyParser.generate_alias(strategy)
+                entry["strategy_command"] = strategy
                 entry["strategy_found_at"] = datetime.now().isoformat()
                 passport.add_history(
                     "auxiliary_strategy",
@@ -399,11 +450,13 @@ class PassportManager:
         
         # Проверяем, есть ли уже такая
         for entry in strategies:
-            if entry.get("strategy") == strategy:
+            if entry.get("command") == strategy:
                 return True
         
         strategies.append({
-            "strategy": strategy,
+            "id": StrategyParser.generate_id(strategy),
+            "alias": StrategyParser.generate_alias(strategy),
+            "command": strategy,
             "found_at": datetime.now().isoformat(),
             "mode": mode,
             "checks_count": checks_count,
@@ -468,6 +521,8 @@ class PassportManager:
         passport_dir.mkdir(parents=True, exist_ok=True)
         
         data = {
+            "schema_version": passport.schema_version,
+            "provider": passport.provider,
             "domain": domain,
             "created": passport.created,
             "updated": passport.updated,
@@ -514,7 +569,9 @@ class PassportManager:
                 if isinstance(item, list):
                     for s in item:
                         strategies.append({
-                            "strategy": s,
+                            "id": StrategyParser.generate_id(s),
+                            "alias": StrategyParser.generate_alias(s),
+                            "command": s,
                             "found_at": updated,
                             "mode": "unknown",
                             "checks_count": 0,
@@ -522,11 +579,13 @@ class PassportManager:
                         })
                 elif isinstance(item, str):
                     strategies.append({
-                        "strategy": item,
-                        "found_at": updated,
-                        "mode": "unknown",
-                        "checks_count": 0,
-                        "duration": 0,
+                            "id": StrategyParser.generate_id(item),
+                            "alias": StrategyParser.generate_alias(item),
+                            "command": item,
+                            "found_at": updated,
+                            "mode": "unknown",
+                            "checks_count": 0,
+                            "duration": 0,
                     })
             
             # Сохраняем в новом формате
