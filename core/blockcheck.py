@@ -43,38 +43,74 @@ class BlockcheckResult:
 
 def parse_strategies_from_output(output: str) -> list[str]:
     """Извлекает рабочие стратегии из секции * SUMMARY вывода блокчека.
-    
-    Формат строк в SUMMARY:
-        "strategy_name : nfqws --dpi-desync=fake ..."
-    """
-    strategies = []
-    lines = output.splitlines()
-    in_summary = False
-    
-    for line in lines:
-        if "* SUMMARY" in line:
-            in_summary = True
-            continue
-        
-        if not in_summary:
-            continue
-        
-        line = line.strip()
-        
-        # Пропускаем пустые строки, разделители и предупреждения
-        if not line or line.startswith("--") or line.startswith("=="):
-            continue
-        if line.startswith("!!"):
-            continue
-        
-        # Ищем строки вида "что-то : nfqws ..." или "что-то : tpws ..."
-        if ":" in line:
-            strategy = line.split(":", 1)[1].strip()
-            if strategy and (strategy.startswith("nfqws") or strategy.startswith("tpws")):
-                strategies.append(strategy)
-    
-    return strategies
 
+    Формат строк в SUMMARY:
+        "curl_test_https_tls13 ipv4 example.com : nfqws --dpi-desync=..."
+
+    Строки-статусы вида "nfqws not working" не считаются стратегиями.
+    """
+    strategies: list[str] = []
+    seen: set[str] = set()
+    in_summary = False
+
+    bad_markers = (
+        "not working",
+        "not found",
+        "unavailable",
+        "timeout",
+        "timed out",
+        "failed",
+        "error",
+        "no strategy",
+        "no strategies",
+        "empty",
+        "skipped",
+    )
+
+    def normalize(candidate: str) -> str:
+        return " ".join(candidate.strip().split()).rstrip(".,;:")
+
+    def is_real_command(candidate: str) -> bool:
+        c = normalize(candidate)
+        if not c:
+            return False
+
+        low = c.lower()
+        if any(marker in low for marker in bad_markers):
+            return False
+
+        first = c.split(maxsplit=1)[0].lower()
+        base = first.rsplit("/", 1)[-1]
+        return base in {"nfqws", "tpws"}
+
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+
+        if not in_summary:
+            if line.upper().startswith("* SUMMARY") or line.upper() == "SUMMARY":
+                in_summary = True
+            continue
+
+        if line.lower().startswith("press enter") or line.lower().startswith("please note"):
+            break
+
+        if ":" not in line:
+            continue
+
+        if " : " in line:
+            candidate = line.split(" : ", 1)[1]
+        else:
+            candidate = line.rsplit(":", 1)[1]
+
+        candidate = normalize(candidate)
+        if not is_real_command(candidate):
+            continue
+
+        if candidate not in seen:
+            seen.add(candidate)
+            strategies.append(candidate)
+
+    return strategies
 
 def detect_first_success(output_lines: list[str]) -> Optional[str]:
     """Детектит первую рабочую стратегию в процессе перебора.

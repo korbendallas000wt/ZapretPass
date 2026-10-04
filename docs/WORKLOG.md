@@ -202,3 +202,74 @@
 ### Файлы
 - `core/blockcheck.py` — переключён дефолт `tls12/tls13`
 - `legacy/backup/blockcheck.py.backup` — бэкап до изменения
+
+---
+
+## Сессия 2026-10-05 — Фикс парсера blockcheck SUMMARY и StrategyParser
+
+### Проблема
+Блокчек для rutor.info с TLS 1.3 не нашёл рабочую стратегию. В SUMMARY были строки статуса:
+
+```text
+curl_test_http ipv4 rutor.info : nfqws not working
+curl_test_https_tls13 ipv4 rutor.info : nfqws not working
+```
+
+Старый парсер принимал текст после `:` за стратегию, из-за чего в паспорт попадали фейковые команды и ID вида:
+
+```text
+unknown/ttl=no_ttl
+```
+
+### Исправлено
+
+#### 1. `core/blockcheck.py`
+`parse_strategies_from_output()` теперь:
+- читает только секцию после `* SUMMARY`;
+- останавливается на служебных строках `Please note...` / `press enter...`;
+- фильтрует статусы:
+  - `not working`
+  - `not found`
+  - `unavailable`
+  - `timeout`
+  - `timed out`
+  - `failed`
+  - `error`
+  - и другие мусорные маркеры;
+- принимает только реальные команды `nfqws` / `tpws`;
+- нормализует пробелы и дедуплицирует стратегии.
+
+#### 2. `core/passport.py`
+`StrategyParser` больше не выдаёт `unknown/ttl=no_ttl` для валидных команд.
+
+Новая логика:
+- `nfqws --dpi-desync=fake --dpi-desync-ttl=4` → `fake/ttl=4/xxxx`
+- `nfqws --dpi-desync=fake` без TTL → `fake/xxxx`
+- `tpws ...` → `tpws/xxxx`
+- неизвестная команда → `cmd/xxxx`
+
+#### 3. Очистка данных
+Одноразовый скрипт прошёл по локальным паспортам и:
+- удалил мусорный `primary_strategy` для rutor.info;
+- удалил запись истории `Назначена основная стратегия: nfqws not working`;
+- перегенерировал `id` и `alias` для валидных команд;
+- сделал бэкапы изменённых файлов в `legacy/backup`.
+
+### Результат теста rutor.info
+Переключение дефолта блокчека на TLS 1.3 не дало найденной nfqws-стратегии:
+
+```text
+curl_test_http ipv4 rutor.info : nfqws not working
+curl_test_https_tls13 ipv4 rutor.info : nfqws not working
+```
+
+Вывод: в текущем пространстве проверки стратегия не найдена. Дальше нужно отдельно различать:
+- классический DPI;
+- IP/transport-блокировку;
+- блокировку на стороне сайта/CDN;
+- отсутствие соединения вообще.
+
+### Файлы
+- `core/blockcheck.py`
+- `core/passport.py`
+- `docs/WORKLOG.md`

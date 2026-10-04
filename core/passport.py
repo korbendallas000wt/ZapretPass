@@ -25,35 +25,72 @@ import re
 
 
 class StrategyParser:
-    """Парсер команд nfqws/tpws в читаемые идентификаторы.""" 
+    """Парсер команд nfqws/tpws в читаемые идентификаторы."""
+
+    @staticmethod
+    def _normalize(command: str) -> str:
+        return " ".join(str(command).strip().split())
+
+    @staticmethod
+    def _hash(command: str) -> str:
+        return hashlib.md5(command.encode()).hexdigest()[:4]
+
+    @staticmethod
+    def _tool(command: str) -> str:
+        parts = command.strip().split(maxsplit=1)
+        if not parts:
+            return "cmd"
+
+        base = parts[0].rsplit("/", 1)[-1].lower()
+        if base in {"nfqws", "tpws"}:
+            return base
+
+        return "cmd"
+
+    @staticmethod
+    def _label(command: str) -> str:
+        tool = StrategyParser._tool(command)
+
+        if tool == "tpws":
+            return "tpws"
+
+        match = re.search(r"--dpi-desync=([^\s]+)", command)
+        if match:
+            return match.group(1)
+
+        if tool == "nfqws":
+            return "nfqws"
+
+        return "cmd"
+
+    @staticmethod
+    def _ttl(command: str) -> str:
+        match = re.search(r"--dpi-desync-ttl=(\d+)", command)
+        return match.group(1) if match else ""
 
     @staticmethod
     def generate_id(command: str) -> str:
-        """Генерирует детерминированный ID стратегии."""
-        # Извлекаем тип desync
-        desync_match = re.search(r'--dpi-desync=([^\s]+)', command)
-        desync_type = desync_match.group(1) if desync_match else "unknown"
+        command = StrategyParser._normalize(command)
+        label = StrategyParser._label(command)
+        ttl = StrategyParser._ttl(command)
+        suffix = StrategyParser._hash(command)
 
-        # Извлекаем TTL
-        ttl_match = re.search(r'--dpi-desync-ttl=(\d+)', command)
-        ttl = ttl_match.group(1) if ttl_match else "no_ttl"
+        if ttl:
+            return f"{label}/ttl={ttl}/{suffix}"
 
-        # Хэш для уникальности (первые 4 символа MD5)
-        hash_suffix = hashlib.md5(command.encode()).hexdigest()[:4]
-
-        # Формируем ID
-        return f"{desync_type}/ttl={ttl}/{hash_suffix}"
+        return f"{label}/{suffix}"
 
     @staticmethod
     def generate_alias(command: str) -> str:
-        """Генерирует человекочитаемый алиас."""
-        desync_match = re.search(r'--dpi-desync=([^\s]+)', command)
-        desync_type = desync_match.group(1) if desync_match else "unknown"
+        command = StrategyParser._normalize(command)
+        label = StrategyParser._label(command)
+        ttl = StrategyParser._ttl(command)
+        suffix = StrategyParser._hash(command)
 
-        ttl_match = re.search(r'--dpi-desync-ttl=(\d+)', command)
-        ttl = ttl_match.group(1) if ttl_match else "no_ttl"
+        if ttl:
+            return f"{label}/ttl={ttl}"
 
-        return f"{desync_type}/ttl={ttl}"
+        return f"{label}/{suffix}"
 
 from pathlib import Path
 from typing import Optional, Any
