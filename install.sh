@@ -114,6 +114,11 @@ install_system_deps() {
                 curl \
                 make \
                 gcc \
+                zlib1g-dev \
+                libcap-dev \
+                libnetfilter-queue-dev \
+                libmnl-dev \
+                libsystemd-dev \
                 python3 \
                 python3-pyqt6 \
                 python3-pyqt6.qtwebengine
@@ -128,6 +133,10 @@ install_system_deps() {
                 curl \
                 make \
                 gcc \
+                pkgconf \
+                libcap \
+                libnetfilter_queue \
+                libmnl \
                 python \
                 python-pyqt6 \
                 python-pyqt6-webengine
@@ -139,6 +148,11 @@ install_system_deps() {
                 curl \
                 make \
                 gcc \
+                zlib-devel \
+                libcap-devel \
+                libnetfilter_queue-devel \
+                libmnl-devel \
+                systemd-devel \
                 python3 \
                 python3-qt6 \
                 python3-qt6-webengine
