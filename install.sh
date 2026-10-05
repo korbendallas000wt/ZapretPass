@@ -65,9 +65,9 @@ detect_os() {
     fi
     
     source /etc/os-release
-    OS_ID="$ID"
-    OS_VERSION="$VERSION_ID"
-    OS_NAME="$PRETTY_NAME"
+    OS_ID="${ID:-unknown}"
+    OS_VERSION="${VERSION_ID:-}"
+    OS_NAME="${PRETTY_NAME:-Unknown Linux}"
     
     case "$OS_ID" in
         ubuntu|debian|linuxmint|pop)
@@ -86,7 +86,7 @@ detect_os() {
             ;;
     esac
     
-    if [ "$OS_ID" = "ubuntu" ]; then
+    if [ "$OS_ID" = "ubuntu" ] && [ -n "$OS_VERSION" ]; then
         MAJOR_VERSION=$(echo "$OS_VERSION" | cut -d. -f1)
         if [ "$MAJOR_VERSION" -lt 24 ]; then
             log_error "Ubuntu $OS_VERSION не поддерживается"
