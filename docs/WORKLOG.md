@@ -317,3 +317,10 @@ curl_test_https_tls13 ipv4 rutor.info : nfqws not working
 - Исправлена ошибка: `VERSION_ID: не заданы границы переменной`
 - Добавлены значения по умолчанию для отсутствующих переменных `/etc/os-release`
 - Идемпотентность подтверждена: повторный запуск не ломает конфигурацию zapret
+
+**Тестирование на Ubuntu 24.04:**
+- Обнаружена ошибка: отсутствие дев-пакетов для сборки бинарников zapret
+- Добавлены зависимости для всех трёх пакетных менеджеров:
+  - Ubuntu/Debian: zlib1g-dev, libcap-dev, libnetfilter-queue-dev, libmnl-dev, libsystemd-dev
+  - Arch: pkgconf, libcap, libnetfilter_queue, libmnl
+  - Fedora: zlib-devel, libcap-devel, libnetfilter_queue-devel, libmnl-devel, systemd-devel
