@@ -408,3 +408,23 @@ curl_test_https_tls13 ipv4 rutor.info : nfqws not working
 **Проверено:**
 - Manjaro: полный и быстрый режимы blockcheck работают штатно, стратегии парсятся.
 - Ubuntu 24.04: установка и запуск прошли успешно, ошибки `invalid repeat count` нет, данные создаются в правильной директории проекта.
+
+
+## Сессия 2026-10-07 — Синхронизация документации после portable/BATCH/install.sh
+
+**Сделано:**
+- `docs/STRUCTURE.md`: добавлен `install.sh` в дерево и raw-ссылки, обновлены описания `config.py` и `blockcheck.py`.
+- `docs/PROJECT_MANIFEST.md`: зафиксирован portable `PROJECT_DIR`, неинтерактивный `BATCH=1`, env-переменные блокчека, новый `detect_first_success()`, ограничения Ubuntu/QUIC, статус `install.sh` и fast-mode.
+- `README.md`: убраны устаревшие указания на ручной установщик, `installer/`, `python3 main.py` и интерактивный blockcheck; добавлен `install.sh`, portable-режим, актуальные требования и основной сценарий использования.
+- `docs/CHANGELOG.md`: добавлена секция `[Unreleased]` с изменениями после 0.1.0.
+- Бэкапы обновляемых документов сложены в `legacy/backup/`.
+
+**Проверено:**
+- `git diff --check` чистый.
+- Code fences сбалансированы.
+- Ключевые маркеры (`install.sh`, `BATCH=1`, `Path(__file__).parent.parent`, `Unreleased`) присутствуют в нужных файлах.
+
+**Для следующих сессий:**
+- Перед релизом в `main` перевести `[Unreleased]` в конкретную версию (например, `0.2.0`) и дату.
+- После стабилизации UI ещё раз сверить README с реальными вкладками/сценариями.
+- При необходимости установить `tshark` в `install.sh` или явно документировать ручную установку зависимости сниффера.
