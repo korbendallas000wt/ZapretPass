@@ -189,10 +189,56 @@ install_zapret() {
     
     cd "$ZAPRET_DIR"
     
+    # Проверяем наличие бинарников
+    if [ ! -d "binaries/my" ] || [ ! -f "binaries/my/nfqws" ]; then
+        log_info "Сборка бинарников zapret из исходников..."
+        
+        # Определяем, есть ли systemd
+        if command -v systemctl >/dev/null 2>&1; then
+            log_info "Используем systemd-вариант сборки..."
+            sudo make systemd
+        else
+            log_info "Используем обычный вариант сборки..."
+            sudo make
+        fi
+    else
+        log_info "Бинарники уже собраны"
+    fi
+    
     log_info "Запуск установщика zapret (может потребовать взаимодействия)..."
     sudo ./install_bin.sh
     
     log_info "zapret успешно установлен в $ZAPRET_DIR"
+}
+
+install_systemd_units() {
+    log_step "Установка systemd-юнитов..."
+    
+    UNITS_DIR="/opt/zapret/init.d/systemd"
+    SYSTEMD_DIR="/etc/systemd/system"
+    
+    if [ ! -d "$UNITS_DIR" ]; then
+        log_warn "Директория юнитов не найдена: $UNITS_DIR"
+        return 0
+    fi
+    
+    if [ ! -f "$UNITS_DIR/zapret.service" ]; then
+        log_warn "zapret.service не найден в $UNITS_DIR"
+        return 0
+    fi
+    
+    log_info "Копирование юнитов в $SYSTEMD_DIR..."
+    sudo cp "$UNITS_DIR/zapret.service" "$SYSTEMD_DIR/"
+    sudo cp "$UNITS_DIR/zapret-list-update.service" "$SYSTEMD_DIR/" 2>/dev/null || true
+    sudo cp "$UNITS_DIR/zapret-list-update.timer" "$SYSTEMD_DIR/" 2>/dev/null || true
+    
+    log_info "Перезагрузка демонов systemd..."
+    sudo systemctl daemon-reload
+    
+    log_info "Включение сервиса zapret..."
+    sudo systemctl enable zapret --quiet
+    
+    log_info "Systemd-юниты установлены, сервис включён"
 }
 
 create_launcher_script() {
@@ -340,6 +386,7 @@ main() {
     install_system_deps
     verify_pyqt6
     install_zapret
+    install_systemd_units
     create_launcher_script
     init_data_dirs
     create_desktop_entry

@@ -328,3 +328,19 @@ curl_test_https_tls13 ipv4 rutor.info : nfqws not working
 ### Заметка: curl и QUIC
 На Ubuntu 24.04 curl собран без поддержки HTTP/3 (QUIC) — в `Features` нет `HTTP3`. На Manjaro/Arch curl обычно с QUIC. Из-за этого `blockcheck.sh` на Ubuntu пропускает вопрос о QUIC-тестах. Стратегии для UDP/443 при этом всё равно работают через nfqws (он на уровне ядра), но блокчек не может их автоматически найти. Вопрос требует архитектурного решения (fallback-проверки или ручная подстановка стратегий).
 
+
+## Сессия 2026-10-06 — Доработка install.sh после тестов на Ubuntu
+
+**Сделано:**
+- В `install_zapret()` добавлена автоматическая сборка бинарников zapret, если `binaries/my/nfqws` отсутствует:
+  - при наличии systemd выполняется `sudo make systemd`;
+  - иначе `sudo make`.
+- Добавлена функция `install_systemd_units()`:
+  - копирует `zapret.service`, `zapret-list-update.service`, `zapret-list-update.timer` из `/opt/zapret/init.d/systemd` в `/etc/systemd/system`;
+  - выполняет `systemctl daemon-reload`;
+  - включает сервис `systemctl enable zapret`.
+- Подтверждено, что `install_bin.sh` от zapret устанавливает только бинарники и не регистрирует systemd-юниты автоматически.
+- Пустая директория `installer/` удалена.
+- Генерируемый артефакт `zapretpass.sh` добавлен в `.gitignore`.
+- Зафиксирована проблема blockcheck на Ubuntu: curl без HTTP/3 пропускает вопрос про QUIC, из-за чего жёсткая отправка ответов в stdin ломается. Далее нужно переводить blockcheck на неинтерактивный режим через `BATCH=1` и переменные окружения.
+
