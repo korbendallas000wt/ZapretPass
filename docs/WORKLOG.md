@@ -324,3 +324,7 @@ curl_test_https_tls13 ipv4 rutor.info : nfqws not working
   - Ubuntu/Debian: zlib1g-dev, libcap-dev, libnetfilter-queue-dev, libmnl-dev, libsystemd-dev
   - Arch: pkgconf, libcap, libnetfilter_queue, libmnl
   - Fedora: zlib-devel, libcap-devel, libnetfilter_queue-devel, libmnl-devel, systemd-devel
+
+### Заметка: curl и QUIC
+На Ubuntu 24.04 curl собран без поддержки HTTP/3 (QUIC) — в `Features` нет `HTTP3`. На Manjaro/Arch curl обычно с QUIC. Из-за этого `blockcheck.sh` на Ubuntu пропускает вопрос о QUIC-тестах. Стратегии для UDP/443 при этом всё равно работают через nfqws (он на уровне ядра), но блокчек не может их автоматически найти. Вопрос требует архитектурного решения (fallback-проверки или ручная подстановка стратегий).
+
