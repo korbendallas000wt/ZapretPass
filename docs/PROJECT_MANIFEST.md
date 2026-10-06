@@ -19,7 +19,8 @@
 ## Карта модулей ядра
 
 core/config.py — Пути и инициализация
-- Константы: PROJECT_DIR, ZAPRET_DIR, CONFIG_FILE, WHITELIST_FILE и др.
+- PROJECT_DIR определяется динамически: `Path(__file__).parent.parent` (portable-режим)
+- Константы: ZAPRET_DIR, CONFIG_FILE, WHITELIST_FILE и др.
 - SITES_DIR — data/sites/ для паспортов сайтов
 - init_dirs() — создание директорий data/, включая data/sites/
 - init_config_templates() — создание config.whitelist и config.global
@@ -66,12 +67,12 @@ core/strategies.py — Стратегии, whitelist, пресеты
 - get_selected() / set_selected() — выбранная стратегия
 - load_whitelist() / save_whitelist() / add_domain() / remove_domain() — whitelist
 
-core/blockcheck.py — Запуск и парсинг blockcheck.sh
+core/blockcheck.py — Неинтерактивный запуск и парсинг blockcheck.sh
 - BlockcheckSettings — dataclass с настройками (ipver, http, tls12, tls13, quic, repeat, mode, force)
 - BlockcheckResult — dataclass с success, strategies, first_success, output, error
-- run_blockcheck(domain, settings, password, on_output, fast_mode, timeout) — запуск с интерактивными ответами
+- run_blockcheck(domain, settings, password, on_output, fast_mode, timeout) — неинтерактивный запуск `blockcheck.sh` через `BATCH=1`; настройки передаются env-переменными `DOMAINS`, `IPVS`, `REPEATS`, `SCANLEVEL`, `ENABLE_HTTP`, `ENABLE_HTTPS_TLS12`, `ENABLE_HTTPS_TLS13`, `ENABLE_HTTP3`; `stdin` используется только для пароля `sudo -S` и затем закрывается
 - parse_strategies_from_output(output) — парсинг секции SUMMARY
-- detect_first_success(output_lines) — детектирование первой рабочей стратегии (для fast_mode)
+- detect_first_success(output_lines) — ищет реальный маркер `working strategy found`, извлекает стратегию после ` : `, принимает `nfqws`/`tpws`; в fast-mode вызывается для текущей строки вывода
 - get_supported_modes() — словарь режимов
 
 core/blockcheck_stats.py — Статистика проверок блокчека
@@ -311,13 +312,25 @@ tshark+curl не воспроизводят цепочку запросов бр
 Первый найденный успех может быть нестабильным.
 Решение: после быстрого прохода запускать полный прогон в фоне для валидации.
 
+### Portable-режим проекта
+`PROJECT_DIR` в `core/config.py` вычисляется как `Path(__file__).parent.parent`, поэтому приложение можно запускать из любой директории (например, `~/Scripts/ZapretPass` или `~/SOFT/ZapretPass`). Данные пишутся рядом с исходным кодом.
+
+### Неинтерактивный blockcheck и Ubuntu без QUIC
+`core/blockcheck.py` запускает `blockcheck.sh` через `BATCH=1` и переменные окружения. Это устраняет сдвиг ответов в stdin на системах, где `curl` собран без HTTP/3 и блокчек пропускает QUIC-вопрос. Если пользователь включил QUIC, тест всё равно остаётся на автодетекте `blockcheck.sh`: на Ubuntu без HTTP/3 он корректно пропускается.
+
+### install.sh и systemd-юниты
+Стандартный `install_bin.sh` из zapret устанавливает бинарники, но не регистрирует systemd-юниты автоматически. `install.sh` отдельно копирует юниты из `/opt/zapret/init.d/systemd` в `/etc/systemd/system`, выполняет `daemon-reload` и `systemctl enable zapret`.
+
+### Dev-зависимости для сборки zapret
+Для сборки `nfqws`/`tpws` из исходников нужны dev-пакеты. `install.sh` ставит их для apt/pacman/dnf; без них установка может упасть на чистой системе.
+
 
 ---
 
 ## Конфигурация
 
 ### Пути (в core/config.py)
-- PROJECT_DIR = ~/Scripts/ZapretPass — основная папка проекта
+- PROJECT_DIR = `Path(__file__).parent.parent` — динамическая папка проекта (portable-режим)
 - ZAPRET_DIR = /opt/zapret — системный путь к движку (может быть симлинком)
 - Данные: data/ внутри PROJECT_DIR
 
@@ -330,7 +343,8 @@ tshark+curl не воспроизводят цепочку запросов бр
 - quic: "N"
 - repeat: 1
 - mode: "1" (Быстрый; "2" — Стандарт, "3" — Полный)
-- force: False (при True добавляется SCANLEVEL=force)
+- force: False (при True `SCANLEVEL=force`; иначе `mode` 1/2/3 отображается в `quick`/`standard`/`force`)
+- запуск идёт через `BATCH=1` и переменные окружения, а не через интерактивные ответы в stdin
 
 ### Настройки сниффера (в core/sniffer.py, класс SnifferSettings)
 По умолчанию:
@@ -406,25 +420,33 @@ Qt6-интерфейс на PyQt6. Точка входа: zapretpass.py.
 
 ## Идеи и планы на будущее
 
-### Установщик движка (папка installer/)
-- Скачать дистрибутив запрута в папку проекта (например, PROJECT_DIR/engine/)
-- Создать симлинк /opt/zapret -> PROJECT_DIR/engine/
-- Установить и включить службу
-- Сохранить путь к реальной папке в конфиге проекта
-- При старте приложения проверять, что симлинк существует и указывает куда нужно
+### Установщик (install.sh)
+Уже реализовано в корне проекта:
+- `install.sh` ставит системные зависимости через apt/pacman/dnf
+- проверяет Ubuntu/Debian-based версии и требует Ubuntu 24.04+ для PyQt6
+- ставит PyQt6 и QtWebEngine-пакеты
+- клонирует или обновляет `/opt/zapret`
+- собирает бинарники `nfqws`/`tpws` при отсутствии, включая `make systemd` при наличии systemd
+- запускает `install_bin.sh` из zapret
+- копирует systemd-юниты `zapret.service`, `zapret-list-update.service`, `zapret-list-update.timer`
+- создаёт `zapretpass.sh`, каталоги `data/` и desktop-ярлык
+- выполняет финальную проверку установки
 
-### Установщик модулей
-- Проверка наличия пакетов: wireshark-cli (tshark), curl, kdialog
-- Предложение установки через pacman при отсутствии
+Осталось:
+- интеграция установщика в UI как мастер первого запуска
+- возможный self-contained режим: движок внутри проекта + симлинк `/opt/zapret`
+- более подробная диагностика причин неустановки dev-пакетов на экзотических дистрибутивах
 
 ### Fast-режим blockcheck
-Идея: после нахождения первой рабочей стратегии не ждать полного перебора, а сразу:
-1. Применить найденную стратегию
-2. Запустить браузер
-3. Перехватить вспомогательные домены через сниффер
-4. В фоне запустить полный блокчек для валидации
+Уже реализовано:
+- `detect_first_success()` понимает реальный вывод `blockcheck.sh` и находит строку `working strategy found`
+- в fast-mode проверяется текущая строка вывода, а не весь накопленный буфер
+- процесс можно остановить watchdog'ом после первой найденной стратегии
 
-Это даст пользователю быстрый доступ к сайту и полную картину в фоне.
+Осталось для продуктивного сценария:
+1. автоматически применить первую найденную стратегию
+2. запустить браузер и сниффер вспомогательных доменов
+3. параллельно/в фоне запустить полный блокчек для валидации
 
 ### Двухфазный поиск вспомогательных доменов
 Проблема: если основной домен заблокирован, браузер не пойдёт на вспомогательные домены, и сниффер не увидит полную цепочку.

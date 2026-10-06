@@ -19,6 +19,79 @@ import shutil
 import tempfile
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
+
+import hashlib
+import re
+
+
+class StrategyParser:
+    """Парсер команд nfqws/tpws в читаемые идентификаторы."""
+
+    @staticmethod
+    def _normalize(command: str) -> str:
+        return " ".join(str(command).strip().split())
+
+    @staticmethod
+    def _hash(command: str) -> str:
+        return hashlib.md5(command.encode()).hexdigest()[:4]
+
+    @staticmethod
+    def _tool(command: str) -> str:
+        parts = command.strip().split(maxsplit=1)
+        if not parts:
+            return "cmd"
+
+        base = parts[0].rsplit("/", 1)[-1].lower()
+        if base in {"nfqws", "tpws"}:
+            return base
+
+        return "cmd"
+
+    @staticmethod
+    def _label(command: str) -> str:
+        tool = StrategyParser._tool(command)
+
+        if tool == "tpws":
+            return "tpws"
+
+        match = re.search(r"--dpi-desync=([^\s]+)", command)
+        if match:
+            return match.group(1)
+
+        if tool == "nfqws":
+            return "nfqws"
+
+        return "cmd"
+
+    @staticmethod
+    def _ttl(command: str) -> str:
+        match = re.search(r"--dpi-desync-ttl=(\d+)", command)
+        return match.group(1) if match else ""
+
+    @staticmethod
+    def generate_id(command: str) -> str:
+        command = StrategyParser._normalize(command)
+        label = StrategyParser._label(command)
+        ttl = StrategyParser._ttl(command)
+        suffix = StrategyParser._hash(command)
+
+        if ttl:
+            return f"{label}/ttl={ttl}/{suffix}"
+
+        return f"{label}/{suffix}"
+
+    @staticmethod
+    def generate_alias(command: str) -> str:
+        command = StrategyParser._normalize(command)
+        label = StrategyParser._label(command)
+        ttl = StrategyParser._ttl(command)
+        suffix = StrategyParser._hash(command)
+
+        if ttl:
+            return f"{label}/ttl={ttl}"
+
+        return f"{label}/{suffix}"
+
 from pathlib import Path
 from typing import Optional, Any
 
@@ -33,6 +106,12 @@ class Passport:
     created: str = ""
     updated: str = ""
     status: str = "unknown"  # "unknown", "blocked", "partial", "working"
+    
+    # Версия схемы паспорта
+    schema_version: int = 1
+    
+    # Провайдер (пока пустой)
+    provider: str = ""
     
     # Результат диагностики
     diagnosis: dict = field(default_factory=dict)
@@ -110,6 +189,8 @@ class PassportManager:
                 created=data.get("created", ""),
                 updated=data.get("updated", ""),
                 status=data.get("status", "unknown"),
+                schema_version=data.get("schema_version", 1),
+                provider=data.get("provider", ""),
                 diagnosis=data.get("diagnosis", {}),
                 primary_strategy=data.get("primary_strategy", {}),
                 auxiliary_domains=data.get("auxiliary_domains", []),
@@ -229,8 +310,13 @@ class PassportManager:
         """Назначает основную стратегию."""
         passport = self.get_or_create(domain)
         
+        strategy_id = StrategyParser.generate_id(strategy)
+        strategy_alias = StrategyParser.generate_alias(strategy)
+        
         passport.primary_strategy = {
-            "strategy": strategy,
+            "id": strategy_id,
+            "alias": strategy_alias,
+            "command": strategy,
             "found_at": datetime.now().isoformat(),
             "mode": mode,
             "checks_count": checks_count,
@@ -286,7 +372,9 @@ class PassportManager:
         for entry in passport.auxiliary_domains:
             if entry.get("domain") == aux_domain:
                 entry["has_strategy"] = True
-                entry["strategy"] = strategy
+                entry["strategy_id"] = StrategyParser.generate_id(strategy)
+                entry["strategy_alias"] = StrategyParser.generate_alias(strategy)
+                entry["strategy_command"] = strategy
                 entry["strategy_found_at"] = datetime.now().isoformat()
                 passport.add_history(
                     "auxiliary_strategy",
@@ -399,11 +487,13 @@ class PassportManager:
         
         # Проверяем, есть ли уже такая
         for entry in strategies:
-            if entry.get("strategy") == strategy:
+            if entry.get("command") == strategy:
                 return True
         
         strategies.append({
-            "strategy": strategy,
+            "id": StrategyParser.generate_id(strategy),
+            "alias": StrategyParser.generate_alias(strategy),
+            "command": strategy,
             "found_at": datetime.now().isoformat(),
             "mode": mode,
             "checks_count": checks_count,
@@ -468,6 +558,8 @@ class PassportManager:
         passport_dir.mkdir(parents=True, exist_ok=True)
         
         data = {
+            "schema_version": passport.schema_version,
+            "provider": passport.provider,
             "domain": domain,
             "created": passport.created,
             "updated": passport.updated,
@@ -514,7 +606,9 @@ class PassportManager:
                 if isinstance(item, list):
                     for s in item:
                         strategies.append({
-                            "strategy": s,
+                            "id": StrategyParser.generate_id(s),
+                            "alias": StrategyParser.generate_alias(s),
+                            "command": s,
                             "found_at": updated,
                             "mode": "unknown",
                             "checks_count": 0,
@@ -522,11 +616,13 @@ class PassportManager:
                         })
                 elif isinstance(item, str):
                     strategies.append({
-                        "strategy": item,
-                        "found_at": updated,
-                        "mode": "unknown",
-                        "checks_count": 0,
-                        "duration": 0,
+                            "id": StrategyParser.generate_id(item),
+                            "alias": StrategyParser.generate_alias(item),
+                            "command": item,
+                            "found_at": updated,
+                            "mode": "unknown",
+                            "checks_count": 0,
+                            "duration": 0,
                     })
             
             # Сохраняем в новом формате

@@ -12,7 +12,7 @@ from pathlib import Path
 # ============================================================================
 
 # Основная папка проекта
-PROJECT_DIR = Path.home() / "Scripts" / "ZapretPass"
+PROJECT_DIR = Path(__file__).parent.parent
 
 # Папка с данными приложения
 DATA_DIR = PROJECT_DIR / "data"

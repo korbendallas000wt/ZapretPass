@@ -346,7 +346,7 @@ class PassportSummaryView(QWidget):
             lines = []
             for item in aux[:10]:
                 dom = _get_value(item, "domain", _get_value(item, "name", "")) or str(item)
-                strategy = _get_value(item, "strategy", _get_value(item, "primary_strategy", ""))
+                strategy = _get_value(item, "strategy_alias", _get_value(item, "strategy", ""))
                 suffix = " — стратегия найдена" if strategy else ""
                 lines.append(f"• {dom}{suffix}")
 
@@ -359,13 +359,31 @@ class PassportSummaryView(QWidget):
 
         # Основная стратегия
         primary = _get_value(data, "primary_strategy", {}) or {}
-        strategy = _get_value(primary, "strategy", "")
+        
+        # Новый формат: command, id, alias
+        strategy_command = _get_value(primary, "command", "")
+        strategy_alias = _get_value(primary, "alias", "")
+        strategy_id = _get_value(primary, "id", "")
+        
+        # Старый формат (для обратной совместимости)
+        if not strategy_command:
+            strategy_command = _get_value(primary, "strategy", "")
 
-        if strategy:
+        if strategy_command:
             self.strategy_value.setText("✅ Основная стратегия назначена")
-            self.strategy_command.setText(str(strategy))
+            
+            # Показываем алиас (или ID если алиас пустой)
+            display_text = strategy_alias or strategy_id or "—"
+            self.strategy_command.setText(display_text)
+            
+            # Tooltip с полной командой
+            if strategy_command:
+                self.strategy_command.setToolTip(str(strategy_command))
 
             status_bits = []
+            if strategy_id:
+                status_bits.append(f"ID: {strategy_id}")
+            
             found_at = _get_value(primary, "found_at")
             checks_count = _get_value(primary, "checks_count")
 
@@ -378,6 +396,7 @@ class PassportSummaryView(QWidget):
         else:
             self.strategy_value.setText("Стратегия не назначена")
             self.strategy_command.setText("—")
+            self.strategy_command.setToolTip("")
             self.strategy_status.setText("—")
 
         # Скриншоты

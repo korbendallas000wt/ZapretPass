@@ -10,6 +10,7 @@
 ```text
 ZapretPass/
 ├── zapretpass.py               Точка входа приложения
+├── install.sh                  Установщик зависимостей и движка zapret
 ├── core/                       Ядро: бизнес-логика, независимая от UI
 │   ├── __init__.py
 │   ├── config.py               Пути, инициализация директорий, шаблоны конфигов
@@ -56,13 +57,13 @@ ZapretPass/
 
 | Файл | Описание |
 |---|---|
-| `config.py` | Пути, инициализация директорий `data/`, создание шаблонов конфигов |
+| `config.py` | Portable-пути (`PROJECT_DIR` динамически), инициализация директорий `data/`, шаблоны конфигов |
 | `service.py` | Управление systemd-сервисом `zapret`: статус, старт/стоп/рестарт, enable/disable |
 | `service_manager.py` | Менеджер сервиса для блоков сценариев |
 | `sudo.py` | Запрос и кэширование пароля sudo, keep-alive |
 | `auth_limits.py` | Лимиты попыток аутентификации |
 | `strategies.py` | Стратегии, пресеты, whitelist, поиск пересечений и объединений |
-| `blockcheck.py` | Запуск и парсинг результатов `blockcheck.sh` |
+| `blockcheck.py` | Неинтерактивный запуск `blockcheck.sh` через `BATCH=1`, парсинг SUMMARY и fast-mode детект |
 | blockcheck_stats.py | Статистика количества проверок для прогресс-бара блокчека |
 | `applier.py` | Применение стратегий, бэкапы, ротация |
 | `sniffer.py` | Перехват SNI-доменов через `tshark` |
@@ -111,6 +112,7 @@ Qt6-интерфейс приложения. Вкладка «Паспорт с�
 
 ### Корень
 - [zapretpass.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/zapretpass.py)
+- [install.sh](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/install.sh)
 - [README.md](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/README.md)
 - [.gitignore](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/.gitignore)
 
