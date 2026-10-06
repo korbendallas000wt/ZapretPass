@@ -344,3 +344,41 @@ curl_test_https_tls13 ipv4 rutor.info : nfqws not working
 - Генерируемый артефакт `zapretpass.sh` добавлен в `.gitignore`.
 - Зафиксирована проблема blockcheck на Ubuntu: curl без HTTP/3 пропускает вопрос про QUIC, из-за чего жёсткая отправка ответов в stdin ломается. Далее нужно переводить blockcheck на неинтерактивный режим через `BATCH=1` и переменные окружения.
 
+
+## Сессия 2026-10-06 — blockcheck: переход на неинтерактивный режим
+
+**Проблема:**
+- `core/blockcheck.py` отправлял фиксированный список ответов в `stdin`.
+- На Ubuntu `curl` собран без HTTP/3, поэтому `blockcheck.sh` пропускал вопрос про QUIC.
+- Ответ для QUIC попадал в `REPEATS`, превращался в `0`, и блокчек падал с `invalid repeat count`.
+
+**Решение:**
+- Перевели запуск `blockcheck.sh` в неинтерактивный режим через `BATCH=1`.
+- Настройки передаются переменными окружения:
+  - `DOMAINS`
+  - `IPVS`
+  - `REPEATS`
+  - `SCANLEVEL`
+  - `ENABLE_HTTP`
+  - `ENABLE_HTTPS_TLS12`
+  - `ENABLE_HTTPS_TLS13`
+  - `ENABLE_HTTP3`
+- `ENABLE_HTTP` и `ENABLE_HTTPS_TLS12` передаём только при явном отключении, потому что в `blockcheck.sh` они по умолчанию включены.
+- `ENABLE_HTTPS_TLS13` передаём явно, потому что по умолчанию он выключен.
+- `ENABLE_HTTP3` при включении не форсируем: оставляем автодетект `blockcheck.sh`, чтобы Ubuntu без QUIC корректно пропускала тест.
+- Исправили `detect_first_success()` под реальный формат вывода:
+  - ищем строку `working strategy found`;
+  - извлекаем стратегию после ` : `;
+  - принимаем только `nfqws` / `tpws`.
+- В fast-mode теперь проверяется только текущая строка, а не весь накопленный вывод.
+- `stdin` используется только для пароля `sudo -S`, затем закрывается.
+
+**Проверено на Manjaro:**
+- fast-mode: останавливается на первой рабочей стратегии, возвращает `success=True`;
+- полный quick-проход без fast-mode: доходит до `SUMMARY`, парсит стратегии HTTP и TLS 1.3;
+- пример найденных стратегий:
+  - `tpws --split-pos=method+2 --oob`
+  - `nfqws --methodeol`
+  - `tpws --split-pos=1,sniext+1,host+1,midsld,endhost-1 --fix-seg`
+  - `nfqws --dpi-desync=multidisorder --dpi-desync-split-pos=1,sniext+1,host+1,midsld-2,midsld,midsld+2,endhost-1`
+

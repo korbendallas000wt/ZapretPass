@@ -9,6 +9,7 @@ import signal
 import threading
 import time
 import os
+import shlex
 from dataclasses import dataclass, field
 from typing import Optional, Callable
 
@@ -114,30 +115,42 @@ def parse_strategies_from_output(output: str) -> list[str]:
 
 def detect_first_success(output_lines: list[str]) -> Optional[str]:
     """Детектит первую рабочую стратегию в процессе перебора.
-    
-    Ищет строки, которые указывают на успешное прохождение теста.
-    Формат может варьироваться в зависимости от версии блокчека.
-    
-    Возможные маркеры успеха (будут уточнены после реального теста):
-    - строки с "✓" или "OK" или "works" или "доступен"
-    - строки с кодом ответа 200
+
+    Реальный вывод blockcheck.sh использует строки вида:
+        !!!!! curl_test_http: working strategy found for ipv4 example.com : tpws ... !!!!!
+        !!!!! curl_test_https_tls13: working strategy found for ipv4 example.com : nfqws ... !!!!!
     """
-    for line in reversed(output_lines):  # Смотрим последние строки
-        line = line.strip()
+    for raw_line in reversed(output_lines):
+        line = raw_line.strip()
         if not line:
             continue
-        
-        # Ищем маркеры успеха (уточнить после реального вывода)
-        success_markers = ["✓", "OK", "works", "доступен", "200"]
-        for marker in success_markers:
-            if marker in line and (":" in line):
-                # Пытаемся извлечь стратегию из строки
-                strategy = line.split(":", 1)[1].strip()
-                if strategy and (strategy.startswith("nfqws") or strategy.startswith("tpws")):
-                    return strategy
-    
-    return None
 
+        low = line.lower()
+        if "working strategy found" not in low:
+            continue
+
+        if " : " in line:
+            candidate = line.rsplit(" : ", 1)[1]
+        elif ":" in line:
+            candidate = line.rsplit(":", 1)[1]
+        else:
+            continue
+
+        candidate = candidate.strip()
+
+        if candidate.endswith("!!!!!"):
+            candidate = candidate[:-5].strip()
+
+        if not candidate:
+            continue
+
+        first = candidate.split(maxsplit=1)[0].lower()
+        base = first.rsplit("/", 1)[-1]
+
+        if base in {"nfqws", "tpws"}:
+            return candidate
+
+    return None
 
 def _proc_state_and_starttime(pid: int) -> tuple[Optional[str], Optional[str]]:
     """Возвращает state и starttime процесса из /proc/PID/stat."""
@@ -378,23 +391,66 @@ def run_blockcheck(
     timeout_event = threading.Event()
     fast_stop_event = threading.Event()
 
-    # Формируем команду запуска
-    force_prefix = "SCANLEVEL=force " if settings.force else ""
-    shell_cmd = f"cd {config.ZAPRET_DIR} && {force_prefix}./blockcheck.sh {domain}"
-    
+    # Перевод blockcheck.sh в неинтерактивный режим (BATCH=1).
+    # Значения ENABLE_* должны быть 1/0, а не Y/N.
+    def _yn_to_flag(value: str) -> str:
+        return "1" if str(value).strip().upper() in {"Y", "YES", "1", "TRUE"} else "0"
+
+    try:
+        repeat = max(1, min(10, int(settings.repeat)))
+    except Exception:
+        repeat = 1
+
+    ipver = str(settings.ipver).strip()
+    if ipver not in {"4", "6", "46"}:
+        ipver = "4"
+
+    scanlevel_map = {
+        "1": "quick",
+        "2": "standard",
+        "3": "force",
+        "quick": "quick",
+        "standard": "standard",
+        "force": "force",
+    }
+
+    if settings.force:
+        scanlevel = "force"
+    else:
+        scanlevel = scanlevel_map.get(str(settings.mode).strip().lower(), "standard")
+
+    http_flag = _yn_to_flag(settings.http)
+    tls12_flag = _yn_to_flag(settings.tls12)
+    tls13_flag = _yn_to_flag(settings.tls13)
+    quic_flag = _yn_to_flag(settings.quic)
+
+    blockcheck_env = {
+        "BATCH": "1",
+        "DOMAINS": domain,
+        "IPVS": ipver,
+        "REPEATS": str(repeat),
+        "SCANLEVEL": scanlevel,
+    }
+
+    # HTTP и TLS1.2 в blockcheck.sh по умолчанию включены: передаём только явное отключение.
+    if http_flag == "0":
+        blockcheck_env["ENABLE_HTTP"] = "0"
+
+    if tls12_flag == "0":
+        blockcheck_env["ENABLE_HTTPS_TLS12"] = "0"
+
+    # TLS1.3 по умолчанию выключен: включаем/выключаем явно по выбору пользователя.
+    blockcheck_env["ENABLE_HTTPS_TLS13"] = tls13_flag
+
+    # QUIC/HTTP3: если пользователь включил, оставляем автодетект blockcheck.sh
+    # (на Ubuntu без HTTP3 тест корректно пропустится). Явно отключаем только при N.
+    if quic_flag == "0":
+        blockcheck_env["ENABLE_HTTP3"] = "0"
+
+    env_args = " ".join(f"{k}={shlex.quote(str(v))}" for k, v in blockcheck_env.items())
+    shell_cmd = f"cd {shlex.quote(str(config.ZAPRET_DIR))} && env {env_args} ./blockcheck.sh"
+
     cmd = ["sudo", "-S", "bash", "-c", shell_cmd]
-    
-    # Ответы на интерактивные вопросы блокчека
-    answers = [
-        domain,
-        settings.ipver,
-        settings.http,
-        settings.tls12,
-        settings.tls13,
-        settings.quic,
-        str(settings.repeat),
-        settings.mode,
-    ]
     
     output_lines = []
     first_success = None
@@ -428,27 +484,14 @@ def run_blockcheck(
         )
         watchdog.start()
 
-        # Сначала отправляем пароль для sudo -S
+        # Сначала отправляем пароль для sudo -S.
+        # В BATCH=1 дополнительные ответы и финальный Enter не нужны.
         try:
             process.stdin.write(password + "\n")
             process.stdin.flush()
             # Пауза, чтобы sudo успел обработать пароль
             time.sleep(0.5)
-            
-            # Отправляем ответы на вопросы блокчека
-            for answer in answers:
-                process.stdin.write(answer + "\n")
-                process.stdin.flush()
-                time.sleep(0.1)  # небольшая пауза между ответами
-            
-            # ВАЖНО: blockcheck.sh в конце пишет "press enter to continue"
-            # и ждёт Enter. Отправляем финальный Enter, иначе процесс зависнет
-            time.sleep(1.0)
-            try:
-                process.stdin.write("\n")
-                process.stdin.flush()
-            except (BrokenPipeError, OSError):
-                pass  # процесс уже завершился
+            process.stdin.close()
         except Exception:
             pass  # Процесс мог завершиться раньше
         
@@ -467,7 +510,7 @@ def run_blockcheck(
                 
                 # В режиме fast проверяем на первый успех
                 if fast_mode and first_success is None:
-                    detected = detect_first_success(output_lines)
+                    detected = detect_first_success([line])
                     if detected:
                         first_success = detected
                         # Останавливаем блокчек через watchdog: SIGINT -> SIGTERM -> SIGKILL.
