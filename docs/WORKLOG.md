@@ -382,3 +382,29 @@ curl_test_https_tls13 ipv4 rutor.info : nfqws not working
   - `tpws --split-pos=1,sniext+1,host+1,midsld,endhost-1 --fix-seg`
   - `nfqws --dpi-desync=multidisorder --dpi-desync-split-pos=1,sniext+1,host+1,midsld-2,midsld,midsld+2,endhost-1`
 
+
+## Сессия 2026-10-07 — Blockcheck: неинтерактивный режим и Portable-конфиг
+
+**Проблема:**
+- На Ubuntu `curl` собран без HTTP/3, из-за чего `blockcheck.sh` пропускал вопрос про QUIC.
+- Жёстко заданные ответы в `stdin` сдвигались, попадая в `REPEATS`, что вызывало ошибку `invalid repeat count`.
+- `PROJECT_DIR` был захардкожен как `~/Scripts/ZapretPass`, что ломало работу при запуске из других директорий (например, `~/SOFT/ZapretPass` на Ubuntu) и приводило к потере данных.
+
+**Решение:**
+1. **Неинтерактивный режим blockcheck**:
+   - Запуск с `BATCH=1`.
+   - Настройки передаются через переменные окружения: `DOMAINS`, `IPVS`, `REPEATS`, `SCANLEVEL`, `ENABLE_HTTP`, `ENABLE_HTTPS_TLS12`, `ENABLE_HTTPS_TLS13`, `ENABLE_HTTP3`.
+   - `ENABLE_HTTP` и `ENABLE_HTTPS_TLS12` передаются только при явном отключении (по умолчанию в blockcheck.sh они включены).
+   - `ENABLE_HTTPS_TLS13` передаётся явно (по умолчанию выключен).
+   - `ENABLE_HTTP3` при включении не форсируется, оставляя автодетект `blockcheck.sh` (чтобы системы без QUIC корректно пропускали тест).
+2. **Исправление парсера fast-mode**:
+   - `detect_first_success()` переписан под реальный формат вывода: ищет строку `working strategy found` и извлекает стратегию после ` : `.
+   - В fast-mode проверка теперь выполняется только для текущей строки вывода, а не для всего накопленного буфера.
+   - `stdin` закрывается сразу после передачи пароля `sudo -S`.
+3. **Portable-конфиг**:
+   - `PROJECT_DIR` в `core/config.py` теперь определяется динамически: `Path(__file__).parent.parent`.
+   - Приложение корректно работает и сохраняет данные в любой директории запуска.
+
+**Проверено:**
+- Manjaro: полный и быстрый режимы blockcheck работают штатно, стратегии парсятся.
+- Ubuntu 24.04: установка и запуск прошли успешно, ошибки `invalid repeat count` нет, данные создаются в правильной директории проекта.
