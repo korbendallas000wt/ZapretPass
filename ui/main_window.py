@@ -10,6 +10,10 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QThread, QTimer
 from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QAction
+from .update_indicator import UpdateIndicator
+from .about_dialog import AboutDialog, UpdateCheckerWorker
+from core.updater import check_for_updates, UpdateInfo
 
 # Импорты ядра
 import sys
@@ -83,17 +87,34 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(self.tabs, stretch=1)
         self._create_tabs()
         
+        # Меню и статусбар
+        self.setup_menu()
+        
+        # Фоновая проверка обновлений
+        self.update_worker = UpdateCheckerWorker()
+        self.update_worker.check_finished.connect(self.on_update_check_finished)
+        self.update_worker.start()
+        
         # 2. Нижняя панель в GroupBox
         bottom_box = QGroupBox()
         bottom_layout = QVBoxLayout(bottom_box)
         bottom_layout.setContentsMargins(10, 10, 10, 10)
         bottom_layout.setSpacing(8)
         
-        # 2a. Строка статуса
+        # 2a. Строка статуса (статус слева, версия справа)
+        status_row = QHBoxLayout()
         self.status_label = QLabel("Готов к работе")
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        bottom_layout.addWidget(self.status_label)
+        status_row.addWidget(self.status_label, stretch=1)
         
+        # Индикатор версии (справа в той же строке)
+        self.update_indicator = UpdateIndicator()
+        from core.updater import get_version
+        self.update_indicator.show_version(get_version())
+        self.update_indicator.set_clicked_callback(self.show_about_dialog)
+        status_row.addWidget(self.update_indicator)
+        
+        bottom_layout.addLayout(status_row)
         # 2b. Ряд: круглый индикатор + кнопки
         controls_layout = QHBoxLayout()
         controls_layout.setSpacing(10)
@@ -311,3 +332,105 @@ class MainWindow(QMainWindow):
         """Очищает строку статуса."""
         self.status_label.setStyleSheet("")
         self.status_label.setText("Готов к работе")
+    
+    # ==================== Обновления ====================
+    
+    def setup_menu(self):
+        """Создаёт меню приложения с пунктом 'Справка'"""
+        menubar = self.menuBar()
+        
+        # Меню "Справка"
+        help_menu = menubar.addMenu("Справка")
+        
+        # Пункт "Проверить обновления"
+        self.check_update_action = QAction("Проверить обновления", self)
+        self.check_update_action.setShortcut("F5")
+        self.check_update_action.triggered.connect(self.manual_check_updates)
+        help_menu.addAction(self.check_update_action)
+        
+        # Разделитель
+        help_menu.addSeparator()
+        
+        # Пункт "О программе"
+        self.about_action = QAction("О программе", self)
+        self.about_action.triggered.connect(self.show_about_dialog)
+        help_menu.addAction(self.about_action)
+    
+    def on_update_check_finished(self, update_info: UpdateInfo):
+        """Обработчик результата фоновой проверки обновлений"""
+        if update_info.error_message:
+            # При ошибке показываем текущую версию (не ошибку)
+            self.update_indicator.show_error(update_info.error_message)
+            return
+        
+        if update_info.has_update:
+            # Проверяем, не отложил ли пользователь эту версию
+            from core.updater import load_update_state
+            state = load_update_state()
+            if state.get("dismissed_version") == update_info.latest_version:
+                return  # Не показываем индикатор
+            
+            # Показываем мигающий индикатор
+            self.update_indicator.show_update(
+                update_info.current_version,
+                update_info.latest_version
+            )
+            
+            # Обновляем пункт меню
+            self.about_action.setText(f"О программе (доступна v{update_info.latest_version})")
+            
+            # Сохраняем состояние
+            from core.updater import save_update_state
+            from datetime import datetime
+            save_update_state({
+                **state,
+                "latest_version": update_info.latest_version,
+                "current_version": update_info.current_version,
+                "last_checked_at": datetime.now().isoformat(),
+                "last_release_url": update_info.release_url
+            })
+        else:
+            # Нет обновления
+            self.update_indicator.show_version(update_info.current_version)
+    
+    def manual_check_updates(self):
+        """Ручная проверка обновлений"""
+        from core.updater import check_for_updates
+        
+        # Показываем диалог с прогрессом проверки
+        dialog = AboutDialog(None, self)
+        dialog.show_checking_progress = lambda: None  # Заглушка
+        dialog.status_label.setText("Проверка обновлений...")
+        
+        # Запускаем проверку в фоне
+        worker = UpdateCheckerWorker()
+        worker.check_finished.connect(lambda info: self._on_manual_check_finished(dialog, info))
+        worker.start()
+        
+        dialog.exec()
+    
+    def _on_manual_check_finished(self, dialog: AboutDialog, update_info: UpdateInfo):
+        """Обработчик результата ручной проверки обновлений"""
+        dialog.update_info = update_info
+        dialog.update_display()
+    
+    def show_about_dialog(self):
+        """Показывает диалог 'О программе'"""
+        from core.updater import check_for_updates
+        
+        # Запускаем проверку в фоне
+        worker = UpdateCheckerWorker()
+        
+        # Создаём диалог с заглушкой
+        dialog = AboutDialog(None, self)
+        dialog.status_label.setText("Проверка обновлений...")
+        
+        worker.check_finished.connect(lambda info: self._on_about_check_finished(dialog, info))
+        worker.start()
+        
+        dialog.exec()
+    
+    def _on_about_check_finished(self, dialog: AboutDialog, update_info: UpdateInfo):
+        """Обработчик результата проверки для диалога 'О программе'"""
+        dialog.update_info = update_info
+        dialog.update_display()
