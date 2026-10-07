@@ -11,6 +11,7 @@
 ZapretPass/
 ├── zapretpass.py               Точка входа приложения
 ├── install.sh                  Установщик зависимостей и движка zapret
+├── VERSION                     Текущая версия приложения
 ├── core/                       Ядро: бизнес-логика, независимая от UI
 │   ├── __init__.py
 │   ├── config.py               Пути, инициализация директорий, шаблоны конфигов
@@ -27,24 +28,27 @@ ZapretPass/
 │   ├── passport.py             Менеджер паспортов сайтов и атомарное сохранение
 │   ├── scenarios.py            Workflow Engine — сценарии визарда
 │   ├── preflight.py            Предстартовые проверки окружения
-│   └── logger.py               Централизованное логирование с ротацией
+│   ├── logger.py               Централизованное логирование с ротацией
+│   └── updater.py              Проверка и применение обновлений
 ├── ui/                         Qt6-интерфейс
 │   ├── __init__.py
 │   ├── main_window.py          Главное окно приложения
 │   ├── site_passport.py        Визард «Паспорт сайта»
 │   ├── passport_view.py        Финальный виджет паспорта сайта
 │   ├── password_dialog.py      Диалог запроса пароля sudo
-│   └── service_controller.py   Контроллер статуса сервиса для UI
+│   ├── service_controller.py   Контроллер статуса сервиса для UI
+│   ├── about_dialog.py         Диалог «О программе» и обновлений
+│   └── update_indicator.py     Индикатор доступного обновления
 ├── data/                       Данные приложения
 │   ├── strategies/             Результаты blockcheck: {domain}.json
 │   ├── sites/                  Паспорта сайтов: {domain}/passport.json, strategies.json, screenshots/
 │   ├── sniffer_results/        Результаты сниффинга: {domain}.txt
 │   └── logs/                   Логи приложения
+├── resources/                  Ресурсы приложения (пока .gitkeep)
 ├── docs/                       Документация проекта
 │   ├── STRUCTURE.md            Этот файл — карта проекта
 │   ├── PROJECT_MANIFEST.md     Карта модулей, форматы данных, зависимости
-│   ├── CHANGELOG.md            История релизов
-│   └── WORKLOG.md              Журнал работы между сессиями (только dev)
+│   └── CHANGELOG.md            История релизов
 ├── .gitignore                  Исключения для git
 └── README.md                   Витрина проекта
 ```
@@ -72,6 +76,7 @@ ZapretPass/
 | `scenarios.py` | Workflow Engine — сценарии визарда (декларативное описание) |
 | `preflight.py` | Предстартовые проверки окружения, автокилл foreign-процессов |
 | `logger.py` | Централизованное логирование с ротацией |
+| `updater.py` | Проверка и применение обновлений через GitHub Releases, скачивание ZIP, бэкап/откат |
 
 
 ### `ui/` — интерфейс
@@ -85,6 +90,8 @@ Qt6-интерфейс приложения. Вкладка «Паспорт с�
 | `passport_view.py` | Финальный виджет паспорта сайта |
 | `password_dialog.py` | Диалог запроса пароля sudo |
 | `service_controller.py` | Контроллер статуса сервиса для UI |
+| `about_dialog.py` | Диалог «О программе» и обновлений |
+| `update_indicator.py` | Индикатор доступного обновления |
 
 ### `data/` — данные приложения
 
@@ -97,14 +104,21 @@ Qt6-интерфейс приложения. Вкладка «Паспорт с�
 
 - **blockcheck_stats.json** — статистика количества проверок блокчека (пользовательский файл, не в git)
 
+### `resources/` — ресурсы приложения
+
+| Файл | Описание |
+|---|---|
+| `.gitkeep` | Служебный файл для сохранения пустой директории в git |
+
 ### `docs/` — документация
+
+Внутренний журнал работы ведётся в `Work/WORKLOG.md` и не входит в git/релиз.
 
 | Файл | Описание |
 |---|---|
 | `STRUCTURE.md` | Этот файл — карта проекта |
 | `PROJECT_MANIFEST.md` | Карта модулей, форматы данных, зависимости |
 | `CHANGELOG.md` | История релизов |
-| `WORKLOG.md` | Журнал работы между сессиями (только dev) |
 
 ---
 
@@ -113,6 +127,7 @@ Qt6-интерфейс приложения. Вкладка «Паспорт с�
 ### Корень
 - [zapretpass.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/zapretpass.py)
 - [install.sh](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/install.sh)
+- [VERSION](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/VERSION)
 - [README.md](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/README.md)
 - [.gitignore](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/.gitignore)
 
@@ -133,6 +148,7 @@ Qt6-интерфейс приложения. Вкладка «Паспорт с�
 - [scenarios.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/core/scenarios.py)
 - [preflight.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/core/preflight.py)
 - [logger.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/core/logger.py)
+- [updater.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/core/updater.py)
 
 ### `ui/`
 - [__init__.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/ui/__init__.py)
@@ -141,6 +157,8 @@ Qt6-интерфейс приложения. Вкладка «Паспорт с�
 - [passport_view.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/ui/passport_view.py)
 - [password_dialog.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/ui/password_dialog.py)
 - [service_controller.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/ui/service_controller.py)
+- [about_dialog.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/ui/about_dialog.py)
+- [update_indicator.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/ui/update_indicator.py)
 
 ### `data/`
 - [strategies/.gitkeep](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/data/strategies/.gitkeep)
@@ -148,8 +166,10 @@ Qt6-интерфейс приложения. Вкладка «Паспорт с�
 - [sniffer_results/.gitkeep](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/data/sniffer_results/.gitkeep)
 - [logs/.gitkeep](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/data/logs/.gitkeep)
 
+### `resources/`
+- [.gitkeep](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/resources/.gitkeep)
+
 ### `docs/`
 - [STRUCTURE.md](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/docs/STRUCTURE.md)
 - [PROJECT_MANIFEST.md](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/docs/PROJECT_MANIFEST.md)
 - [CHANGELOG.md](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/docs/CHANGELOG.md)
-- [WORKLOG.md](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/docs/WORKLOG.md)

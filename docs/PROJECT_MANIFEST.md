@@ -155,6 +155,20 @@ core/logger.py — Централизованное логирование
 
 ---
 
+core/updater.py — Проверка и применение обновлений
+- UpdateInfo — dataclass: has_update, current_version, latest_version, release_url, release_notes, zip_url, zip_size, error_message
+- get_version() — чтение текущей версии из файла VERSION
+- compare_versions(v1, v2) — сравнение семантических версий
+- check_for_updates() — запрос к GitHub Releases API (`releases/latest`)
+- download_update(update_info, progress_callback) — скачивание ZIP-архива в кэш `~/.cache/zapretpass/downloads`
+- apply_update(zip_path, app_dir) — распаковка в staging, создание бэкапа, замена верхнеуровневых файлов/папок, откат при ошибке
+- load_update_state() / save_update_state(state) — состояние обновлений в `data/update_state.json`
+- is_safe_path(base_dir, target_path) — защита от path traversal при распаковке ZIP
+
+Важно: текущая реализация `apply_update()` заменяет верхнеуровневые элементы целиком. В dev-директории это может удалить dev-only файлы (например, `Work/WORKLOG.md`) и сбросить бит исполнения. Для релизных пользователей схема приемлема, но требует доработки: file-level overlay, preserve-списки, восстановление прав, ActivityGuard.
+
+---
+
 ## Форматы данных
 
 ### data/strategies/{domain}.json — результаты blockcheck
@@ -241,6 +255,12 @@ strategies может быть списком списков (для совме�
 - Hostlist: /opt/zapret/ipset/zapret-hosts-user.txt
 - Блокчек: /opt/zapret/blockcheck.sh
 
+### Обновления
+- GitHub Releases API: https://api.github.com/repos/korbendallas000wt/ZapretPass/releases/latest
+- ZIP-ассет релиза: `ZapretPass-<version>.zip`
+- Кэш: `~/.cache/zapretpass/{downloads,backups,releases,staging}`
+- Состояние: `data/update_state.json`
+
 ### Системные компоненты
 - systemctl — управление сервисом zapret
 - sudo / pkexec — выполнение привилегированных команд
@@ -324,6 +344,14 @@ tshark+curl не воспроизводят цепочку запросов бр
 ### Dev-зависимости для сборки zapret
 Для сборки `nfqws`/`tpws` из исходников нужны dev-пакеты. `install.sh` ставит их для apt/pacman/dnf; без них установка может упасть на чистой системе.
 
+
+### Обновления в dev-директории
+`core/updater.py` применяет релизный ZIP заменой верхнеуровневых папок/файлов. Все внутренние файлы должны жить в `Work/`, чтобы не удаляться при обновлении. Известная проблема: после применения ZIP может сбрасываться бит исполнения у `install.sh`, `zapretpass.py` и других скриптов; требуется восстановление прав из бэкапа или по явному списку исполняемых файлов.
+
+Решение: держать внутренние файлы в `Work/` и не класть dev-only документы в публичные папки. Дополнительно нужно починить восстановление exec-битов после применения ZIP; file-level overlay остаётся желательным улучшением, но не единственным вариантом.
+
+### Локальный changelog для release notes
+Сейчас `release_notes` берётся из тела GitHub Release. Для отображаемых заметок нужно либо наполнять body релиза при публикации, либо парсить `docs/CHANGELOG.md` по заголовку `## [x.y.z]`.
 
 ---
 
@@ -416,6 +444,15 @@ Qt6-интерфейс на PyQt6. Точка входа: zapretpass.py.
 ### ui/service_controller.py — контроллер сервиса
 - Независимый таймер проверки статуса для UI-компонентов
 
+### ui/about_dialog.py — диалог «О программе»
+- Отображает текущую версию, доступную версию, ссылку на релиз и release notes.
+- Использует `core.updater.UpdateInfo`.
+- Пока показывает `release_notes` из GitHub Release; локальный парсинг CHANGELOG — следующая доработка.
+
+### ui/update_indicator.py — индикатор обновления
+- Виджет/элемент главного окна для отображения статуса проверки обновлений.
+- Сигнализирует о доступной новой версии и открывает диалог обновления/о программе.
+
 ---
 
 ## Идеи и планы на будущее
@@ -469,4 +506,12 @@ Qt6-интерфейс на PyQt6. Точка входа: zapretpass.py.
 
 ### Мультисистемность
 Ядро использует машинно-читаемые форматы (systemctl show, cgroup) вместо парсинга человекочитаемого вывода. Это делает его переносимым между дистрибутивами с systemd.
+
+### Доработка системы обновлений
+- Перевести `apply_update()` с замены верхнеуровневых папок на file-level overlay по манифесту релиза.
+- Сохранять бит исполнения для `install.sh`, `zapretpass.py` и будущих скриптов.
+- Добавить preserve-списки для dev-only файлов и пользовательских данных вне `data/`.
+- Реализовать ActivityGuard: блокировка UI/фоновых операций на время download/apply/restart.
+- Парсить `docs/CHANGELOG.md` для release notes конкретной версии.
+- Добавить очистку старых backup/staging/downloads с политикой хранения.
 
