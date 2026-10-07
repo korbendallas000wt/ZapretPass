@@ -84,11 +84,144 @@ core/blockcheck_stats.py — Статистика проверок блокче�
 - update_stats(settings, actual_checks) — обновление среднего значения по результатам прогона
 
 core/applier.py — Применение стратегий к конфигу
+
+core/zapret_config.py — Единый менеджер конфига zapret
+- ZapretConfigManager — classmethod-интерфейс для чтения и записи /opt/zapret/config
+- Атомарная запись через временный файл + mv (защита от повреждения конфига)
+- Блокировка от гонок данных через lock-файл /opt/zapret/.config.lock
+- Использование кэшированного пароля из sudo.manager (без повторного запроса)
+- read_strategy() — чтение текущей стратегии (tool, args)
+- read_mode_filter() — чтение MODE_FILTER (none/hostlist/autohostlist/ipset)
+- read_mode_http/https_tls12/https_tls13/quic() — чтение булевых параметров
+- read_param(name) — универсальное чтение любого параметра
+- read_all() / read_all_cached() — чтение всех параметров с кэшированием
+- set_strategy(tool, args) — установка стратегии (nfqws/tpws)
+- set_mode_filter(mode) — установка режима фильтрации
+- set_mode_http/https_tls12/https_tls13/quic(enabled) — установка булевых параметров
+- set_param(name, value) — универсальная установка любого параметра
+- set_many(params_dict) — массовое обновление за одну транзакцию
+- restart_service() — перезапуск сервиса после изменения конфига
+- Иерархия исключений: ZapretConfigError, ConfigLockError, ConfigReadError, ConfigWriteError, ConfigValidationError
+
 - apply_whitelist(password) — копирование whitelist.txt в /opt/zapret/ipset/
+
+core/zapret_config.py — Единый менеджер конфига zapret
+- ZapretConfigManager — classmethod-интерфейс для чтения и записи /opt/zapret/config
+- Атомарная запись через временный файл + mv (защита от повреждения конфига)
+- Блокировка от гонок данных через lock-файл /opt/zapret/.config.lock
+- Использование кэшированного пароля из sudo.manager (без повторного запроса)
+- read_strategy() — чтение текущей стратегии (tool, args)
+- read_mode_filter() — чтение MODE_FILTER (none/hostlist/autohostlist/ipset)
+- read_mode_http/https_tls12/https_tls13/quic() — чтение булевых параметров
+- read_param(name) — универсальное чтение любого параметра
+- read_all() / read_all_cached() — чтение всех параметров с кэшированием
+- set_strategy(tool, args) — установка стратегии (nfqws/tpws)
+- set_mode_filter(mode) — установка режима фильтрации
+- set_mode_http/https_tls12/https_tls13/quic(enabled) — установка булевых параметров
+- set_param(name, value) — универсальная установка любого параметра
+- set_many(params_dict) — массовое обновление за одну транзакцию
+- restart_service() — перезапуск сервиса после изменения конфига
+- Иерархия исключений: ZapretConfigError, ConfigLockError, ConfigReadError, ConfigWriteError, ConfigValidationError
+
 - apply_mode(mode, password) — переключение MODE_FILTER (whitelist/global)
+
+core/zapret_config.py — Единый менеджер конфига zapret
+- ZapretConfigManager — classmethod-интерфейс для чтения и записи /opt/zapret/config
+- Атомарная запись через временный файл + mv (защита от повреждения конфига)
+- Блокировка от гонок данных через lock-файл /opt/zapret/.config.lock
+- Использование кэшированного пароля из sudo.manager (без повторного запроса)
+- read_strategy() — чтение текущей стратегии (tool, args)
+- read_mode_filter() — чтение MODE_FILTER (none/hostlist/autohostlist/ipset)
+- read_mode_http/https_tls12/https_tls13/quic() — чтение булевых параметров
+- read_param(name) — универсальное чтение любого параметра
+- read_all() / read_all_cached() — чтение всех параметров с кэшированием
+- set_strategy(tool, args) — установка стратегии (nfqws/tpws)
+- set_mode_filter(mode) — установка режима фильтрации
+- set_mode_http/https_tls12/https_tls13/quic(enabled) — установка булевых параметров
+- set_param(name, value) — универсальная установка любого параметра
+- set_many(params_dict) — массовое обновление за одну транзакцию
+- restart_service() — перезапуск сервиса после изменения конфига
+- Иерархия исключений: ZapretConfigError, ConfigLockError, ConfigReadError, ConfigWriteError, ConfigValidationError
+
 - apply_strategy(strategy, password) — запись стратегии в NFQWS_OPT или TPWS_OPT
+
+core/zapret_config.py — Единый менеджер конфига zapret
+- ZapretConfigManager — classmethod-интерфейс для чтения и записи /opt/zapret/config
+- Атомарная запись через временный файл + mv (защита от повреждения конфига)
+- Блокировка от гонок данных через lock-файл /opt/zapret/.config.lock
+- Использование кэшированного пароля из sudo.manager (без повторного запроса)
+- read_strategy() — чтение текущей стратегии (tool, args)
+- read_mode_filter() — чтение MODE_FILTER (none/hostlist/autohostlist/ipset)
+- read_mode_http/https_tls12/https_tls13/quic() — чтение булевых параметров
+- read_param(name) — универсальное чтение любого параметра
+- read_all() / read_all_cached() — чтение всех параметров с кэшированием
+- set_strategy(tool, args) — установка стратегии (nfqws/tpws)
+- set_mode_filter(mode) — установка режима фильтрации
+- set_mode_http/https_tls12/https_tls13/quic(enabled) — установка булевых параметров
+- set_param(name, value) — универсальная установка любого параметра
+- set_many(params_dict) — массовое обновление за одну транзакцию
+- restart_service() — перезапуск сервиса после изменения конфига
+- Иерархия исключений: ZapretConfigError, ConfigLockError, ConfigReadError, ConfigWriteError, ConfigValidationError
+
 - apply_all(mode, strategy, password, restart_service) — комплексное применение
+
+core/zapret_config.py — Единый менеджер конфига zapret
+- ZapretConfigManager — classmethod-интерфейс для чтения и записи /opt/zapret/config
+- Атомарная запись через временный файл + mv (защита от повреждения конфига)
+- Блокировка от гонок данных через lock-файл /opt/zapret/.config.lock
+- Использование кэшированного пароля из sudo.manager (без повторного запроса)
+- read_strategy() — чтение текущей стратегии (tool, args)
+- read_mode_filter() — чтение MODE_FILTER (none/hostlist/autohostlist/ipset)
+- read_mode_http/https_tls12/https_tls13/quic() — чтение булевых параметров
+- read_param(name) — универсальное чтение любого параметра
+- read_all() / read_all_cached() — чтение всех параметров с кэшированием
+- set_strategy(tool, args) — установка стратегии (nfqws/tpws)
+- set_mode_filter(mode) — установка режима фильтрации
+- set_mode_http/https_tls12/https_tls13/quic(enabled) — установка булевых параметров
+- set_param(name, value) — универсальная установка любого параметра
+- set_many(params_dict) — массовое обновление за одну транзакцию
+- restart_service() — перезапуск сервиса после изменения конфига
+- Иерархия исключений: ZapretConfigError, ConfigLockError, ConfigReadError, ConfigWriteError, ConfigValidationError
+
 - restore_from_backup(password) — откат к бэкапу конфига
+
+core/zapret_config.py — Единый менеджер конфига zapret
+- ZapretConfigManager — classmethod-интерфейс для чтения и записи /opt/zapret/config
+- Атомарная запись через временный файл + mv (защита от повреждения конфига)
+- Блокировка от гонок данных через lock-файл /opt/zapret/.config.lock
+- Использование кэшированного пароля из sudo.manager (без повторного запроса)
+- read_strategy() — чтение текущей стратегии (tool, args)
+- read_mode_filter() — чтение MODE_FILTER (none/hostlist/autohostlist/ipset)
+- read_mode_http/https_tls12/https_tls13/quic() — чтение булевых параметров
+- read_param(name) — универсальное чтение любого параметра
+- read_all() / read_all_cached() — чтение всех параметров с кэшированием
+- set_strategy(tool, args) — установка стратегии (nfqws/tpws)
+- set_mode_filter(mode) — установка режима фильтрации
+- set_mode_http/https_tls12/https_tls13/quic(enabled) — установка булевых параметров
+- set_param(name, value) — универсальная установка любого параметра
+- set_many(params_dict) — массовое обновление за одну транзакцию
+- restart_service() — перезапуск сервиса после изменения конфига
+- Иерархия исключений: ZapretConfigError, ConfigLockError, ConfigReadError, ConfigWriteError, ConfigValidationError
+
+
+
+core/zapret_config.py — Единый менеджер конфига zapret
+- ZapretConfigManager — classmethod-интерфейс для чтения и записи /opt/zapret/config
+- Атомарная запись через временный файл + mv (защита от повреждения конфига)
+- Блокировка от гонок данных через lock-файл /opt/zapret/.config.lock
+- Использование кэшированного пароля из sudo.manager (без повторного запроса)
+- read_strategy() — чтение текущей стратегии (tool, args)
+- read_mode_filter() — чтение MODE_FILTER (none/hostlist/autohostlist/ipset)
+- read_mode_http/https_tls12/https_tls13/quic() — чтение булевых параметров
+- read_param(name) — универсальное чтение любого параметра
+- read_all() / read_all_cached() — чтение всех параметров с кэшированием
+- set_strategy(tool, args) — установка стратегии (nfqws/tpws)
+- set_mode_filter(mode) — установка режима фильтрации
+- set_mode_http/https_tls12/https_tls13/quic(enabled) — установка булевых параметров
+- set_param(name, value) — универсальная установка любого параметра
+- set_many(params_dict) — массовое обновление за одну транзакцию
+- restart_service() — перезапуск сервиса после изменения конфига
+- Иерархия исключений: ZapretConfigError, ConfigLockError, ConfigReadError, ConfigWriteError, ConfigValidationError
 
 core/sniffer.py — Перехват SNI через tshark
 - SnifferSettings — dataclass с interface, duration, filter

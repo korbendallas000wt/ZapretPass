@@ -142,6 +142,7 @@ Qt6-интерфейс приложения. Вкладка «Паспорт с�
 - [blockcheck.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/core/blockcheck.py)
 - [blockcheck_stats.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/core/blockcheck_stats.py)
 - [applier.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/core/applier.py)
+│   ├── zapret_config.py        Единый менеджер конфига zapret (чтение/запись)
 - [sniffer.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/core/sniffer.py)
 - [checker.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/core/checker.py)
 - [passport.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/core/passport.py)
