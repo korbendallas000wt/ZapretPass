@@ -15,6 +15,31 @@
 - Полное покрытие всех параметров конфига: стратегия, MODE_FILTER, MODE_HTTP, MODE_HTTPS_TLS12/13, MODE_QUIC.
 - Иерархия исключений: `ZapretConfigError`, `ConfigLockError`, `ConfigReadError`, `ConfigWriteError`, `ConfigValidationError`.
 
+### Интеграция в UI
+- Добавлена кнопка "🎯 Применить стратегию" после успешного blockcheck.
+- Кнопка применяет найденную стратегию через `ZapretConfigManager`.
+- Автоматически устанавливает `MODE_FILTER = "autohostlist"` (точечный обход).
+- Перезапускает сервис zapret после применения.
+- Сохраняет стратегию в паспорт сайта.
+- Показывает диалог подтверждения перед применением.
+
+---
+
+Все значимые изменения проекта документируются в этом файле.
+
+## [1.2.0] — 2026-10-08
+
+### Новое ядро: Zapret Config Manager
+- Добавлен модуль `core/zapret_config.py` — единая точка входа для чтения и записи конфига `/opt/zapret/config`.
+- Атомарная запись через временный файл + `mv` (защита от повреждения конфига).
+- Блокировка от гонок данных через lock-файл `/opt/zapret/.config.lock`.
+- Использование кэшированного пароля из `sudo.manager` (без повторного запроса).
+- Валидация всех входных данных (tool, mode, и т.д.).
+- Кэширование конфига в памяти с TTL 5 секунд (`read_all_cached()`).
+- Метод `set_many()` для массового обновления нескольких параметров за одну транзакцию.
+- Полное покрытие всех параметров конфига: стратегия, MODE_FILTER, MODE_HTTP, MODE_HTTPS_TLS12/13, MODE_QUIC.
+- Иерархия исключений: `ZapretConfigError`, `ConfigLockError`, `ConfigReadError`, `ConfigWriteError`, `ConfigValidationError`.
+
 ---
 
 # ZapretPass — история релизов

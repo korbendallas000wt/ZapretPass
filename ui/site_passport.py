@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QGroupBox, QProgressBar, QScrollArea, QStackedWidget,
     QFrame, QSizePolicy, QComboBox, QTextEdit, QRadioButton,
-    QButtonGroup, QToolTip
+    QButtonGroup, QToolTip, QMessageBox
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QThread, QTimer, QPoint, QRectF, QPointF
 import threading
@@ -883,6 +883,63 @@ class SitePassportWidget(QWidget):
             f"⚠ Ошибка диагностики: {error_msg}", True)
         self.btn_proceed.setEnabled(True)
         self.url_input.setEnabled(True)
+
+    def _apply_strategy(self, strategy_cmd: str):
+        """Применяет стратегию через ZapretConfigManager."""
+        from core.zapret_config import ZapretConfigManager, ZapretConfigError
+        from core import passport
+        
+        try:
+            # Парсим команду
+            parts = strategy_cmd.split(maxsplit=1)
+            tool = parts[0]
+            args = parts[1] if len(parts) > 1 else ""
+            
+            # Применяем через единый менеджер
+            ZapretConfigManager.set_strategy(tool, args)
+            ZapretConfigManager.set_mode_filter("autohostlist")
+            ZapretConfigManager.restart_service()
+            
+            # Сохраняем в паспорт
+            mode = "fast"
+            if hasattr(self, '_blockcheck_settings') and self._blockcheck_settings:
+                mode = getattr(self._blockcheck_settings, 'mode', 'fast')
+            passport.manager.set_primary_strategy(
+                self.domain,
+                strategy_cmd,
+                mode=mode,
+                checks_count=0,
+                duration=0
+            )
+            
+            QMessageBox.information(
+                self,
+                "Успех",
+                f"✅ Стратегия применена и сервис перезапущен!\n\n"
+                f"Инструмент: {tool}\n"
+                f"Режим фильтрации: autohostlist"
+            )
+            
+            self.status_message_requested.emit(
+                f"✅ Стратегия применена для {self.domain}", True)
+            
+        except ZapretConfigError as e:
+            QMessageBox.critical(
+                self,
+                "Ошибка применения",
+                f"❌ Не удалось применить стратегию:\n{str(e)}"
+            )
+            self.status_message_requested.emit(
+                f"❌ Ошибка применения стратегии: {e}", True)
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Ошибка",
+                f"❌ Непредвиденная ошибка:\n{str(e)}"
+            )
+            self.status_message_requested.emit(
+                f"❌ Ошибка: {e}", True)
+
     def _cleanup_after_blockcheck(self, layout=None, result=None):
         """Гарантированно завершает сервисные действия после блокчека."""
         if getattr(self, "_blockcheck_cleanup_done", False):
@@ -1213,6 +1270,14 @@ class SitePassportWidget(QWidget):
             self.status_message_requested.emit(
                 f"✅ Найдено {len(result.strategies)} стратегий", True)
             self._mark_current_progress("completed")
+            
+            # Кнопка применения стратегии
+            if result.strategies:
+                btn_apply = QPushButton("🎯 Применить стратегию")
+                btn_apply.setStyleSheet("background-color: #27ae60; color: white; font-weight: bold;")
+                btn_apply.setMinimumHeight(40)
+                btn_apply.clicked.connect(lambda checked, s=result.strategies[0]: self._apply_strategy(s))
+                self._current_block_layout.addWidget(btn_apply)
         else:
             error_msg = result.error or "Неизвестная ошибка"
             status_label = QLabel(f"❌ {error_msg}")

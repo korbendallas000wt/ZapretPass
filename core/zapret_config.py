@@ -193,6 +193,24 @@ class ZapretConfigManager:
     # МЕТОДЫ ЧТЕНИЯ
     # =========================================================================
     
+
+    @classmethod
+    def backup_config(cls) -> tuple[bool, str]:
+        """Делает бэкап текущего конфига перед записью."""
+        password = cls._get_password()
+        
+        try:
+            from . import config
+            ok, msg = config.backup_config(password)
+            if ok:
+                log.info(f"Бэкап конфига создан: {msg}")
+            else:
+                log.warning(f"Бэкап не создан: {msg}")
+            return ok, msg
+        except Exception as e:
+            log.error(f"Ошибка создания бэкапа: {e}")
+            return False, str(e)
+
     @classmethod
     def read_strategy(cls) -> tuple[str, str]:
         """Возвращает (tool, args) текущей стратегии.
@@ -439,6 +457,9 @@ class ZapretConfigManager:
         """Обновляет несколько параметров за одну транзакцию."""
         log.info(f"Массовое обновление {len(params)} параметров")
         
+        # Делаем бэкап перед записью
+        cls.backup_config()
+        
         content = cls._read_config()
         
         for param_name, value in params.items():
@@ -456,6 +477,9 @@ class ZapretConfigManager:
     @classmethod
     def _set_param(cls, param_name: str, value: str):
         """Внутренний метод: обновляет один параметр в конфиге."""
+        # Делаем бэкап перед записью
+        cls.backup_config()
+        
         content = cls._read_config()
         
         pattern = rf'^{param_name}=.*$'

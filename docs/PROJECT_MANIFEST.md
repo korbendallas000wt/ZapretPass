@@ -433,6 +433,15 @@ strategies может быть списком списков (для совме�
 1. password = core.sudo.manager.get_password()
 2. core.applier.apply_all(mode, strategy, password, restart_service=True)
 
+### Пользователь нажал "Применить стратегию" (после blockcheck)
+1. UI показывает кнопку "🎯 Применить стратегию" после успешного blockcheck
+2. Пользователь нажимает кнопку
+3. core.zapret_config.ZapretConfigManager.set_strategy(tool, args) — запись стратегии
+4. core.zapret_config.ZapretConfigManager.set_mode_filter("autohostlist") — точечный обход
+5. core.zapret_config.ZapretConfigManager.restart_service() — перезапуск сервиса
+6. core.passport.manager.set_primary_strategy(domain, strategy) — сохранение в паспорт
+7. UI показывает диалог успеха
+
 ### Пользователь нажал "Найти стратегии для домена"
 1. settings = core.blockcheck.BlockcheckSettings(mode="2")  # Стандарт
 2. password = core.sudo.manager.get_password()
