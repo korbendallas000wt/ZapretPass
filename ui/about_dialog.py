@@ -4,9 +4,9 @@
 import webbrowser
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
-    QTextEdit, QProgressBar, QMessageBox
+    QTextEdit, QProgressBar, QMessageBox, QApplication
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt6.QtGui import QFont
 
 from core.updater import UpdateInfo, download_update, apply_update, RELEASES_URL
@@ -65,6 +65,10 @@ class AboutDialog(QDialog):
     6. Ошибка
     """
     
+
+    apply_started = pyqtSignal()
+    apply_finished = pyqtSignal(bool, str)
+
     def __init__(self, update_info: UpdateInfo = None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("О программе")
@@ -251,15 +255,17 @@ class AboutDialog(QDialog):
         """Запускает процесс обновления"""
         if not self.update_info or not self.update_info.has_update:
             return
-        
+
+        if self.worker is not None and self.worker.isRunning():
+            return
+
         self.show_downloading()
-        
-        # Запускаем worker
+        self.apply_started.emit()
+
         self.worker = UpdateWorker(self.update_info, self)
         self.worker.progress.connect(self.on_progress)
         self.worker.finished.connect(self.on_update_finished)
         self.worker.start()
-    
     def on_progress(self, downloaded: int, total: int):
         """Обновляет прогресс-бар"""
         if total > 0:
@@ -272,7 +278,8 @@ class AboutDialog(QDialog):
             self.show_success()
         else:
             self.show_error(message)
-    
+
+        self.apply_finished.emit(success, message)
     def open_releases(self):
         """Открывает страницу релизов в браузере"""
         url = self.update_info.release_url if self.update_info else RELEASES_URL
@@ -282,14 +289,30 @@ class AboutDialog(QDialog):
         """Перезапускает приложение"""
         import sys
         import subprocess
-        
-        # Запускаем новый процесс
-        subprocess.Popen([sys.executable, "zapretpass.py"])
-        
-        # Закрываем текущий процесс
-        sys.exit(0)
+        from pathlib import Path
 
+        project_dir = Path(__file__).resolve().parents[1]
+        script = project_dir / "zapretpass.py"
 
+        subprocess.Popen([sys.executable, str(script)], cwd=str(project_dir))
+
+        app = QApplication.instance()
+        if app is not None:
+            QTimer.singleShot(0, app.quit)
+        else:
+            sys.exit(0)
+
+    def closeEvent(self, event):
+        """Блокирует закрытие диалога во время загрузки/установки."""
+        if self.worker is not None and self.worker.isRunning():
+            QMessageBox.information(
+                self,
+                "ZapretPass",
+                "Обновление выполняется. Пожалуйста, дождитесь завершения."
+            )
+            event.ignore()
+        else:
+            event.accept()
 class UpdateCheckerWorker(QThread):
     """Фоновый поток для проверки обновлений"""
     check_finished = pyqtSignal(object)  # UpdateInfo

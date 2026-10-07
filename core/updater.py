@@ -78,52 +78,38 @@ def compare_versions(v1: str, v2: str) -> int:
 
 def check_for_updates() -> UpdateInfo:
     """
-    Проверяет наличие обновлений на GitHub.
-    
-    Returns:
-        UpdateInfo с информацией об обновлении или ошибке
+    Проверяет наличие обновлений, читая VERSION из ветки main.
+
+    Release notes берутся из docs/CHANGELOG.md ветки main.
+    Если секции в changelog нет, используется fallback на GitHub Release body.
     """
     current_version = get_version()
-    
+
     try:
-        # Запрос к GitHub API с таймаутом 5 секунд
         req = urllib.request.Request(
-            GITHUB_API_URL,
+            VERSION_URL,
             headers={'User-Agent': 'ZapretPass-Updater'}
         )
-        
+
         with urllib.request.urlopen(req, timeout=5) as response:
-            data = json.loads(response.read().decode('utf-8'))
-        
-        # Извлекаем информацию из ответа
-        tag_name = data.get('tag_name', '')
-        latest_version = tag_name.lstrip('vV')
-        release_url = data.get('html_url', RELEASES_URL)
-        release_notes = data.get('body', '')
-        
-        # Ищем zip-ассет
-        zip_url = ""
-        zip_size = 0
-        
-        for asset in data.get('assets', []):
-            if asset.get('name', '').endswith('.zip'):
-                zip_url = asset.get('browser_download_url', '')
-                zip_size = asset.get('size', 0)
-                break
-        
-        # Сравниваем версии
+            latest_version = response.read().decode('utf-8').strip()
+
+        if not latest_version:
+            raise ValueError('Пустой файл VERSION в ветке main')
+
         has_update = compare_versions(current_version, latest_version) < 0
-        
+        release_notes = get_release_notes(latest_version)
+
         return UpdateInfo(
             has_update=has_update,
             current_version=current_version,
             latest_version=latest_version,
-            release_url=release_url,
+            release_url=RELEASES_URL,
             release_notes=release_notes,
-            zip_url=zip_url,
-            zip_size=zip_size
+            zip_url=ZIP_URL,
+            zip_size=0
         )
-        
+
     except urllib.error.URLError as e:
         logger.warning(f"Network error checking for updates: {e}")
         return UpdateInfo(
@@ -148,8 +134,6 @@ def check_for_updates() -> UpdateInfo:
             zip_size=0,
             error_message=f"Неожиданная ошибка: {str(e)}"
         )
-
-
 def get_cache_dir() -> Path:
     """Возвращает директорию кэша апдейтера"""
     import os
@@ -253,8 +237,10 @@ def apply_update(zip_path: Path, app_dir: Optional[Path] = None) -> bool:
         app_dir = get_app_dir()
     
     cache_dir = get_cache_dir()
-    staging_dir = cache_dir / 'staging' / datetime.now().strftime('%Y%m%d_%H%M%S')
-    backup_dir = cache_dir / 'backups' / datetime.now().strftime('%Y%m%d_%H%M%S')
+    data_dir = get_data_dir()
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    staging_dir = cache_dir / 'staging' / timestamp
+    backup_dir = data_dir / 'backups' / timestamp
     
     try:
         # 1. Распаковываем в staging
@@ -308,6 +294,9 @@ def apply_update(zip_path: Path, app_dir: Optional[Path] = None) -> bool:
                 shutil.copy2(item, dest)
         
         # 4. Применяем новые файлы
+        # ВАЖНО: удаляем папки перед копированием, чтобы удалить файлы из старых версий.
+        # Пользовательские данные не должны храниться в папках проекта (только в data/).
+        # Файлы в core/, ui/, resources/, docs/ — поставляемые, перезаписываются полностью.
         logger.info(f"Applying update to {app_dir}")
         
         for item in project_root.iterdir():
@@ -335,8 +324,11 @@ def apply_update(zip_path: Path, app_dir: Optional[Path] = None) -> bool:
         if pycache.exists():
             shutil.rmtree(pycache)
         
+        # Восстанавливаем исполняемые биты после применения обновления
+        restore_exec_bits(app_dir)
+
         # 5. Сохраняем zip как fallback
-        releases_dir = cache_dir / 'releases'
+        releases_dir = data_dir / 'releases'
         releases_dir.mkdir(parents=True, exist_ok=True)
         fallback_zip = releases_dir / f"ZapretPass-{get_version()}.zip"
         shutil.copy2(zip_path, fallback_zip)
@@ -403,3 +395,218 @@ def save_update_state(state: dict):
         state_file.write_text(json.dumps(state, indent=2, ensure_ascii=False))
     except Exception as e:
         logger.error(f"Error saving update state: {e}")
+
+def restore_exec_bits(app_dir: Path) -> None:
+    """
+    Возвращает +x известным скриптам после распаковки zip.
+
+    GitHub archive иногда не сохраняет unix-права, поэтому после apply_update()
+    install.sh / zapretpass.sh / zapretpass.py могут остаться без флага исполнения.
+    """
+    candidates = [
+        app_dir / "install.sh",
+        app_dir / "zapretpass.sh",
+        app_dir / "zapretpass.py",
+    ]
+
+    # На всякий случай: все .sh в корне проекта делаем исполняемыми
+    candidates.extend(sorted(app_dir.glob("*.sh")))
+
+    seen = set()
+    for path in candidates:
+        if path in seen:
+            continue
+        seen.add(path)
+
+        if path.is_file():
+            old_mode = path.stat().st_mode
+            new_mode = old_mode | 0o111
+            if new_mode != old_mode:
+                path.chmod(new_mode)
+                logger.info(f"Restored exec bit: {path}")
+
+
+def get_data_dir() -> Path:
+    """
+    Возвращает директорию persistent-данных апдейтера.
+
+    Здесь хранятся:
+    - backups/
+    - releases/
+
+    Используется XDG_DATA_HOME или ~/.local/share по умолчанию.
+    """
+    import os
+
+    data_base = Path(os.environ.get('XDG_DATA_HOME', Path.home() / '.local' / 'share'))
+    data_dir = data_base / 'zapretpass'
+
+    data_dir.mkdir(parents=True, exist_ok=True)
+    (data_dir / 'backups').mkdir(parents=True, exist_ok=True)
+    (data_dir / 'releases').mkdir(parents=True, exist_ok=True)
+
+    return data_dir
+
+
+# ==================== Release notes ====================
+
+
+REPO_OWNER = "korbendallas000wt"
+REPO_NAME = "ZapretPass"
+BRANCH = "main"
+VERSION_URL = f"https://raw.githubusercontent.com/{REPO_OWNER}/{REPO_NAME}/{BRANCH}/VERSION"
+ZIP_URL = f"https://github.com/{REPO_OWNER}/{REPO_NAME}/archive/refs/heads/{BRANCH}.zip"
+
+CHANGELOG_URL = f"https://raw.githubusercontent.com/{REPO_OWNER}/{REPO_NAME}/{BRANCH}/docs/CHANGELOG.md"
+GITHUB_API_RELEASE_URL = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/releases/tags"
+
+
+def _normalize_version(version: str) -> str:
+    """Нормализует версию: убирает пробелы, регистр и префикс v."""
+    return version.strip().lower().lstrip("v")
+
+
+def _extract_heading_version(line: str) -> str:
+    """
+    Извлекает версию из заголовка вида:
+    ## [1.1.0] — 2026-10-07
+    """
+    start = line.find("[")
+    if start == -1:
+        return ""
+
+    end = line.find("]", start + 1)
+    if end == -1:
+        return ""
+
+    return line[start + 1:end].strip()
+
+
+def parse_changelog_section(changelog_text: str, version: str) -> str:
+    """
+    Парсит секцию changelog для конкретной версии.
+
+    Ожидается формат:
+    ## [1.1.0] — 2026-10-07
+
+    Секция читается до следующего заголовка ## [...] или горизонтального разделителя ---.
+    """
+    target = _normalize_version(version)
+    lines = changelog_text.splitlines()
+
+    section_lines = []
+    in_section = False
+
+    for raw_line in lines:
+        line = raw_line.rstrip("\n")
+        stripped = line.strip()
+
+        if not in_section:
+            if stripped.startswith("## ") and "[" in stripped:
+                heading_version = _extract_heading_version(stripped)
+                if _normalize_version(heading_version) == target:
+                    in_section = True
+            continue
+
+        # Конец секции: следующий релиз или разделитель
+        if stripped.startswith("## "):
+            break
+
+        if stripped == "---":
+            break
+
+        section_lines.append(line)
+
+    # Убираем пустые строки по краям
+    while section_lines and not section_lines[0].strip():
+        section_lines.pop(0)
+
+    while section_lines and not section_lines[-1].strip():
+        section_lines.pop()
+
+    return "\n".join(section_lines).strip()
+
+
+def fetch_changelog_text() -> str:
+    """
+    Скачивает docs/CHANGELOG.md из ветки main.
+
+    Для локальной разработки можно переопределить источник через переменную
+    окружения:
+
+        ZAPRETPASS_DEV_LOCAL_CHANGELOG=/path/to/CHANGELOG.md
+
+    Если файл указан и существует, читается он.
+    """
+    import os
+
+    local_override = os.environ.get("ZAPRETPASS_DEV_LOCAL_CHANGELOG")
+    if local_override:
+        local_path = Path(local_override)
+        if local_path.exists():
+            try:
+                return local_path.read_text(encoding="utf-8")
+            except Exception as exc:
+                logger.warning(f"Failed to read local CHANGELOG override: {exc}")
+
+    try:
+        req = urllib.request.Request(
+            CHANGELOG_URL,
+            headers={"User-Agent": "ZapretPass-Updater"}
+        )
+
+        with urllib.request.urlopen(req, timeout=5) as response:
+            return response.read().decode("utf-8")
+
+    except Exception as exc:
+        logger.warning(f"Failed to fetch CHANGELOG.md: {exc}")
+        return ""
+
+
+def fetch_github_release_body(version: str) -> str:
+    """
+    Fallback: пытается взять body из GitHub Release с тегом vX.Y.Z.
+    Если релиза нет — возвращает пустую строку.
+    """
+    tag = f"v{_normalize_version(version)}"
+    url = f"{GITHUB_API_RELEASE_URL}/{tag}"
+
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "ZapretPass-Updater",
+                "Accept": "application/vnd.github+json"
+            }
+        )
+
+        with urllib.request.urlopen(req, timeout=5) as response:
+            data = json.loads(response.read().decode("utf-8"))
+            return (data.get("body") or "").strip()
+
+    except Exception as exc:
+        logger.debug(f"GitHub release body not available for {tag}: {exc}")
+        return ""
+
+
+def get_release_notes(version: str) -> str:
+    """
+    Возвращает release notes для версии.
+
+    Приоритет:
+    1. docs/CHANGELOG.md из ветки main.
+    2. GitHub Release body, если changelog не найден.
+    """
+    if not version:
+        return ""
+
+    notes = ""
+
+    changelog_text = fetch_changelog_text()
+    if changelog_text:
+        notes = parse_changelog_section(changelog_text, version)
+
+    if not notes:
+        notes = fetch_github_release_body(version)
+
+    return notes

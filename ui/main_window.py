@@ -6,7 +6,8 @@ ZapretPass UI - Главное окно
 """
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QLabel, QTabWidget, QGroupBox, QSizePolicy
+    QPushButton, QLabel, QTabWidget, QGroupBox, QSizePolicy,
+    QMessageBox
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QThread, QTimer
 from PyQt6.QtGui import QFont
@@ -86,14 +87,14 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         main_layout.addWidget(self.tabs, stretch=1)
         self._create_tabs()
-        
+        # ActivityGuard для обновлений
+        self._update_check_in_progress = False
+        self._update_apply_in_progress = False
+        self._about_dialog = None
+        self._update_checker_worker = None
+
         # Меню и статусбар
         self.setup_menu()
-        
-        # Фоновая проверка обновлений
-        self.update_worker = UpdateCheckerWorker()
-        self.update_worker.check_finished.connect(self.on_update_check_finished)
-        self.update_worker.start()
         
         # 2. Нижняя панель в GroupBox
         bottom_box = QGroupBox()
@@ -113,6 +114,8 @@ class MainWindow(QMainWindow):
         self.update_indicator.show_version(get_version())
         self.update_indicator.set_clicked_callback(self.show_about_dialog)
         status_row.addWidget(self.update_indicator)
+        # Фоновая проверка обновлений после создания индикатора
+        self._start_update_check(background=True)
         
         bottom_layout.addLayout(status_row)
         # 2b. Ряд: круглый индикатор + кнопки
@@ -393,44 +396,163 @@ class MainWindow(QMainWindow):
             # Нет обновления
             self.update_indicator.show_version(update_info.current_version)
     
+    def _set_update_actions_enabled(self):
+        """Блокирует/разблокирует элементы UI во время обновлений."""
+        check_enabled = not (self._update_check_in_progress or self._update_apply_in_progress)
+        about_enabled = not self._update_apply_in_progress
+
+        if hasattr(self, "check_update_action"):
+            self.check_update_action.setEnabled(check_enabled)
+
+        if hasattr(self, "about_action"):
+            self.about_action.setEnabled(about_enabled)
+
+        if hasattr(self, "tabs"):
+            self.tabs.setEnabled(not self._update_apply_in_progress)
+
+        if hasattr(self, "update_indicator"):
+            self.update_indicator.setEnabled(not self._update_apply_in_progress)
+
+    def _start_update_check(self, dialog=None, background=False):
+        """Запускает фоновую проверку обновлений с защитой от параллельных запусков."""
+        if self._update_check_in_progress or self._update_apply_in_progress:
+            if not background and dialog is None:
+                QMessageBox.information(
+                    self,
+                    "ZapretPass",
+                    "Проверка или установка обновления уже выполняется."
+                )
+            return
+
+        self._update_check_in_progress = True
+        self._set_update_actions_enabled()
+
+        if background:
+            pass
+        elif dialog is not None:
+            dialog.status_label.setText("Проверка обновлений...")
+        else:
+            self.status_label.setText("Проверка обновлений...")
+
+        worker = UpdateCheckerWorker()
+        self._update_checker_worker = worker
+
+        if dialog is not None:
+            worker.check_finished.connect(
+                lambda info, d=dialog: self._on_update_check_for_dialog(d, info)
+            )
+        else:
+            worker.check_finished.connect(self.on_update_check_finished)
+
+        worker.finished.connect(self._on_update_check_worker_finished)
+        worker.start()
+
+    def _on_update_check_worker_finished(self):
+        """Сбрасывает флаг проверки после завершения worker'а."""
+        self._update_check_in_progress = False
+        self._update_checker_worker = None
+        self._set_update_actions_enabled()
+
+    def _on_update_check_for_dialog(self, dialog, update_info: UpdateInfo):
+        """Обрабатывает результат проверки для конкретного диалога."""
+        if dialog is not None:
+            dialog.update_info = update_info
+            dialog.update_display()
+
+        self.on_update_check_finished(update_info)
+
+    def _ensure_about_dialog(self):
+        """Возвращает существующий диалог или создаёт новый."""
+        if self._about_dialog is not None and self._about_dialog.isVisible():
+            self._about_dialog.raise_()
+            self._about_dialog.activateWindow()
+            return self._about_dialog
+
+        dialog = AboutDialog(None, self)
+        dialog.apply_started.connect(self._on_update_apply_started)
+        dialog.apply_finished.connect(self._on_update_apply_finished)
+        dialog.finished.connect(self._on_about_dialog_finished)
+
+        self._about_dialog = dialog
+        return dialog
+
+    def _on_about_dialog_finished(self, _result=None):
+        """Сбрасывает ссылку на диалог после его закрытия."""
+        self._about_dialog = None
+
+    def _on_update_apply_started(self):
+        """Главное окно узнаёт, что началась загрузка/установка обновления."""
+        self._update_apply_in_progress = True
+        self._set_update_actions_enabled()
+        self.status_label.setText(
+            "Установка обновления... Пожалуйста, не закрывайте приложение."
+        )
+
+    def _on_update_apply_finished(self, success: bool, message: str):
+        """Главное окно узнаёт, что обновление завершилось или упало."""
+        self._update_apply_in_progress = False
+        self._set_update_actions_enabled()
+
+        if success:
+            self.status_label.setText(
+                "Обновление установлено. Требуется перезапуск приложения."
+            )
+        else:
+            self.status_label.setText(f"Ошибка обновления: {message}")
+
     def manual_check_updates(self):
-        """Ручная проверка обновлений"""
-        from core.updater import check_for_updates
-        
-        # Показываем диалог с прогрессом проверки
-        dialog = AboutDialog(None, self)
-        dialog.show_checking_progress = lambda: None  # Заглушка
-        dialog.status_label.setText("Проверка обновлений...")
-        
-        # Запускаем проверку в фоне
-        worker = UpdateCheckerWorker()
-        worker.check_finished.connect(lambda info: self._on_manual_check_finished(dialog, info))
-        worker.start()
-        
+        """Ручная проверка обновлений через меню."""
+        self.show_about_dialog(force_check=True)
+
+    def show_about_dialog(self, force_check: bool = False):
+        """
+        Показывает диалог 'О программе'.
+
+        Если проверка уже идёт, подключается к существующему worker'у.
+        Если force_check=True и проверка не идёт, запускает новую проверку.
+        """
+        if self._update_apply_in_progress:
+            QMessageBox.information(
+                self,
+                "ZapretPass",
+                "Идёт установка обновления. Дождитесь завершения."
+            )
+            return
+
+        dialog = self._ensure_about_dialog()
+
+        if dialog.isVisible():
+            if force_check and not self._update_check_in_progress:
+                self._start_update_check(dialog=dialog)
+            return
+
+        if self._update_check_in_progress and self._update_checker_worker is not None:
+            self._update_checker_worker.check_finished.connect(
+                lambda info, d=dialog: self._on_update_check_for_dialog(d, info)
+            )
+        else:
+            self._start_update_check(dialog=dialog)
+
         dialog.exec()
-    
-    def _on_manual_check_finished(self, dialog: AboutDialog, update_info: UpdateInfo):
-        """Обработчик результата ручной проверки обновлений"""
-        dialog.update_info = update_info
-        dialog.update_display()
-    
-    def show_about_dialog(self):
-        """Показывает диалог 'О программе'"""
-        from core.updater import check_for_updates
-        
-        # Запускаем проверку в фоне
-        worker = UpdateCheckerWorker()
-        
-        # Создаём диалог с заглушкой
-        dialog = AboutDialog(None, self)
-        dialog.status_label.setText("Проверка обновлений...")
-        
-        worker.check_finished.connect(lambda info: self._on_about_check_finished(dialog, info))
-        worker.start()
-        
-        dialog.exec()
-    
-    def _on_about_check_finished(self, dialog: AboutDialog, update_info: UpdateInfo):
-        """Обработчик результата проверки для диалога 'О программе'"""
-        dialog.update_info = update_info
-        dialog.update_display()
+
+    def closeEvent(self, event):
+        """Запрещает закрывать главное окно во время операций обновления."""
+        if self._update_apply_in_progress:
+            QMessageBox.information(
+                self,
+                "ZapretPass",
+                "Идёт установка обновления. Закрывать приложение нельзя."
+            )
+            event.ignore()
+            return
+
+        if self._update_check_in_progress:
+            QMessageBox.information(
+                self,
+                "ZapretPass",
+                "Идёт проверка обновлений. Подождите несколько секунд."
+            )
+            event.ignore()
+            return
+
+        event.accept()
