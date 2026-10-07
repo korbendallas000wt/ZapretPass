@@ -76,6 +76,117 @@ class ZapretConfigManager:
             )
         return password
     
+
+    @classmethod
+    def _find_param_blocks(cls, content: str, param_name: str) -> list[tuple[int, int]]:
+        """Находит все блоки параметра в конфиге.
+        
+        Понимает:
+        - PARAM=value (однострочное без кавычек)
+        - PARAM="value" (однострочное в кавычках)
+        - PARAM="multi\nline\nvalue" (многострочное)
+        
+        Возвращает список (начальная_строка, конечная_строка) — индексы включительно.
+        """
+        lines = content.splitlines()
+        blocks = []
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            stripped = line.strip()
+            
+            # Пропускаем комментарии и пустые строки
+            if stripped.startswith('#') or not stripped:
+                i += 1
+                continue
+            
+            # Проверяем начало параметра (точное совпадение имени)
+            if stripped.startswith(f'{param_name}='):
+                start = i
+                value_part = stripped[len(param_name)+1:]  # после "PARAM="
+                
+                if value_part.startswith('"'):
+                    # Значение в кавычках
+                    rest = value_part[1:]  # после первой кавычки
+                    if '"' in rest:
+                        # Однострочное: кавычка закрывается на этой же строке
+                        blocks.append((start, i))
+                    else:
+                        # Многострочное: ищем закрывающую кавычку
+                        end = i
+                        i += 1
+                        while i < len(lines):
+                            if '"' in lines[i]:
+                                end = i
+                                break
+                            i += 1
+                        blocks.append((start, end))
+                else:
+                    # Без кавычек — однострочное
+                    blocks.append((start, i))
+            
+            i += 1
+        
+        return blocks
+    
+    @classmethod
+    def _extract_param_value(cls, content: str, param_name: str) -> str:
+        """Извлекает значение параметра с учётом многострочности.
+        
+        Возвращает последнее значение (в bash последнее побеждает).
+        """
+        blocks = cls._find_param_blocks(content, param_name)
+        if not blocks:
+            return ""
+        
+        # Берём последний блок (в конфиге запрет последние значения побеждают)
+        lines = content.splitlines()
+        start, end = blocks[-1]
+        param_lines = lines[start:end + 1]
+        
+        # Первая строка: убираем "PARAM="
+        first = param_lines[0].strip()
+        value_part = first[len(param_name)+1:]
+        
+        if value_part.startswith('"'):
+            rest = value_part[1:]  # после первой кавычки
+            if '"' in rest:
+                # Однострочное в кавычках
+                return rest[:rest.index('"')]
+            else:
+                # Многострочное: собираем до закрывающей кавычки
+                parts = [rest]
+                for line in param_lines[1:]:
+                    if '"' in line:
+                        parts.append(line[:line.index('"')])
+                        break
+                    parts.append(line)
+                return "\n".join(parts)
+        else:
+            # Без кавычек
+            return value_part.strip()
+    
+    @classmethod
+    def _remove_param_blocks(cls, content: str, param_name: str) -> str:
+        """Удаляет все блоки параметра из контента."""
+        blocks = cls._find_param_blocks(content, param_name)
+        if not blocks:
+            return content
+        
+        lines = content.splitlines()
+        
+        # Собираем индексы строк для удаления
+        remove_indices = set()
+        for start, end in blocks:
+            for idx in range(start, end + 1):
+                remove_indices.add(idx)
+        
+        # Формируем новый контент без удалённых строк
+        new_lines = [line for idx, line in enumerate(lines) if idx not in remove_indices]
+        
+        return "\n".join(new_lines)
+
+
     @classmethod
     def _read_config(cls) -> str:
         """Читает текущий конфиг (через sudo cat)."""
@@ -217,25 +328,24 @@ class ZapretConfigManager:
         
         Пример: ("nfqws", "--dpi-desync=fake --dpi-desync-ttl=4")
         Если стратегии нет: ("", "")
+        Понимает многострочные значения.
         """
         log.info("Чтение стратегии из конфига")
         
         try:
             content = cls._read_config()
             
-            for line in content.splitlines():
-                line_stripped = line.strip()
-                if line_stripped.startswith('#'):
-                    continue
-                
-                match = re.search(r'^(NFQWS_OPT|TPWS_OPT)="([^"]*)"', line_stripped)
-                if match:
-                    var_name, value = match.groups()
-                    value = value.strip()
-                    if value:
-                        tool = "nfqws" if var_name == "NFQWS_OPT" else "tpws"
-                        log.info(f"Найдена стратегия: {tool} {value}")
-                        return tool, value
+            # Проверяем NFQWS_OPT (приоритет)
+            nfqws_value = cls._extract_param_value(content, "NFQWS_OPT")
+            if nfqws_value.strip():
+                log.info(f"Найдена стратегия (NFQWS_OPT): {nfqws_value[:100]}...")
+                return "nfqws", nfqws_value.strip()
+            
+            # Проверяем TPWS_OPT
+            tpws_value = cls._extract_param_value(content, "TPWS_OPT")
+            if tpws_value.strip():
+                log.info(f"Найдена стратегия (TPWS_OPT): {tpws_value[:100]}...")
+                return "tpws", tpws_value.strip()
             
             log.info("Стратегия не найдена в конфиге")
             return "", ""
@@ -246,26 +356,23 @@ class ZapretConfigManager:
     
     @classmethod
     def read_mode_filter(cls) -> str:
-        """Возвращает MODE_FILTER: 'none', 'hostlist', 'autohostlist', 'ipset'."""
+        """Возвращает MODE_FILTER: 'none', 'hostlist', 'autohostlist', 'ipset'.
+        
+        Возвращает последнее значение (в bash последнее побеждает).
+        """
         log.info("Чтение MODE_FILTER из конфига")
         
         try:
             content = cls._read_config()
+            value = cls._extract_param_value(content, "MODE_FILTER")
             
-            for line in content.splitlines():
-                line_stripped = line.strip()
-                if line_stripped.startswith('#'):
-                    continue
-                
-                if line_stripped.startswith('MODE_FILTER='):
-                    match = re.search(r'^MODE_FILTER=(\S+)', line_stripped)
-                    if match:
-                        value = match.group(1).strip()
-                        log.info(f"MODE_FILTER = {value}")
-                        return value
+            if not value.strip():
+                log.info("MODE_FILTER не найден, возвращаю 'none'")
+                return "none"
             
-            log.info("MODE_FILTER не найден, возвращаю 'none'")
-            return "none"
+            value = value.strip()
+            log.info(f"MODE_FILTER = {value}")
+            return value
         
         except Exception as e:
             log.error(f"Ошибка чтения MODE_FILTER: {e}")
@@ -298,22 +405,15 @@ class ZapretConfigManager:
         
         try:
             content = cls._read_config()
+            value = cls._extract_param_value(content, param_name)
             
-            for line in content.splitlines():
-                line_stripped = line.strip()
-                if line_stripped.startswith('#'):
-                    continue
-                
-                if line_stripped.startswith(f'{param_name}='):
-                    match = re.search(rf'^{param_name}=(\S+)', line_stripped)
-                    if match:
-                        value = match.group(1).strip()
-                        result = value == "1"
-                        log.info(f"{param_name} = {result}")
-                        return result
+            if not value.strip():
+                log.info(f"{param_name} не найден, возвращаю False")
+                return False
             
-            log.info(f"{param_name} не найден, возвращаю False")
-            return False
+            result = value.strip() == "1"
+            log.info(f"{param_name} = {result}")
+            return result
         
         except Exception as e:
             log.error(f"Ошибка чтения {param_name}: {e}")
@@ -321,32 +421,18 @@ class ZapretConfigManager:
     
     @classmethod
     def read_param(cls, param_name: str) -> str:
-        """Универсальный метод: читает любое значение по имени параметра."""
+        """Универсальный метод: читает любое значение по имени параметра.
+        
+        Понимает однострочные и многострочные значения в кавычках.
+        Возвращает последнее значение (в bash последнее побеждает).
+        """
         log.info(f"Чтение параметра {param_name} из конфига")
         
         try:
             content = cls._read_config()
-            
-            for line in content.splitlines():
-                line_stripped = line.strip()
-                if line_stripped.startswith('#'):
-                    continue
-                
-                if line_stripped.startswith(f'{param_name}='):
-                    match = re.search(rf'^{param_name}="([^"]*)"', line_stripped)
-                    if match:
-                        value = match.group(1)
-                        log.info(f"{param_name} = {value}")
-                        return value
-                    
-                    match = re.search(rf'^{param_name}=(\S+)', line_stripped)
-                    if match:
-                        value = match.group(1)
-                        log.info(f"{param_name} = {value}")
-                        return value
-            
-            log.info(f"Параметр {param_name} не найден")
-            return ""
+            value = cls._extract_param_value(content, param_name)
+            log.info(f"{param_name} = {value[:100]}{'...' if len(value) > 100 else ''}")
+            return value
         
         except Exception as e:
             log.error(f"Ошибка чтения {param_name}: {e}")
@@ -354,27 +440,52 @@ class ZapretConfigManager:
     
     @classmethod
     def read_all(cls) -> dict[str, str]:
-        """Возвращает все параметры конфига как словарь."""
+        """Возвращает все параметры конфига как словарь.
+        
+        Понимает однострочные и многострочные значения.
+        """
         log.info("Чтение всех параметров конфига")
         
         try:
             content = cls._read_config()
             params = {}
             
-            for line in content.splitlines():
-                line_stripped = line.strip()
-                if not line_stripped or line_stripped.startswith('#'):
+            lines = content.splitlines()
+            i = 0
+            while i < len(lines):
+                line = lines[i]
+                stripped = line.strip()
+                
+                if not stripped or stripped.startswith('#'):
+                    i += 1
                     continue
                 
-                match = re.match(r'^([A-Z_][A-Z0-9_]*)=(.*)$', line_stripped)
+                match = re.match(r'^([A-Z_][A-Z0-9_]*)=(.*)$', stripped)
                 if match:
                     name = match.group(1)
-                    value = match.group(2)
+                    value_part = match.group(2)
                     
-                    if value.startswith('"') and value.endswith('"'):
-                        value = value[1:-1]
-                    
-                    params[name] = value
+                    if value_part.startswith('"'):
+                        rest = value_part[1:]
+                        if '"' in rest:
+                            # Однострочное в кавычках
+                            params[name] = rest[:rest.index('"')]
+                        else:
+                            # Многострочное
+                            parts = [rest]
+                            i += 1
+                            while i < len(lines):
+                                if '"' in lines[i]:
+                                    parts.append(lines[i][:lines[i].index('"')])
+                                    break
+                                parts.append(lines[i])
+                                i += 1
+                            params[name] = "\n".join(parts)
+                    else:
+                        # Без кавычек
+                        params[name] = value_part.strip()
+                
+                i += 1
             
             log.info(f"Прочитано {len(params)} параметров")
             return params
@@ -454,7 +565,10 @@ class ZapretConfigManager:
     
     @classmethod
     def set_many(cls, params: dict[str, str]):
-        """Обновляет несколько параметров за одну транзакцию."""
+        """Обновляет несколько параметров за одну транзакцию.
+        
+        Для каждого параметра удаляет все вхождения и добавляет новое в конец.
+        """
         log.info(f"Массовое обновление {len(params)} параметров")
         
         # Делаем бэкап перед записью
@@ -463,32 +577,36 @@ class ZapretConfigManager:
         content = cls._read_config()
         
         for param_name, value in params.items():
-            pattern = rf'^{param_name}=.*$'
-            replacement = f'{param_name}="{value}"'
-            
-            if re.search(pattern, content, re.MULTILINE):
-                content = re.sub(pattern, replacement, content, flags=re.MULTILINE)
-            else:
-                content = content.rstrip() + f'\n{replacement}\n'
+            # Удаляем все существующие блоки
+            content = cls._remove_param_blocks(content, param_name)
+            # Добавляем новое в конец
+            new_line = f'{param_name}="{value}"'
+            content = content.rstrip('\n') + f'\n{new_line}\n'
         
         cls._write_config_atomic(content)
         log.info(f"Массовое обновление завершено")
     
     @classmethod
     def _set_param(cls, param_name: str, value: str):
-        """Внутренний метод: обновляет один параметр в конфиге."""
+        """Внутренний метод: обновляет один параметр в конфиге.
+        
+        Удаляет ВСЕ существующие вхождения параметра (включая дубли
+        и многострочные блоки) и добавляет новое значение в конец файла.
+        В zapret последние значения побеждают, поэтому это корректно.
+        """
         # Делаем бэкап перед записью
         cls.backup_config()
         
         content = cls._read_config()
         
-        pattern = rf'^{param_name}=.*$'
-        replacement = f'{param_name}="{value}"'
+        # Удаляем все существующие блоки параметра
+        new_content = cls._remove_param_blocks(content, param_name)
         
-        if re.search(pattern, content, re.MULTILINE):
-            new_content = re.sub(pattern, replacement, content, flags=re.MULTILINE)
-        else:
-            new_content = content.rstrip() + f'\n{replacement}\n'
+        # Формируем новое значение в кавычках
+        new_line = f'{param_name}="{value}"'
+        
+        # Добавляем в конец файла
+        new_content = new_content.rstrip('\n') + f'\n{new_line}\n'
         
         cls._write_config_atomic(new_content)
     
