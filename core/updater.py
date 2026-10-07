@@ -282,7 +282,7 @@ def apply_update(zip_path: Path, app_dir: Optional[Path] = None) -> bool:
         
         # Копируем файлы, исключая data/, __pycache__/, .git/, временные файлы
         for item in app_dir.iterdir():
-            if item.name in ['data', '__pycache__', '.git', 'legacy', 'Repo']:
+            if item.name in ['data', '__pycache__', '.git', 'legacy', 'Repo', 'Work', '.venv', '.pytest_cache', '.mypy_cache']:
                 continue
             if item.suffix == '.pyc':
                 continue
@@ -337,6 +337,9 @@ def apply_update(zip_path: Path, app_dir: Optional[Path] = None) -> bool:
         
         # Очищаем staging
         shutil.rmtree(staging_dir, ignore_errors=True)
+        # Ротация старых артефактов обновления
+        prune_old_artifacts(keep_backups=3, keep_downloads=3, keep_releases=3)
+        
         
         return True
         
@@ -610,3 +613,42 @@ def get_release_notes(version: str) -> str:
         notes = fetch_github_release_body(version)
 
     return notes
+
+
+def prune_old_artifacts(keep_backups: int = 3, keep_downloads: int = 3, keep_releases: int = 3) -> None:
+    """
+    Удаляет старые артефакты обновления.
+
+    Хранит последние N бэкапов, скачанных ZIP и fallback-релизов.
+    """
+    cache_dir = get_cache_dir()
+    data_dir = get_data_dir()
+
+    def _prune(directory: Path, keep: int, *, directories: bool) -> None:
+        if not directory.exists():
+            return
+
+        try:
+            entries = [
+                item for item in directory.iterdir()
+                if (item.is_dir() if directories else (item.is_file() and item.suffix.lower() == ".zip"))
+            ]
+        except Exception as exc:
+            logger.warning(f"Cannot list {directory}: {exc}")
+            return
+
+        entries.sort(key=lambda item: item.stat().st_mtime, reverse=True)
+
+        for item in entries[keep:]:
+            try:
+                if item.is_dir():
+                    shutil.rmtree(item, ignore_errors=True)
+                else:
+                    item.unlink(missing_ok=True)
+                logger.info(f"Pruned old update artifact: {item}")
+            except Exception as exc:
+                logger.warning(f"Failed to prune {item}: {exc}")
+
+    _prune(data_dir / "backups", keep_backups, directories=True)
+    _prune(cache_dir / "downloads", keep_downloads, directories=False)
+    _prune(data_dir / "releases", keep_releases, directories=False)
