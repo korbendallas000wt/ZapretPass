@@ -159,13 +159,19 @@ core/updater.py — Проверка и применение обновлени�
 - UpdateInfo — dataclass: has_update, current_version, latest_version, release_url, release_notes, zip_url, zip_size, error_message
 - get_version() — чтение текущей версии из файла VERSION
 - compare_versions(v1, v2) — сравнение семантических версий
-- check_for_updates() — запрос к GitHub Releases API (`releases/latest`)
-- download_update(update_info, progress_callback) — скачивание ZIP-архива в кэш `~/.cache/zapretpass/downloads`
-- apply_update(zip_path, app_dir) — распаковка в staging, создание бэкапа, замена верхнеуровневых файлов/папок, откат при ошибке
+- check_for_updates() — читает `VERSION` из raw-ветки `main`, сравнивает с локальной версией и собирает `UpdateInfo`
+- get_release_notes(version) — приоритетно парсит `docs/CHANGELOG.md` из `main`, fallback — GitHub Release body
+- parse_changelog_section(changelog_text, version) — извлекает Markdown-секцию `## [x.y.z]`
+- fetch_changelog_text() / fetch_github_release_body(version) — источники текста обновления
+- download_update(update_info, progress_callback) — скачивает ZIP ветки `main` в `~/.cache/zapretpass/downloads`; при отсутствии размера использует `Content-Length`
+- apply_update(zip_path, app_dir) — распаковывает в staging, создаёт бэкап в `~/.local/share/zapretpass/backups`, заменяет верхнеуровневые элементы, восстанавливает exec-биты, при ошибке откатывает; после успеха вызывает `prune_old_artifacts()`
+- restore_exec_bits(app_dir) — возвращает `+x` для `install.sh`, `zapretpass.sh`, `zapretpass.py` и всех `.sh` в корне
+- get_data_dir() — XDG data-каталог `~/.local/share/zapretpass` для `backups/` и `releases/`
+- prune_old_artifacts(...) — оставляет последние 3 бэкапа, 3 скачанных ZIP и 3 fallback-архива
 - load_update_state() / save_update_state(state) — состояние обновлений в `data/update_state.json`
 - is_safe_path(base_dir, target_path) — защита от path traversal при распаковке ZIP
 
-Важно: текущая реализация `apply_update()` заменяет верхнеуровневые элементы целиком. В dev-директории это может удалить dev-only файлы (например, `Work/WORKLOG.md`) и сбросить бит исполнения. Для релизных пользователей схема приемлема, но требует доработки: file-level overlay, preserve-списки, восстановление прав, ActivityGuard.
+Важно: `apply_update()` по-прежнему работает на уровне верхнеуровневых элементов из релизного ZIP, но внутренние dev-каталоги (`Work/`, `Repo/`, `.venv/`, кэши) исключены из релиза и бэкапов, а exec-биты восстанавливаются после распаковки. Полностью file-level overlay остаётся желательным улучшением, но не блокером для v1.1.x.
 
 ---
 
@@ -256,9 +262,13 @@ strategies может быть списком списков (для совме�
 - Блокчек: /opt/zapret/blockcheck.sh
 
 ### Обновления
-- GitHub Releases API: https://api.github.com/repos/korbendallas000wt/ZapretPass/releases/latest
+- Raw `VERSION`: https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/main/VERSION
+- Raw `docs/CHANGELOG.md`: https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/main/docs/CHANGELOG.md
+- ZIP обновления: https://github.com/korbendallas000wt/ZapretPass/archive/refs/heads/main.zip
+- GitHub Releases API используется только как fallback для текста release notes конкретной версии
 - ZIP-ассет релиза: `ZapretPass-<version>.zip`
-- Кэш: `~/.cache/zapretpass/{downloads,backups,releases,staging}`
+- Временный кэш: `~/.cache/zapretpass/{downloads,staging}`
+- Persistent-данные апдейтера: `~/.local/share/zapretpass/{backups,releases}`
 - Состояние: `data/update_state.json`
 
 ### Системные компоненты
@@ -346,12 +356,12 @@ tshark+curl не воспроизводят цепочку запросов бр
 
 
 ### Обновления в dev-директории
-`core/updater.py` применяет релизный ZIP заменой верхнеуровневых папок/файлов. Все внутренние файлы должны жить в `Work/`, чтобы не удаляться при обновлении. Известная проблема: после применения ZIP может сбрасываться бит исполнения у `install.sh`, `zapretpass.py` и других скриптов; требуется восстановление прав из бэкапа или по явному списку исполняемых файлов.
+`core/updater.py` применяет релизный ZIP заменой верхнеуровневых папок/файлов. Внутренние файлы должны жить в `Work/`, который не попадает в релиз и исключён из бэкапов. После применения ZIP exec-биты восстанавливаются, а старые артефакты ротируются.
 
 Решение: держать внутренние файлы в `Work/` и не класть dev-only документы в публичные папки. Дополнительно нужно починить восстановление exec-битов после применения ZIP; file-level overlay остаётся желательным улучшением, но не единственным вариантом.
 
 ### Локальный changelog для release notes
-Сейчас `release_notes` берётся из тела GitHub Release. Для отображаемых заметок нужно либо наполнять body релиза при публикации, либо парсить `docs/CHANGELOG.md` по заголовку `## [x.y.z]`.
+`release_notes` парсятся из `docs/CHANGELOG.md` ветки `main` по секции конкретной версии; GitHub Release body — только fallback. Поэтому публичные GitHub Releases не обязательны для работы обновлений.
 
 ---
 
@@ -407,6 +417,10 @@ Qt6-интерфейс на PyQt6. Точка входа: zapretpass.py.
 - Нижняя панель: строка статуса + индикатор (светофор) + кнопки Старт/Стоп/Рестарт
 - ServiceWorker(QThread) — фоновые операции с сервисом
 - Таймер проверки статуса каждые 2 секунды (пропускается во время операций)
+- UpdateIndicator — версия, статус проверки, ошибка и доступное обновление; клик открывает AboutDialog
+- UpdateCheckerWorker / AboutDialog — фоновая проверка обновлений и диалог release notes
+- ActivityGuard для обновлений: `_update_check_in_progress`, `_update_apply_in_progress`; блокировка повторных операций и закрытия окна во время критических операций
+- `manual_check_updates()` — ручная проверка обновлений через меню / F5
 
 ### ui/site_passport.py — визард «Паспорт сайта»
 - SitePassportWidget(QWidget) — исполнение сценариев из core.scenarios
@@ -447,7 +461,7 @@ Qt6-интерфейс на PyQt6. Точка входа: zapretpass.py.
 ### ui/about_dialog.py — диалог «О программе»
 - Отображает текущую версию, доступную версию, ссылку на релиз и release notes.
 - Использует `core.updater.UpdateInfo`.
-- Пока показывает `release_notes` из GitHub Release; локальный парсинг CHANGELOG — следующая доработка.
+- Показывает `release_notes`, полученные через `core.updater.get_release_notes()`: сначала `docs/CHANGELOG.md`, затем fallback на GitHub Release body.
 
 ### ui/update_indicator.py — индикатор обновления
 - Виджет/элемент главного окна для отображения статуса проверки обновлений.
@@ -507,11 +521,10 @@ Qt6-интерфейс на PyQt6. Точка входа: zapretpass.py.
 ### Мультисистемность
 Ядро использует машинно-читаемые форматы (systemctl show, cgroup) вместо парсинга человекочитаемого вывода. Это делает его переносимым между дистрибутивами с systemd.
 
-### Доработка системы обновлений
-- Перевести `apply_update()` с замены верхнеуровневых папок на file-level overlay по манифесту релиза.
-- Сохранять бит исполнения для `install.sh`, `zapretpass.py` и будущих скриптов.
-- Добавить preserve-списки для dev-only файлов и пользовательских данных вне `data/`.
-- Реализовать ActivityGuard: блокировка UI/фоновых операций на время download/apply/restart.
-- Парсить `docs/CHANGELOG.md` для release notes конкретной версии.
-- Добавить очистку старых backup/staging/downloads с политикой хранения.
+### Доработка системы обновлений (остаточные задачи)
+
+- Покрыть updater тестами: dry-run, rollback, artifact rotation, exec-bit restore, парсинг CHANGELOG на крайних случаях.
+- При желании перевести `apply_update()` на file-level overlay по манифесту релиза; текущая схема стала заметно безопаснее за счёт исключений и ротации.
+- Интегрировать обновления в мастер первого запуска, если понадобится.
+- Решить, нужны ли GitHub Releases как основной канал или остаётся только raw `main` + fallback.
 
