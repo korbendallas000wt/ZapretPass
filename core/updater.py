@@ -179,7 +179,7 @@ def download_update(update_info: UpdateInfo, progress_callback: Optional[Callabl
         )
         
         with urllib.request.urlopen(req, timeout=30) as response:
-            total_size = update_info.zip_size
+            total_size = update_info.zip_size or int(response.headers.get('Content-Length', 0) or 0)
             downloaded = 0
             
             with open(zip_path, 'wb') as f:
@@ -282,14 +282,14 @@ def apply_update(zip_path: Path, app_dir: Optional[Path] = None) -> bool:
         
         # Копируем файлы, исключая data/, __pycache__/, .git/, временные файлы
         for item in app_dir.iterdir():
-            if item.name in ['data', '__pycache__', '.git', 'legacy']:
+            if item.name in ['data', '__pycache__', '.git', 'legacy', 'Repo']:
                 continue
             if item.suffix == '.pyc':
                 continue
             
             dest = backup_dir / item.name
             if item.is_dir():
-                shutil.copytree(item, dest, ignore=shutil.ignore_patterns('*.pyc', '__pycache__'))
+                shutil.copytree(item, dest, ignore=shutil.ignore_patterns('.git', '*.pyc', '__pycache__'))
             else:
                 shutil.copy2(item, dest)
         
@@ -315,7 +315,7 @@ def apply_update(zip_path: Path, app_dir: Optional[Path] = None) -> bool:
             
             # Копируем новую версию
             if item.is_dir():
-                shutil.copytree(item, dest, ignore=shutil.ignore_patterns('*.pyc', '__pycache__'))
+                shutil.copytree(item, dest, ignore=shutil.ignore_patterns('.git', '*.pyc', '__pycache__'))
             else:
                 shutil.copy2(item, dest)
         
