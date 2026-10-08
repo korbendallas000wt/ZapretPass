@@ -324,30 +324,40 @@ class ZapretConfigManager:
 
     @classmethod
     def read_strategy(cls) -> tuple[str, str]:
-        """Возвращает (tool, args) текущей стратегии.
+        """Возвращает (tool, args) текущей активной стратегии.
+        
+        Проверяет ENABLE-флаги:
+        - Если TPWS_ENABLE=1 → возвращает TPWS_OPT
+        - Если NFQWS_ENABLE=1 → возвращает NFQWS_OPT
+        - Иначе → пустую стратегию
         
         Пример: ("nfqws", "--dpi-desync=fake --dpi-desync-ttl=4")
         Если стратегии нет: ("", "")
-        Понимает многострочные значения.
         """
-        log.info("Чтение стратегии из конфига")
+        log.info("Чтение активной стратегии из конфига")
         
         try:
             content = cls._read_config()
             
-            # Проверяем NFQWS_OPT (приоритет)
-            nfqws_value = cls._extract_param_value(content, "NFQWS_OPT")
-            if nfqws_value.strip():
-                log.info(f"Найдена стратегия (NFQWS_OPT): {nfqws_value[:100]}...")
-                return "nfqws", nfqws_value.strip()
+            # Проверяем ENABLE-флаги
+            tpws_enable = cls._extract_param_value(content, "TPWS_ENABLE").strip()
+            nfqws_enable = cls._extract_param_value(content, "NFQWS_ENABLE").strip()
             
-            # Проверяем TPWS_OPT
-            tpws_value = cls._extract_param_value(content, "TPWS_OPT")
-            if tpws_value.strip():
-                log.info(f"Найдена стратегия (TPWS_OPT): {tpws_value[:100]}...")
-                return "tpws", tpws_value.strip()
+            # Если TPWS включён — берём TPWS_OPT
+            if tpws_enable == "1":
+                tpws_value = cls._extract_param_value(content, "TPWS_OPT")
+                if tpws_value.strip():
+                    log.info(f"Активная стратегия (TPWS, TPWS_ENABLE=1): {tpws_value[:100]}...")
+                    return "tpws", tpws_value.strip()
             
-            log.info("Стратегия не найдена в конфиге")
+            # Если NFQWS включён — берём NFQWS_OPT
+            if nfqws_enable == "1":
+                nfqws_value = cls._extract_param_value(content, "NFQWS_OPT")
+                if nfqws_value.strip():
+                    log.info(f"Активная стратегия (NFQWS, NFQWS_ENABLE=1): {nfqws_value[:100]}...")
+                    return "nfqws", nfqws_value.strip()
+            
+            log.info("Активная стратегия не найдена (оба ENABLE=0 или OPT пустые)")
             return "", ""
         
         except Exception as e:
@@ -513,14 +523,30 @@ class ZapretConfigManager:
     
     @classmethod
     def set_strategy(cls, tool: str, args: str):
-        """Устанавливает стратегию."""
+        """Устанавливает стратегию и переключает enable-флаги.
+        
+        Для nfqws: устанавливает NFQWS_ENABLE=1, TPWS_ENABLE=0
+        Для tpws: устанавливает NFQWS_ENABLE=0, TPWS_ENABLE=1
+        """
         log.info(f"Установка стратегии: {tool} {args}")
         
         if tool not in ("nfqws", "tpws"):
             raise ConfigValidationError(f"Недопустимый инструмент: {tool}")
         
-        var_name = "NFQWS_OPT" if tool == "nfqws" else "TPWS_OPT"
-        cls._set_param(var_name, args)
+        # Формируем все параметры для записи
+        params = {}
+        
+        if tool == "nfqws":
+            params["NFQWS_OPT"] = args
+            params["NFQWS_ENABLE"] = "1"
+            params["TPWS_ENABLE"] = "0"
+        else:  # tpws
+            params["TPWS_OPT"] = args
+            params["NFQWS_ENABLE"] = "0"
+            params["TPWS_ENABLE"] = "1"
+        
+        # Записываем все параметры атомарно
+        cls.set_many(params)
     
     @classmethod
     def set_mode_filter(cls, mode: str):
