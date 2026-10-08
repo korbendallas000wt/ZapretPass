@@ -37,52 +37,127 @@ class BlockcheckResult:
     """Результат блокчека."""
     success: bool
     strategies: list[str] = field(default_factory=list)
+    strategy_meta: list[dict] = field(default_factory=list)
     first_success: Optional[str] = None  # Первая найденная стратегия (для режима fast)
+    first_success_meta: Optional[dict] = None
     output: str = ""
     error: Optional[str] = None
 
 
-def parse_strategies_from_output(output: str) -> list[str]:
-    """Извлекает рабочие стратегии из секции * SUMMARY вывода блокчека.
+_BAD_STRATEGY_MARKERS = (
+    "not working",
+    "not found",
+    "unavailable",
+    "timeout",
+    "timed out",
+    "failed",
+    "error",
+    "no strategy",
+    "no strategies",
+    "empty",
+    "skipped",
+)
 
-    Формат строк в SUMMARY:
-        "curl_test_https_tls13 ipv4 example.com : nfqws --dpi-desync=..."
 
-    Строки-статусы вида "nfqws not working" не считаются стратегиями.
+def _normalize_strategy_command(candidate: str) -> str:
+    return " ".join(candidate.strip().split()).rstrip(".,;:")
+
+
+def _is_real_strategy_command(candidate: str) -> bool:
+    c = _normalize_strategy_command(candidate)
+    if not c:
+        return False
+
+    low = c.lower()
+    if any(marker in low for marker in _BAD_STRATEGY_MARKERS):
+        return False
+
+    first = c.split(maxsplit=1)[0].lower()
+    base = first.rsplit("/", 1)[-1]
+    return base in {"nfqws", "tpws"}
+
+
+def _scheme_from_test(test: str) -> str:
+    t = (test or "").lower()
+    if not t:
+        return "unknown"
+    if "http3" in t or "quic" in t:
+        return "http3"
+    if "https_tls12" in t:
+        return "https_tls12"
+    if "https_tls13" in t:
+        return "https_tls13"
+    if "https" in t:
+        return "https"
+    if "http" in t:
+        return "http"
+    return "unknown"
+
+
+def _parse_left_context(left: str) -> tuple[Optional[str], Optional[str]]:
+    test = None
+    ipver = None
+
+    cleaned = left.replace("!!!!!", " ")
+    for token in cleaned.split():
+        clean = token.strip(":,.!").lower()
+        if clean.startswith("curl_test_"):
+            test = clean
+        elif clean in {"ipv4", "ipv6"}:
+            ipver = clean
+
+    return test, ipver
+
+
+def parse_strategy_meta_from_line(line: str) -> Optional[dict]:
+    line = line.strip()
+    if not line:
+        return None
+
+    if " : " in line:
+        left, right = line.split(" : ", 1)
+    elif ":" in line:
+        left, right = line.rsplit(":", 1)
+    else:
+        return None
+
+    right = right.strip()
+    if right.endswith("!!!!!"):
+        right = right[:-5].strip()
+
+    candidate = _normalize_strategy_command(right)
+    if not _is_real_strategy_command(candidate):
+        return None
+
+    test, ipver = _parse_left_context(left)
+
+    parts = candidate.split(maxsplit=1)
+    raw_tool = parts[0].lower()
+    tool = raw_tool.rsplit("/", 1)[-1]
+    args = parts[1] if len(parts) > 1 else ""
+
+    return {
+        "command": candidate,
+        "tool": tool,
+        "args": args,
+        "test": test or "",
+        "scheme": _scheme_from_test(test or ""),
+        "ipver": ipver or "",
+        "raw_line": line,
+    }
+
+
+def parse_strategies_with_meta_from_output(output: str) -> tuple[list[str], list[dict]]:
+    """Извлекает рабочие стратегии из SUMMARY вместе с метаданными теста.
+
+    Сохраняет контекст вида:
+        curl_test_http ipv4 example.com : tpws ...
+        curl_test_https_tls13 ipv4 example.com : nfqws ...
     """
     strategies: list[str] = []
+    metas: list[dict] = []
     seen: set[str] = set()
     in_summary = False
-
-    bad_markers = (
-        "not working",
-        "not found",
-        "unavailable",
-        "timeout",
-        "timed out",
-        "failed",
-        "error",
-        "no strategy",
-        "no strategies",
-        "empty",
-        "skipped",
-    )
-
-    def normalize(candidate: str) -> str:
-        return " ".join(candidate.strip().split()).rstrip(".,;:")
-
-    def is_real_command(candidate: str) -> bool:
-        c = normalize(candidate)
-        if not c:
-            return False
-
-        low = c.lower()
-        if any(marker in low for marker in bad_markers):
-            return False
-
-        first = c.split(maxsplit=1)[0].lower()
-        base = first.rsplit("/", 1)[-1]
-        return base in {"nfqws", "tpws"}
 
     for raw_line in output.splitlines():
         line = raw_line.strip()
@@ -95,60 +170,49 @@ def parse_strategies_from_output(output: str) -> list[str]:
         if line.lower().startswith("press enter") or line.lower().startswith("please note"):
             break
 
-        if ":" not in line:
+        meta = parse_strategy_meta_from_line(line)
+        if not meta:
             continue
 
-        if " : " in line:
-            candidate = line.split(" : ", 1)[1]
-        else:
-            candidate = line.rsplit(":", 1)[1]
+        command = meta["command"]
+        if command not in seen:
+            seen.add(command)
+            strategies.append(command)
+            metas.append(meta)
 
-        candidate = normalize(candidate)
-        if not is_real_command(candidate):
-            continue
+    return strategies, metas
 
-        if candidate not in seen:
-            seen.add(candidate)
-            strategies.append(candidate)
 
+def parse_strategies_from_output(output: str) -> list[str]:
+    """Совместимость со старым кодом: возвращает только команды стратегий."""
+    strategies, _ = parse_strategies_with_meta_from_output(output)
     return strategies
 
-def detect_first_success(output_lines: list[str]) -> Optional[str]:
+def detect_first_success(output_lines: list[str]) -> Optional[dict]:
     """Детектит первую рабочую стратегию в процессе перебора.
 
-    Реальный вывод blockcheck.sh использует строки вида:
-        !!!!! curl_test_http: working strategy found for ipv4 example.com : tpws ... !!!!!
-        !!!!! curl_test_https_tls13: working strategy found for ipv4 example.com : nfqws ... !!!!!
+    Возвращает метаду:
+        {
+            "command": "tpws ...",
+            "tool": "tpws",
+            "args": "...",
+            "test": "curl_test_http",
+            "scheme": "http",
+            "ipver": "ipv4",
+            "raw_line": "..."
+        }
     """
     for raw_line in reversed(output_lines):
         line = raw_line.strip()
         if not line:
             continue
 
-        low = line.lower()
-        if "working strategy found" not in low:
+        if "working strategy found" not in line.lower():
             continue
 
-        if " : " in line:
-            candidate = line.rsplit(" : ", 1)[1]
-        elif ":" in line:
-            candidate = line.rsplit(":", 1)[1]
-        else:
-            continue
-
-        candidate = candidate.strip()
-
-        if candidate.endswith("!!!!!"):
-            candidate = candidate[:-5].strip()
-
-        if not candidate:
-            continue
-
-        first = candidate.split(maxsplit=1)[0].lower()
-        base = first.rsplit("/", 1)[-1]
-
-        if base in {"nfqws", "tpws"}:
-            return candidate
+        meta = parse_strategy_meta_from_line(line)
+        if meta:
+            return meta
 
     return None
 
@@ -454,6 +518,7 @@ def run_blockcheck(
     
     output_lines = []
     first_success = None
+    first_success_meta = None
     process = None
     expected_start_time = None
     try:
@@ -509,10 +574,11 @@ def run_blockcheck(
                     on_output(line)
                 
                 # В режиме fast проверяем на первый успех
-                if fast_mode and first_success is None:
-                    detected = detect_first_success([line])
-                    if detected:
-                        first_success = detected
+                if fast_mode and first_success_meta is None:
+                    detected_meta = detect_first_success([line])
+                    if detected_meta:
+                        first_success_meta = detected_meta
+                        first_success = detected_meta.get("command")
                         # Останавливаем блокчек через watchdog: SIGINT -> SIGTERM -> SIGKILL.
                         fast_stop_event.set()
                         break
@@ -592,20 +658,23 @@ def run_blockcheck(
         full_output = "".join(output_lines)
         
         # В режиме fast возвращаем первую найденную стратегию
-        if fast_mode and first_success:
+        if fast_mode and first_success and first_success_meta:
             return BlockcheckResult(
                 success=True,
                 strategies=[first_success],
+                strategy_meta=[first_success_meta],
                 first_success=first_success,
+                first_success_meta=first_success_meta,
                 output=full_output
             )
         
         # В полном режиме парсим итоговые стратегии из SUMMARY
-        strategies = parse_strategies_from_output(full_output)
+        strategies, strategy_meta = parse_strategies_with_meta_from_output(full_output)
         
         return BlockcheckResult(
             success=len(strategies) > 0,
             strategies=strategies,
+            strategy_meta=strategy_meta,
             output=full_output,
             error="Не найдено рабочих стратегий" if not strategies else None
         )
