@@ -567,9 +567,30 @@ class ZapretConfigManager:
             Если args уже содержит --filter- — возвращается как есть.
         """
         args_stripped = args.strip()
-        
-        # Если args уже содержит фильтры — это полная стратегия
+
+        # Если args уже содержит фильтры — это полная стратегия.
+        # Но для scope=hostlist обязана быть привязка к хостлисту,
+        # иначе стратегия поедет по всему трафику.
         if args_stripped.startswith("--filter-"):
+            has_hostlist_binding = (
+                "<HOSTLIST" in args_stripped
+                or "--hostlist" in args_stripped
+            )
+
+            if scope == "hostlist" and not has_hostlist_binding:
+                segments = [
+                    seg.strip()
+                    for seg in re.split(r"\s+--new\s+", args_stripped)
+                    if seg.strip()
+                ]
+
+                marked_segments = []
+                for seg in segments:
+                    marker = "<HOSTLIST_NOAUTO>" if "--filter-udp" in seg else "<HOSTLIST>"
+                    marked_segments.append(f"{seg} {marker}")
+
+                return " --new ".join(marked_segments)
+
             return args_stripped
         
         # Выбираем набор фильтров
