@@ -719,6 +719,207 @@ class ZapretConfigManager:
         cls._write_config_atomic(new_content)
     
     # =========================================================================
+    # УПРАВЛЕНИЕ СПИСКОМ ОБХОДА (HOSTLIST)
+    # =========================================================================
+    
+    HOSTS_PATH = config.IPSET_USER
+    HOSTS_TMP_PATH = config.IPSET_USER.parent / (config.IPSET_USER.name + ".tmp")
+    HOSTS_LOCK_PATH = config.ZAPRET_DIR / ".hosts.lock"
+    
+    @staticmethod
+    def _validate_domain(domain: str) -> str:
+        """Валидирует и нормализует домен для списка обхода.
+        
+        Нормализация: lowercase, обрезка протокола/порта/пути.
+        
+        Raises:
+            ConfigValidationError: если домен невалиден.
+        """
+        if not domain or not str(domain).strip():
+            raise ConfigValidationError("Домен пустой")
+        
+        d = str(domain).strip().lower()
+        
+        # Убираем протокол, путь и порт если попали в строку
+        if "://" in d:
+            d = d.split("://", 1)[1]
+        d = d.split("/", 1)[0]
+        d = d.split(":", 1)[0]
+        d = d.strip(".")
+        
+        if not d:
+            raise ConfigValidationError(f"Домен пустой после нормализации: {domain!r}")
+        
+        # Только валидные символы DNS-имени
+        if not re.match(r'^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$', d):
+            raise ConfigValidationError(f"Недопустимые символы в домене: {domain!r}")
+        
+        # Защита от инъекций в shell
+        if any(ch in d for ch in ';|`$()&<>"\''):
+            raise ConfigValidationError(f"Опасные символы в домене: {domain!r}")
+        
+        # Минимальная структура: должна быть точка
+        if '.' not in d:
+            raise ConfigValidationError(f"Домен не содержит точку: {domain!r}")
+        
+        return d
+    
+    @classmethod
+    def list_hosts(cls) -> list[str]:
+        """Возвращает список доменов из файла списка обхода."""
+        log.info("Чтение списка обхода")
+        password = cls._get_password()
+        
+        try:
+            result = subprocess.run(
+                ['sudo', '-S', 'cat', str(cls.HOSTS_PATH)],
+                input=password + "\n",
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            
+            if result.returncode != 0:
+                # Файл может не существовать — это не ошибка
+                stderr_lower = (result.stderr or "").lower()
+                if "no such file" in stderr_lower or "не существует" in stderr_lower:
+                    log.info("Файл списка обхода не существует, возвращаю пустой список")
+                    return []
+                error_msg = cls._filter_sudo_stderr(result.stderr)
+                raise ConfigReadError(f"Не удалось прочитать список обхода: {error_msg}")
+            
+            hosts = [
+                line.strip() for line in result.stdout.splitlines()
+                if line.strip() and not line.strip().startswith('#')
+            ]
+            log.info(f"Прочитано {len(hosts)} доменов из списка обхода")
+            return hosts
+        
+        except subprocess.TimeoutExpired:
+            raise ConfigReadError("Таймаут чтения списка обхода (10 сек)")
+        except ZapretConfigError:
+            raise
+        except Exception as e:
+            raise ConfigReadError(f"Ошибка чтения списка обхода: {e}")
+    
+    @classmethod
+    def host_exists(cls, domain: str) -> bool:
+        """Проверяет наличие домена в списке обхода."""
+        d = cls._validate_domain(domain)
+        return d in cls.list_hosts()
+    
+    @classmethod
+    def add_host(cls, domain: str) -> bool:
+        """Добавляет домен в конец списка обхода.
+        
+        Returns:
+            True если домен добавлен, False если уже был в списке.
+        """
+        d = cls._validate_domain(domain)
+        log.info(f"Добавление домена в список обхода: {d}")
+        
+        hosts = cls.list_hosts()
+        if d in hosts:
+            log.info(f"Домен {d} уже в списке обхода")
+            return False
+        
+        hosts.append(d)
+        cls._write_hosts_atomic(hosts)
+        log.info(f"Домен {d} добавлен в список обхода (всего {len(hosts)})")
+        return True
+    
+    @classmethod
+    def remove_host(cls, domain: str) -> bool:
+        """Удаляет домен из списка обхода, сохраняя порядок остальных.
+        
+        Returns:
+            True если домен удалён, False если его не было.
+        """
+        d = cls._validate_domain(domain)
+        log.info(f"Удаление домена из списка обхода: {d}")
+        
+        hosts = cls.list_hosts()
+        if d not in hosts:
+            log.info(f"Домен {d} не найден в списке обхода")
+            return False
+        
+        hosts.remove(d)
+        cls._write_hosts_atomic(hosts)
+        log.info(f"Домен {d} удалён из списка обхода (осталось {len(hosts)})")
+        return True
+    
+    @classmethod
+    def _write_hosts_atomic(cls, hosts: list[str]):
+        """Атомарная запись списка обхода с блокировкой."""
+        password = cls._get_password()
+        content = "\n".join(hosts) + "\n" if hosts else ""
+        
+        # Ждём освобождения блокировки
+        if cls.HOSTS_LOCK_PATH.exists():
+            start_time = time.time()
+            while cls.HOSTS_LOCK_PATH.exists() and (time.time() - start_time) < cls.LOCK_TIMEOUT:
+                time.sleep(0.1)
+            if cls.HOSTS_LOCK_PATH.exists():
+                raise ConfigLockError(
+                    f"Не удалось получить блокировку списка обхода за {cls.LOCK_TIMEOUT} сек"
+                )
+        
+        # Создаём lock-файл
+        try:
+            result = subprocess.run(
+                ['sudo', '-S', 'touch', str(cls.HOSTS_LOCK_PATH)],
+                input=password + "\n",
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if result.returncode != 0:
+                error_msg = cls._filter_sudo_stderr(result.stderr)
+                raise ConfigWriteError(f"Не удалось создать lock-файл списка обхода: {error_msg}")
+        except ZapretConfigError:
+            raise
+        except Exception as e:
+            raise ConfigWriteError(f"Ошибка создания lock-файла списка обхода: {e}")
+        
+        try:
+            # Записываем во временный файл
+            result = subprocess.run(
+                ['sudo', '-S', 'tee', str(cls.HOSTS_TMP_PATH)],
+                input=content,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            if result.returncode != 0:
+                error_msg = cls._filter_sudo_stderr(result.stderr)
+                raise ConfigWriteError(f"Не удалось записать временный файл списка обхода: {error_msg}")
+            
+            # Атомарно заменяем оригинал
+            result = subprocess.run(
+                ['sudo', '-S', 'mv', str(cls.HOSTS_TMP_PATH), str(cls.HOSTS_PATH)],
+                input=password + "\n",
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if result.returncode != 0:
+                error_msg = cls._filter_sudo_stderr(result.stderr)
+                raise ConfigWriteError(f"Не удалось заменить список обхода: {error_msg}")
+        
+        finally:
+            # Всегда удаляем lock-файл
+            try:
+                subprocess.run(
+                    ['sudo', '-S', 'rm', '-f', str(cls.HOSTS_LOCK_PATH)],
+                    input=password + "\n",
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+            except Exception as e:
+                log.warning(f"Не удалось удалить lock-файл списка обхода: {e}")
+    
+    # =========================================================================
     # ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ
     # =========================================================================
     
