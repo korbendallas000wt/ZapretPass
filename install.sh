@@ -79,9 +79,12 @@ detect_os() {
         fedora)
             PKG_MANAGER="dnf"
             ;;
+        opensuse*|suse)
+            PKG_MANAGER="zypper"
+            ;;
         *)
             log_error "Неподдерживаемая ОС: $OS_ID"
-            log_error "Поддерживаются: Ubuntu 24.04+, Manjaro/Arch, Fedora 40+"
+            log_error "Поддерживаются: Ubuntu 24.04+, Manjaro/Arch, Fedora 40+, openSUSE"
             exit 1
             ;;
     esac
@@ -121,7 +124,8 @@ install_system_deps() {
                 libsystemd-dev \
                 python3 \
                 python3-pyqt6 \
-                python3-pyqt6.qtwebengine
+                python3-pyqt6.qtwebengine \
+                dnsutils
             ;;
         pacman)
             log_info "Обновление системы..."
@@ -139,7 +143,8 @@ install_system_deps() {
                 libmnl \
                 python \
                 python-pyqt6 \
-                python-pyqt6-webengine
+                python-pyqt6-webengine \
+                bind-tools
             ;;
         dnf)
             log_info "Установка зависимостей..."
@@ -155,7 +160,28 @@ install_system_deps() {
                 systemd-devel \
                 python3 \
                 python3-qt6 \
-                python3-qt6-webengine
+                python3-qt6-webengine \
+                bind-utils
+            ;;
+        zypper)
+            log_info "Обновление списков пакетов..."
+            sudo zypper refresh --quiet
+            
+            log_info "Установка зависимостей..."
+            sudo zypper install -y --quiet \
+                git \
+                curl \
+                make \
+                gcc \
+                zlib-devel \
+                libcap-devel \
+                libnetfilter_queue-devel \
+                libmnl-devel \
+                systemd-devel \
+                python3 \
+                python3-qt6 \
+                python3-qt6-webengine \
+                bind-utils
             ;;
     esac
     
