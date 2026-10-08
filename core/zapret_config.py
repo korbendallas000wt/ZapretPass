@@ -43,6 +43,38 @@ class ConfigValidationError(ZapretConfigError):
     pass
 
 
+
+# ============================================================================
+# СТАНДАРТНЫЕ ФИЛЬТРЫ ПО ПОРТАМ
+# ============================================================================
+
+# Формат: (аргумент фильтра, маркер хостлиста)
+# Маркер <HOSTLIST> раскрывается zapret в пути к хостлистам
+# если MODE_FILTER=hostlist/ipset/autohostlist, иначе — в пустую строку.
+
+_NFQWS_FILTERS_HOSTLIST = [
+    ("--filter-tcp=80", "<HOSTLIST>"),
+    ("--filter-tcp=443", "<HOSTLIST>"),
+    ("--filter-udp=443", "<HOSTLIST_NOAUTO>"),
+]
+
+_NFQWS_FILTERS_ALL = [
+    ("--filter-tcp=80", ""),
+    ("--filter-tcp=443", ""),
+    ("--filter-udp=443", ""),
+]
+
+_TPWS_FILTERS_HOSTLIST = [
+    ("--filter-tcp=80", "<HOSTLIST>"),
+    ("--filter-tcp=443", "<HOSTLIST>"),
+]
+
+_TPWS_FILTERS_ALL = [
+    ("--filter-tcp=80", ""),
+    ("--filter-tcp=443", ""),
+]
+
+
 class ZapretConfigManager:
     """Единый менеджер конфига zapret.
     
@@ -522,31 +554,81 @@ class ZapretConfigManager:
     # =========================================================================
     
     @classmethod
-    def set_strategy(cls, tool: str, args: str):
-        """Устанавливает стратегию и переключает enable-флаги.
+    def _build_opt_string(cls, tool: str, args: str, scope: str) -> str:
+        """Формирует строку OPT с фильтрами по портам и маркерами хостлиста.
         
-        Для nfqws: устанавливает NFQWS_ENABLE=1, TPWS_ENABLE=0
-        Для tpws: устанавливает NFQWS_ENABLE=0, TPWS_ENABLE=1
+        Args:
+            tool: 'nfqws' или 'tpws'
+            args: аргументы стратегии (например, '--dpi-desync=fake')
+            scope: 'hostlist' или 'all'
+        
+        Returns:
+            Многострочная строка OPT для записи в конфиг.
+            Если args уже содержит --filter- — возвращается как есть.
         """
-        log.info(f"Установка стратегии: {tool} {args}")
+        args_stripped = args.strip()
+        
+        # Если args уже содержит фильтры — это полная стратегия
+        if args_stripped.startswith("--filter-"):
+            return args_stripped
+        
+        # Выбираем набор фильтров
+        if tool == "nfqws":
+            filters = _NFQWS_FILTERS_HOSTLIST if scope == "hostlist" else _NFQWS_FILTERS_ALL
+        else:
+            filters = _TPWS_FILTERS_HOSTLIST if scope == "hostlist" else _TPWS_FILTERS_ALL
+        
+        # Формируем многострочный OPT
+        lines = []
+        for i, (filter_arg, hostlist_marker) in enumerate(filters):
+            line = f"{filter_arg} {args_stripped}"
+            if hostlist_marker:
+                line += f" {hostlist_marker}"
+            if i < len(filters) - 1:
+                line += " --new"
+            lines.append(line)
+        
+        return "\n".join(lines)
+    
+    @classmethod
+    def set_strategy(cls, tool: str, args: str, scope: str = "hostlist"):
+        """Устанавливает стратегию, переключает ENABLE-флаги и MODE_FILTER.
+        
+        Args:
+            tool: 'nfqws' или 'tpws'
+            args: аргументы команды (например, '--dpi-desync=fake --dpi-desync-ttl=3')
+            scope: 'hostlist' (только список обхода, по умолчанию) или 'all' (весь трафик)
+        
+        Формирует OPT с фильтрами по портам и маркерами <HOSTLIST>/<HOSTLIST_NOAUTO>
+        в зависимости от scope. Атомарно записывает все параметры через set_many().
+        """
+        log.info(f"Установка стратегии: {tool} {args} (scope={scope})")
         
         if tool not in ("nfqws", "tpws"):
             raise ConfigValidationError(f"Недопустимый инструмент: {tool}")
+        if scope not in ("hostlist", "all"):
+            raise ConfigValidationError(f"Недопустимая область применения: {scope}")
         
-        # Формируем все параметры для записи
+        # Формируем OPT
+        opt_value = cls._build_opt_string(tool, args, scope)
+        mode_filter = "hostlist" if scope == "hostlist" else "none"
+        
+        # Собираем все параметры
         params = {}
-        
         if tool == "nfqws":
-            params["NFQWS_OPT"] = args
+            params["NFQWS_OPT"] = opt_value
             params["NFQWS_ENABLE"] = "1"
             params["TPWS_ENABLE"] = "0"
-        else:  # tpws
-            params["TPWS_OPT"] = args
+        else:
+            params["TPWS_OPT"] = opt_value
             params["NFQWS_ENABLE"] = "0"
             params["TPWS_ENABLE"] = "1"
         
-        # Записываем все параметры атомарно
+        params["MODE_FILTER"] = mode_filter
+        
+        # Атомарная запись
         cls.set_many(params)
+        log.info(f"Стратегия установлена: {tool}, scope={scope}, MODE_FILTER={mode_filter}")
     
     @classmethod
     def set_mode_filter(cls, mode: str):
