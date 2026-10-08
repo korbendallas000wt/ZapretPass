@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QGroupBox, QProgressBar, QScrollArea, QStackedWidget,
     QFrame, QSizePolicy, QComboBox, QTextEdit, QRadioButton,
-    QButtonGroup, QToolTip, QMessageBox
+    QButtonGroup, QCheckBox, QToolTip, QMessageBox
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QThread, QTimer, QPoint, QRectF, QPointF
 import threading
@@ -103,6 +103,34 @@ class BlockcheckWorker(QThread):
     def available_count(self) -> int:
         """Возвращает текущее количество AVAILABLE."""
         return self._available_count
+
+
+class ApplyStrategyWorker(QThread):
+    """Фоновый поток применения стратегии (чтобы UI не замер)."""
+    apply_finished = pyqtSignal(bool, str)
+
+    def __init__(self, domain, tool, args, scope, add_to_hostlist, parent=None):
+        super().__init__(parent)
+        self.domain = domain
+        self.tool = tool
+        self.args = args
+        self.scope = scope
+        self.add_to_hostlist = add_to_hostlist
+
+    def run(self):
+        try:
+            from core.zapret_config import ZapretConfigManager, ZapretConfigError
+            if self.add_to_hostlist:
+                ZapretConfigManager.add_host(self.domain)
+            ZapretConfigManager.set_strategy(self.tool, self.args, scope=self.scope)
+            ZapretConfigManager.restart_service()
+            self.apply_finished.emit(
+                True, f"Стратегия применена для {self.domain}, сервис перезапущен"
+            )
+        except ZapretConfigError as e:
+            self.apply_finished.emit(False, str(e))
+        except Exception as e:
+            self.apply_finished.emit(False, f"Непредвиденная ошибка: {e}")
 
 
 class ScenarioProgressIndicator(QWidget):
@@ -884,61 +912,6 @@ class SitePassportWidget(QWidget):
         self.btn_proceed.setEnabled(True)
         self.url_input.setEnabled(True)
 
-    def _apply_strategy(self, strategy_cmd: str):
-        """Применяет стратегию через ZapretConfigManager."""
-        from core.zapret_config import ZapretConfigManager, ZapretConfigError
-        from core import passport
-        
-        try:
-            # Парсим команду
-            parts = strategy_cmd.split(maxsplit=1)
-            tool = parts[0]
-            args = parts[1] if len(parts) > 1 else ""
-            
-            # Применяем через единый менеджер
-            ZapretConfigManager.set_strategy(tool, args)
-            ZapretConfigManager.set_mode_filter("autohostlist")
-            ZapretConfigManager.restart_service()
-            
-            # Сохраняем в паспорт
-            mode = "fast"
-            if hasattr(self, '_blockcheck_settings') and self._blockcheck_settings:
-                mode = getattr(self._blockcheck_settings, 'mode', 'fast')
-            passport.manager.set_primary_strategy(
-                self.domain,
-                strategy_cmd,
-                mode=mode,
-                checks_count=0,
-                duration=0
-            )
-            
-            QMessageBox.information(
-                self,
-                "Успех",
-                f"✅ Стратегия применена и сервис перезапущен!\n\n"
-                f"Инструмент: {tool}\n"
-                f"Режим фильтрации: autohostlist"
-            )
-            
-            self.status_message_requested.emit(
-                f"✅ Стратегия применена для {self.domain}", True)
-            
-        except ZapretConfigError as e:
-            QMessageBox.critical(
-                self,
-                "Ошибка применения",
-                f"❌ Не удалось применить стратегию:\n{str(e)}"
-            )
-            self.status_message_requested.emit(
-                f"❌ Ошибка применения стратегии: {e}", True)
-        except Exception as e:
-            QMessageBox.critical(
-                self,
-                "Ошибка",
-                f"❌ Непредвиденная ошибка:\n{str(e)}"
-            )
-            self.status_message_requested.emit(
-                f"❌ Ошибка: {e}", True)
 
     def _cleanup_after_blockcheck(self, layout=None, result=None):
         """Гарантированно завершает сервисные действия после блокчека."""
@@ -1236,18 +1209,16 @@ class SitePassportWidget(QWidget):
             self._found_strategies = result.strategies
             self._found_strategy = result.strategies[0] if result.strategies else None
 
-            # ВРЕМЕННО: Записываем основную стратегию в паспорт сайта
+            # Сохраняем метаданные блокчека для явного применения стратегии.
+            # В паспорт сайта стратегия пишется только после нажатия "Применить".
             if result.strategies:
                 mode = "fast"
                 if hasattr(self, '_blockcheck_settings') and self._blockcheck_settings:
                     mode = getattr(self._blockcheck_settings, 'mode', 'fast')
-                passport.manager.set_primary_strategy(
-                    self.domain,
-                    result.strategies[0],
-                    mode=mode,
-                    checks_count=actual_checks,
-                    duration=0  # TODO: добавить таймер работы блокчека
-                )
+
+                self._blockcheck_mode = mode
+                self._blockcheck_checks_count = actual_checks
+                self._blockcheck_duration = 0  # TODO: добавить таймер работы блокчека
             
             status_label = QLabel(
                 f"✅ Найдено стратегий: {len(result.strategies)}"
@@ -1271,13 +1242,6 @@ class SitePassportWidget(QWidget):
                 f"✅ Найдено {len(result.strategies)} стратегий", True)
             self._mark_current_progress("completed")
             
-            # Кнопка применения стратегии
-            if result.strategies:
-                btn_apply = QPushButton("🎯 Применить стратегию")
-                btn_apply.setStyleSheet("background-color: #27ae60; color: white; font-weight: bold;")
-                btn_apply.setMinimumHeight(40)
-                btn_apply.clicked.connect(lambda checked, s=result.strategies[0]: self._apply_strategy(s))
-                self._current_block_layout.addWidget(btn_apply)
         else:
             error_msg = result.error or "Неизвестная ошибка"
             status_label = QLabel(f"❌ {error_msg}")
@@ -1345,17 +1309,143 @@ class SitePassportWidget(QWidget):
         layout.addWidget(btn_next)
     
     def _run_apply_block(self, box: QGroupBox, layout: QVBoxLayout, flags: dict):
-        """Блок применения (заглушка)."""
-        if self._found_strategy:
-            layout.addWidget(QLabel(f"🎯 Применение стратегии:\n{self._found_strategy[:100]}..."))
+        """Блок применения найденной стратегии через ZapretConfigManager."""
+        if not self._found_strategy:
+            layout.addWidget(QLabel("❌ Нет стратегии для применения"))
+            btn_next = QPushButton("Далее")
+            btn_next.setProperty("scenario_transition_button", True)
+            btn_next.clicked.connect(self._run_next_block)
+            layout.addWidget(btn_next)
+            return
+
+        layout.addWidget(QLabel(f"Домен: <b>{self.domain}</b>"))
+
+        layout.addWidget(QLabel("Найденная стратегия:"))
+        strategy_label = QLabel(self._found_strategy)
+        strategy_label.setWordWrap(True)
+        strategy_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        strategy_label.setStyleSheet("font-family: monospace; font-size: 9pt;")
+        layout.addWidget(strategy_label)
+
+        layout.addWidget(QLabel("Область применения:"))
+        self._apply_scope_group = QButtonGroup(self)
+        rb_hostlist = QRadioButton("Только список обхода (рекомендуется)")
+        rb_hostlist.setToolTip("Стратегия применяется только к доменам из списка обхода")
+        rb_all = QRadioButton("Весь трафик (не рекомендуется)")
+        rb_all.setStyleSheet("color: #e74c3c;")
+        rb_all.setToolTip("Стратегия применяется ко всему трафику — может нарушить работу других ресурсов")
+        rb_hostlist.setChecked(True)
+        self._apply_scope_group.addButton(rb_hostlist, 0)
+        self._apply_scope_group.addButton(rb_all, 1)
+        self._apply_scope_group.buttonClicked.connect(self._on_apply_scope_changed)
+        layout.addWidget(rb_hostlist)
+        layout.addWidget(rb_all)
+
+        self._apply_add_host_cb = QCheckBox(f"Добавить {self.domain} в список обхода")
+        self._apply_add_host_cb.setChecked(True)
+        layout.addWidget(self._apply_add_host_cb)
+
+        self._apply_progress = QProgressBar()
+        self._apply_progress.setRange(0, 0)
+        self._apply_progress.setTextVisible(False)
+        self._apply_progress.setMaximumHeight(6)
+        self._apply_progress.hide()
+        layout.addWidget(self._apply_progress)
+
+        self._apply_status_label = QLabel("")
+        self._apply_status_label.setWordWrap(True)
+        layout.addWidget(self._apply_status_label)
+
+        btn_row = QHBoxLayout()
+        self._apply_btn = QPushButton("🎯 Применить")
+        self._apply_btn.setMinimumHeight(36)
+        self._apply_btn.clicked.connect(self._do_apply_strategy)
+        self._apply_skip_btn = QPushButton("Пропустить")
+        self._apply_skip_btn.clicked.connect(self._run_next_block)
+        btn_row.addWidget(self._apply_btn)
+        btn_row.addWidget(self._apply_skip_btn)
+        btn_row.addStretch(1)
+        layout.addLayout(btn_row)
+
+        self._apply_next_btn = None
+        self._apply_worker = None
+
+    def _on_apply_scope_changed(self, btn):
+        scope_all = (btn is self._apply_scope_group.button(1))
+        self._apply_add_host_cb.setEnabled(not scope_all)
+        if scope_all:
+            self._apply_add_host_cb.setChecked(False)
+
+    def _do_apply_strategy(self):
+        from core import sudo
+        if sudo.manager.get_password() is None:
+            self._apply_status_label.setText("❌ Нет кэшированного пароля sudo")
+            self._apply_status_label.setStyleSheet("color: #e74c3c;")
+            return
+
+        parts = self._found_strategy.split(maxsplit=1)
+        tool = parts[0]
+        args = parts[1] if len(parts) > 1 else ""
+        scope = "all" if self._apply_scope_group.checkedId() == 1 else "hostlist"
+        add_host = self._apply_add_host_cb.isChecked() and scope == "hostlist"
+
+        self._apply_btn.setEnabled(False)
+        self._apply_skip_btn.setEnabled(False)
+        self._apply_progress.show()
+        self._apply_status_label.setText("⏳ Применяю стратегию...")
+        self._apply_status_label.setStyleSheet("color: #3498db;")
+        self.status_message_requested.emit(
+            f"⏳ Применение стратегии для {self.domain}...", False)
+
+        self._apply_worker = ApplyStrategyWorker(
+            domain=self.domain, tool=tool, args=args,
+            scope=scope, add_to_hostlist=add_host
+        )
+        self._apply_worker.apply_finished.connect(self._on_apply_finished)
+        self._apply_worker.start()
+
+    def _on_apply_finished(self, ok, msg):
+        self._apply_progress.hide()
+        self._apply_btn.setEnabled(True)
+        self._apply_skip_btn.setEnabled(True)
+        self._apply_worker = None
+
+        if ok:
+            self._apply_status_label.setText(f"✅ {msg}")
+            self._apply_status_label.setStyleSheet(
+                "color: #2ecc71; font-weight: bold;")
+            self.status_message_requested.emit(f"✅ {msg}", True)
+            try:
+                from core import passport
+
+                mode = getattr(self, '_blockcheck_mode', 'fast')
+                checks_count = getattr(self, '_blockcheck_checks_count', 0)
+                duration = getattr(self, '_blockcheck_duration', 0)
+
+                passport.manager.set_primary_strategy(
+                    self.domain,
+                    self._found_strategy,
+                    mode=mode,
+                    checks_count=checks_count,
+                    duration=duration,
+                )
+            except Exception:
+                # Сохранение паспорта не должно ломать факт применения стратегии.
+                pass
+            self._apply_btn.hide()
+            self._apply_skip_btn.hide()
+            if self._apply_next_btn is None:
+                self._apply_next_btn = QPushButton("Далее")
+                self._apply_next_btn.setProperty("scenario_transition_button", True)
+                self._apply_next_btn.clicked.connect(self._run_next_block)
+                self._current_block_layout.addWidget(self._apply_next_btn)
         else:
-            layout.addWidget(QLabel("🎯 Нечего применять"))
-        
-        btn_next = QPushButton("Далее")
-        btn_next.setProperty("scenario_transition_button", True)
-        btn_next.clicked.connect(self._run_next_block)
-        layout.addWidget(btn_next)
-    
+            self._apply_status_label.setText(f"❌ {msg}")
+            self._apply_status_label.setStyleSheet(
+                "color: #e74c3c; font-weight: bold;")
+            self.status_message_requested.emit(
+                f"❌ Ошибка применения: {msg}", True)
+
     def _run_save_block(self, box: QGroupBox, layout: QVBoxLayout, flags: dict):
         """Блок сохранения: финальный виджет паспорта сайта."""
         try:
