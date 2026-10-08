@@ -38,6 +38,7 @@ class BlockcheckResult:
     success: bool
     strategies: list[str] = field(default_factory=list)
     strategy_meta: list[dict] = field(default_factory=list)
+    strategies_by_scheme: dict = field(default_factory=dict)
     first_success: Optional[str] = None  # Первая найденная стратегия (для режима fast)
     first_success_meta: Optional[dict] = None
     output: str = ""
@@ -181,6 +182,77 @@ def parse_strategies_with_meta_from_output(output: str) -> tuple[list[str], list
             metas.append(meta)
 
     return strategies, metas
+
+
+def _scheme_bundle_key(scheme: str) -> str:
+    s = (scheme or "").lower()
+    if s == "http":
+        return "http"
+    if s in {"https", "https_tls12", "https_tls13"}:
+        return "https"
+    if s in {"http3", "quic"}:
+        return "http3"
+    return "other"
+
+
+def _prefer_existing_meta(current: Optional[dict], candidate: Optional[dict]) -> Optional[dict]:
+    if current is None:
+        return candidate
+    if candidate is None:
+        return current
+
+    candidate_ip = str(candidate.get("ipver") or "").lower()
+    current_ip = str(current.get("ipver") or "").lower()
+
+    if candidate_ip == "ipv4" and current_ip == "ipv6":
+        return candidate
+    if candidate_ip == "ipv6" and current_ip == "ipv4":
+        return current
+
+    return current
+
+
+def build_strategy_bundle(metas: list[dict]) -> dict:
+    """Собирает результат блокчека в три основных слота: http, https, http3.
+
+    HTTPS может иметь варианты tls12/tls13. Для применения выбирается приоритетный:
+    https_tls13 > https_tls12 > https.
+    """
+    bundle = {
+        "http": None,
+        "https": None,
+        "https_selected_variant": None,
+        "https_variants": {},
+        "http3": None,
+        "other": [],
+        "all": list(metas or []),
+    }
+
+    for meta in metas or []:
+        scheme = str(meta.get("scheme") or "").lower()
+        key = _scheme_bundle_key(scheme)
+
+        if key == "http":
+            bundle["http"] = _prefer_existing_meta(bundle["http"], meta)
+        elif key == "https":
+            variant = scheme if scheme in {"https_tls12", "https_tls13"} else "https"
+            bundle["https_variants"][variant] = _prefer_existing_meta(
+                bundle["https_variants"].get(variant),
+                meta
+            )
+        elif key == "http3":
+            bundle["http3"] = _prefer_existing_meta(bundle["http3"], meta)
+        else:
+            bundle["other"].append(meta)
+
+    for variant in ("https_tls13", "https_tls12", "https"):
+        meta = bundle["https_variants"].get(variant)
+        if meta:
+            bundle["https"] = meta
+            bundle["https_selected_variant"] = variant
+            break
+
+    return bundle
 
 
 def parse_strategies_from_output(output: str) -> list[str]:
@@ -663,6 +735,7 @@ def run_blockcheck(
                 success=True,
                 strategies=[first_success],
                 strategy_meta=[first_success_meta],
+                strategies_by_scheme=build_strategy_bundle([first_success_meta]),
                 first_success=first_success,
                 first_success_meta=first_success_meta,
                 output=full_output
@@ -671,10 +744,13 @@ def run_blockcheck(
         # В полном режиме парсим итоговые стратегии из SUMMARY
         strategies, strategy_meta = parse_strategies_with_meta_from_output(full_output)
         
+        bundle = build_strategy_bundle(strategy_meta)
+
         return BlockcheckResult(
             success=len(strategies) > 0,
             strategies=strategies,
             strategy_meta=strategy_meta,
+            strategies_by_scheme=bundle,
             output=full_output,
             error="Не найдено рабочих стратегий" if not strategies else None
         )
