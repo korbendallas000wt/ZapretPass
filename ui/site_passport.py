@@ -106,32 +106,43 @@ class BlockcheckWorker(QThread):
 
 
 class ApplyStrategyWorker(QThread):
-    """Фоновый поток применения стратегии (чтобы UI не замер)."""
+    # Фоновый поток применения strategy bundle.
     apply_finished = pyqtSignal(bool, str)
 
-    def __init__(self, domain, tool, args, scope, add_to_hostlist, parent=None):
+    def __init__(self, domain, bundle, scope, parent=None):
         super().__init__(parent)
         self.domain = domain
-        self.tool = tool
-        self.args = args
+        self.bundle = bundle or {}
         self.scope = scope
-        self.add_to_hostlist = add_to_hostlist
+
+    def _has_strategy(self):
+        for key in ("http", "https", "http3"):
+            meta = self.bundle.get(key)
+            if isinstance(meta, dict) and str(meta.get("command") or "").strip():
+                return True
+        return False
 
     def run(self):
         try:
-            from core.zapret_config import ZapretConfigManager, ZapretConfigError
-            if self.add_to_hostlist:
-                ZapretConfigManager.add_host(self.domain)
-            ZapretConfigManager.set_strategy(self.tool, self.args, scope=self.scope)
-            ZapretConfigManager.restart_service()
-            self.apply_finished.emit(
-                True, f"Стратегия применена для {self.domain}, сервис перезапущен"
-            )
-        except ZapretConfigError as e:
-            self.apply_finished.emit(False, str(e))
-        except Exception as e:
-            self.apply_finished.emit(False, f"Непредвиденная ошибка: {e}")
+            from core.zapret_config import ZapretConfigManager
+            if not self._has_strategy():
+                self.apply_finished.emit(False, "Нет рабочих стратегий для применения")
+                return
 
+            ZapretConfigManager.apply_strategy_bundle(
+                self.domain,
+                self.bundle,
+                scope=self.scope,
+                restart=True
+            )
+
+            scope_txt = "целевой хостлист" if self.scope == "hostlist" else "весь трафик"
+            self.apply_finished.emit(
+                True,
+                f"Стратегия применена для {self.domain} ({scope_txt}), сервис перезапущен"
+            )
+        except Exception as e:
+            self.apply_finished.emit(False, str(e))
 
 class ScenarioProgressIndicator(QWidget):
     """Горизонтальный индикатор этапов сценария: линия + круглые точки."""
@@ -449,6 +460,7 @@ class SitePassportWidget(QWidget):
         self._diagnosis_result = None
         self._found_strategy = None
         self._found_strategies = []
+        self._strategy_bundle = {}
         self._active_block = None
         
         # UI элементы
@@ -1207,7 +1219,8 @@ class SitePassportWidget(QWidget):
                 blockcheck_stats.update_stats(self._blockcheck_settings, actual_checks)
             
             self._found_strategies = result.strategies
-            self._found_strategy = result.strategies[0] if result.strategies else None
+            self._strategy_bundle = getattr(result, "strategies_by_scheme", {}) or {}
+            self._found_strategy = self._primary_strategy_from_bundle(self._strategy_bundle) or (result.strategies[0] if result.strategies else None)
 
             # Сохраняем метаданные блокчека для явного применения стратегии.
             # В паспорт сайта стратегия пишется только после нажатия "Применить".
@@ -1308,9 +1321,29 @@ class SitePassportWidget(QWidget):
         btn_next.clicked.connect(self._run_next_block)
         layout.addWidget(btn_next)
     
+    def _primary_strategy_from_bundle(self, bundle):
+        if not isinstance(bundle, dict):
+            return ""
+        for key in ("https", "http3", "http"):
+            meta = bundle.get(key)
+            if isinstance(meta, dict) and str(meta.get("command") or "").strip():
+                return str(meta["command"])
+        return ""
+
+    def _bundle_has_strategy(self, bundle):
+        if not isinstance(bundle, dict):
+            return False
+        for key in ("http", "https", "http3"):
+            meta = bundle.get(key)
+            if isinstance(meta, dict) and str(meta.get("command") or "").strip():
+                return True
+        return False
+
     def _run_apply_block(self, box: QGroupBox, layout: QVBoxLayout, flags: dict):
-        """Блок применения найденной стратегии через ZapretConfigManager."""
-        if not self._found_strategy:
+        """Блок применения strategy bundle через чистый генератор конфига."""
+        bundle = getattr(self, "_strategy_bundle", {}) or {}
+
+        if not self._bundle_has_strategy(bundle):
             layout.addWidget(QLabel("❌ Нет стратегии для применения"))
             btn_next = QPushButton("Далее")
             btn_next.setProperty("scenario_transition_button", True)
@@ -1319,31 +1352,65 @@ class SitePassportWidget(QWidget):
             return
 
         layout.addWidget(QLabel(f"Домен: <b>{self.domain}</b>"))
+        layout.addWidget(QLabel("Найденные стратегии по протоколам:"))
 
-        layout.addWidget(QLabel("Найденная стратегия:"))
-        strategy_label = QLabel(self._found_strategy)
-        strategy_label.setWordWrap(True)
-        strategy_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        strategy_label.setStyleSheet("font-family: monospace; font-size: 9pt;")
-        layout.addWidget(strategy_label)
+        slot_specs = (
+            ("HTTP tcp/80", "http"),
+            ("HTTPS tcp/443", "https"),
+            ("HTTP/3 QUIC udp/443", "http3"),
+        )
+
+        for label, key in slot_specs:
+            meta = bundle.get(key)
+            if isinstance(meta, dict) and str(meta.get("command") or "").strip():
+                cmd = str(meta["command"])
+                scheme = str(meta.get("scheme") or "")
+                variant = ""
+                if scheme == "https_tls13":
+                    variant = " [TLS 1.3]"
+                elif scheme == "https_tls12":
+                    variant = " [TLS 1.2]"
+
+                lbl = QLabel(f"{label}: {cmd}{variant}")
+                lbl.setWordWrap(True)
+                lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+                lbl.setStyleSheet("font-family: monospace; font-size: 9pt;")
+                layout.addWidget(lbl)
+            else:
+                lbl = QLabel(f"{label}: не найдена")
+                lbl.setStyleSheet("color: #7f8c8d; font-style: italic;")
+                layout.addWidget(lbl)
 
         layout.addWidget(QLabel("Область применения:"))
+
+        self._apply_info_label = QLabel(
+            "Режим списка обхода: ZapretPass создаст чистый целевой хостлист "
+            "/opt/zapret/ipset/zapretpass-target.txt с одним доменом и применит "
+            "профили только к найденным портам."
+        )
+        self._apply_info_label.setWordWrap(True)
+        self._apply_info_label.setStyleSheet("color: #7f8c8d;")
+
         self._apply_scope_group = QButtonGroup(self)
         rb_hostlist = QRadioButton("Только список обхода (рекомендуется)")
-        rb_hostlist.setToolTip("Стратегия применяется только к доменам из списка обхода")
+        rb_hostlist.setToolTip(
+            "Используется чистый целевой хостлист из одного домена. "
+            "Старые ручные хвосты конфига не участвуют."
+        )
         rb_all = QRadioButton("Весь трафик (не рекомендуется)")
         rb_all.setStyleSheet("color: #e74c3c;")
-        rb_all.setToolTip("Стратегия применяется ко всему трафику — может нарушить работу других ресурсов")
+        rb_all.setToolTip(
+            "Стратегии применяются без хостлиста — может нарушить работу других ресурсов."
+        )
         rb_hostlist.setChecked(True)
+
         self._apply_scope_group.addButton(rb_hostlist, 0)
         self._apply_scope_group.addButton(rb_all, 1)
         self._apply_scope_group.buttonClicked.connect(self._on_apply_scope_changed)
+
         layout.addWidget(rb_hostlist)
         layout.addWidget(rb_all)
-
-        self._apply_add_host_cb = QCheckBox(f"Добавить {self.domain} в список обхода")
-        self._apply_add_host_cb.setChecked(True)
-        layout.addWidget(self._apply_add_host_cb)
+        layout.addWidget(self._apply_info_label)
 
         self._apply_progress = QProgressBar()
         self._apply_progress.setRange(0, 0)
@@ -1360,8 +1427,10 @@ class SitePassportWidget(QWidget):
         self._apply_btn = QPushButton("🎯 Применить")
         self._apply_btn.setMinimumHeight(36)
         self._apply_btn.clicked.connect(self._do_apply_strategy)
+
         self._apply_skip_btn = QPushButton("Пропустить")
         self._apply_skip_btn.clicked.connect(self._run_next_block)
+
         btn_row.addWidget(self._apply_btn)
         btn_row.addWidget(self._apply_skip_btn)
         btn_row.addStretch(1)
@@ -1372,22 +1441,36 @@ class SitePassportWidget(QWidget):
 
     def _on_apply_scope_changed(self, btn):
         scope_all = (btn is self._apply_scope_group.button(1))
-        self._apply_add_host_cb.setEnabled(not scope_all)
-        if scope_all:
-            self._apply_add_host_cb.setChecked(False)
+        if hasattr(self, "_apply_info_label") and self._apply_info_label is not None:
+            if scope_all:
+                self._apply_info_label.setText(
+                    "Внимание: весь трафик. Стратегии будут применены без хостлиста "
+                    "и могут нарушить работу других ресурсов."
+                )
+                self._apply_info_label.setStyleSheet("color: #e74c3c;")
+            else:
+                self._apply_info_label.setText(
+                    "Режим списка обхода: ZapretPass создаст чистый целевой хостлист "
+                    "/opt/zapret/ipset/zapretpass-target.txt с одним доменом и применит "
+                    "профили только к найденным портам."
+                )
+                self._apply_info_label.setStyleSheet("color: #7f8c8d;")
 
     def _do_apply_strategy(self):
         from core import sudo
+
         if sudo.manager.get_password() is None:
             self._apply_status_label.setText("❌ Нет кэшированного пароля sudo")
             self._apply_status_label.setStyleSheet("color: #e74c3c;")
             return
 
-        parts = self._found_strategy.split(maxsplit=1)
-        tool = parts[0]
-        args = parts[1] if len(parts) > 1 else ""
+        bundle = getattr(self, "_strategy_bundle", {}) or {}
+        if not self._bundle_has_strategy(bundle):
+            self._apply_status_label.setText("❌ Нет стратегии для применения")
+            self._apply_status_label.setStyleSheet("color: #e74c3c;")
+            return
+
         scope = "all" if self._apply_scope_group.checkedId() == 1 else "hostlist"
-        add_host = self._apply_add_host_cb.isChecked() and scope == "hostlist"
 
         self._apply_btn.setEnabled(False)
         self._apply_skip_btn.setEnabled(False)
@@ -1395,11 +1478,13 @@ class SitePassportWidget(QWidget):
         self._apply_status_label.setText("⏳ Применяю стратегию...")
         self._apply_status_label.setStyleSheet("color: #3498db;")
         self.status_message_requested.emit(
-            f"⏳ Применение стратегии для {self.domain}...", False)
+            f"⏳ Применение стратегии для {self.domain}...", False
+        )
 
         self._apply_worker = ApplyStrategyWorker(
-            domain=self.domain, tool=tool, args=args,
-            scope=scope, add_to_hostlist=add_host
+            domain=self.domain,
+            bundle=bundle,
+            scope=scope
         )
         self._apply_worker.apply_finished.connect(self._on_apply_finished)
         self._apply_worker.start()
@@ -1408,32 +1493,47 @@ class SitePassportWidget(QWidget):
         self._apply_progress.hide()
         self._apply_btn.setEnabled(True)
         self._apply_skip_btn.setEnabled(True)
+
+        if self._apply_worker is not None:
+            self._apply_worker.deleteLater()
         self._apply_worker = None
 
+        bundle = getattr(self, "_strategy_bundle", {}) or {}
+
         if ok:
-            self._apply_status_label.setText(f"✅ {msg}")
-            self._apply_status_label.setStyleSheet(
-                "color: #2ecc71; font-weight: bold;")
+            text = f"✅ {msg}"
+
+            https_meta = bundle.get("https")
+            if not (isinstance(https_meta, dict) and str(https_meta.get("command") or "").strip()):
+                text += "\n⚠ HTTPS-стратегия не найдена. Если сайт открывается по https, этого может быть недостаточно."
+
+            self._apply_status_label.setText(text)
+            self._apply_status_label.setStyleSheet("color: #2ecc71; font-weight: bold;")
             self.status_message_requested.emit(f"✅ {msg}", True)
+
             try:
                 from core import passport
 
-                mode = getattr(self, '_blockcheck_mode', 'fast')
-                checks_count = getattr(self, '_blockcheck_checks_count', 0)
-                duration = getattr(self, '_blockcheck_duration', 0)
+                primary = self._primary_strategy_from_bundle(bundle)
+                if primary:
+                    mode = getattr(self, "_blockcheck_mode", "fast")
+                    checks_count = getattr(self, "_blockcheck_checks_count", 0)
+                    duration = getattr(self, "_blockcheck_duration", 0)
 
-                passport.manager.set_primary_strategy(
-                    self.domain,
-                    self._found_strategy,
-                    mode=mode,
-                    checks_count=checks_count,
-                    duration=duration,
-                )
+                    passport.manager.set_primary_strategy(
+                        self.domain,
+                        primary,
+                        mode=mode,
+                        checks_count=checks_count,
+                        duration=duration,
+                    )
             except Exception:
                 # Сохранение паспорта не должно ломать факт применения стратегии.
                 pass
+
             self._apply_btn.hide()
             self._apply_skip_btn.hide()
+
             if self._apply_next_btn is None:
                 self._apply_next_btn = QPushButton("Далее")
                 self._apply_next_btn.setProperty("scenario_transition_button", True)
@@ -1441,10 +1541,10 @@ class SitePassportWidget(QWidget):
                 self._current_block_layout.addWidget(self._apply_next_btn)
         else:
             self._apply_status_label.setText(f"❌ {msg}")
-            self._apply_status_label.setStyleSheet(
-                "color: #e74c3c; font-weight: bold;")
+            self._apply_status_label.setStyleSheet("color: #e74c3c; font-weight: bold;")
             self.status_message_requested.emit(
-                f"❌ Ошибка применения: {msg}", True)
+                f"❌ Ошибка применения: {msg}", True
+            )
 
     def _run_save_block(self, box: QGroupBox, layout: QVBoxLayout, flags: dict):
         """Блок сохранения: финальный виджет паспорта сайта."""
@@ -1520,6 +1620,7 @@ class SitePassportWidget(QWidget):
         self._blockcheck_cleanup_done = True
         self._found_strategy = None
         self._found_strategies = []
+        self._strategy_bundle = {}
         self._active_block = None
         self._scenario_box = None
         
@@ -1568,4 +1669,5 @@ class SitePassportWidget(QWidget):
         self._diagnosis_result = None
         self._found_strategy = None
         self._found_strategies = []
+        self._strategy_bundle = {}
         self._active_block = None
