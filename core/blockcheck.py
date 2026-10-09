@@ -154,10 +154,14 @@ def parse_strategies_with_meta_from_output(output: str) -> tuple[list[str], list
     Сохраняет контекст вида:
         curl_test_http ipv4 example.com : tpws ...
         curl_test_https_tls13 ipv4 example.com : nfqws ...
+
+    Дедупликация идёт по (command, scheme), поэтому одна и та же команда,
+    найденная для разных протоколов, не теряется.
     """
     strategies: list[str] = []
     metas: list[dict] = []
-    seen: set[str] = set()
+    seen_meta: set[tuple[str, str]] = set()
+    seen_command: set[str] = set()
     in_summary = False
 
     for raw_line in output.splitlines():
@@ -175,11 +179,17 @@ def parse_strategies_with_meta_from_output(output: str) -> tuple[list[str], list
         if not meta:
             continue
 
-        command = meta["command"]
-        if command not in seen:
-            seen.add(command)
-            strategies.append(command)
+        command = str(meta.get("command") or "")
+        scheme = str(meta.get("scheme") or "")
+        meta_key = (command, scheme)
+
+        if command and meta_key not in seen_meta:
+            seen_meta.add(meta_key)
             metas.append(meta)
+
+        if command and command not in seen_command:
+            seen_command.add(command)
+            strategies.append(command)
 
     return strategies, metas
 
@@ -508,7 +518,7 @@ def run_blockcheck(
         settings: настройки блокчека.
         password: пароль пользователя для sudo.
         on_output: callback для получения вывода в реальном времени.
-        fast_mode: если True, останавливается на первой рабочей стратегии.
+        fast_mode: если True, используется быстрый подбор, но полный strategy bundle дожидаемся из SUMMARY; ранний стоп только по таймауту/отмене.
         timeout: таймаут в секундах.
         
     Returns:
@@ -591,6 +601,8 @@ def run_blockcheck(
     output_lines = []
     first_success = None
     first_success_meta = None
+    stream_metas: list[dict] = []
+    stream_seen: set[tuple[str, str]] = set()
     process = None
     expected_start_time = None
     try:
@@ -645,15 +657,19 @@ def run_blockcheck(
                 if on_output:
                     on_output(line)
                 
-                # В режиме fast проверяем на первый успех
-                if fast_mode and first_success_meta is None:
-                    detected_meta = detect_first_success([line])
-                    if detected_meta:
+                # Собираем все промежуточные успехи, но не останавливаемся на первом.
+                # Полный strategy bundle должен прийти из SUMMARY.
+                detected_meta = detect_first_success([line])
+                if detected_meta:
+                    cmd = str(detected_meta.get("command") or "")
+                    scheme = str(detected_meta.get("scheme") or "")
+                    key = (cmd, scheme)
+                    if cmd and key not in stream_seen:
+                        stream_seen.add(key)
+                        stream_metas.append(detected_meta)
+                    if first_success_meta is None:
                         first_success_meta = detected_meta
-                        first_success = detected_meta.get("command")
-                        # Останавливаем блокчек через watchdog: SIGINT -> SIGTERM -> SIGKILL.
-                        fast_stop_event.set()
-                        break
+                        first_success = cmd
             
             # Дожидаемся завершения. Жёсткий таймаут, пользовательская отмена и fast-stop
             # обрабатываются watchdog-потоком независимо от stdout.
@@ -674,7 +690,11 @@ def run_blockcheck(
             if timeout_event.is_set():
                 return BlockcheckResult(
                     success=False,
+                    strategies=[m.get("command", "") for m in stream_metas if m.get("command")],
+                    strategy_meta=stream_metas,
+                    strategies_by_scheme=build_strategy_bundle(stream_metas),
                     first_success=first_success,
+                    first_success_meta=first_success_meta,
                     output="".join(output_lines),
                     error=f"Таймаут ({timeout} сек)"
                 )
@@ -682,7 +702,11 @@ def run_blockcheck(
             if cancel_event is not None and cancel_event.is_set():
                 return BlockcheckResult(
                     success=False,
+                    strategies=[m.get("command", "") for m in stream_metas if m.get("command")],
+                    strategy_meta=stream_metas,
+                    strategies_by_scheme=build_strategy_bundle(stream_metas),
                     first_success=first_success,
+                    first_success_meta=first_success_meta,
                     output="".join(output_lines),
                     error="Блокчек остановлен пользователем"
                 )
@@ -707,7 +731,11 @@ def run_blockcheck(
             if process is not None and timeout_event.is_set():
                 return BlockcheckResult(
                     success=False,
+                    strategies=[m.get("command", "") for m in stream_metas if m.get("command")],
+                    strategy_meta=stream_metas,
+                    strategies_by_scheme=build_strategy_bundle(stream_metas),
                     first_success=first_success,
+                    first_success_meta=first_success_meta,
                     output="".join(output_lines),
                     error=f"Таймаут ({timeout} сек)"
                 )
@@ -715,7 +743,11 @@ def run_blockcheck(
             if process is not None and cancel_event is not None and cancel_event.is_set():
                 return BlockcheckResult(
                     success=False,
+                    strategies=[m.get("command", "") for m in stream_metas if m.get("command")],
+                    strategy_meta=stream_metas,
+                    strategies_by_scheme=build_strategy_bundle(stream_metas),
                     first_success=first_success,
+                    first_success_meta=first_success_meta,
                     output="".join(output_lines),
                     error="Блокчек остановлен пользователем"
                 )
@@ -728,31 +760,36 @@ def run_blockcheck(
             )
         
         full_output = "".join(output_lines)
-        
-        # В режиме fast возвращаем первую найденную стратегию
-        if fast_mode and first_success and first_success_meta:
-            return BlockcheckResult(
-                success=True,
-                strategies=[first_success],
-                strategy_meta=[first_success_meta],
-                strategies_by_scheme=build_strategy_bundle([first_success_meta]),
-                first_success=first_success,
-                first_success_meta=first_success_meta,
-                output=full_output
-            )
-        
-        # В полном режиме парсим итоговые стратегии из SUMMARY
+
+        # Всегда пытаемся получить полный набор из SUMMARY.
         strategies, strategy_meta = parse_strategies_with_meta_from_output(full_output)
-        
+
+        # Если SUMMARY не отработал/не распарсился, используем промежуточно собранные успехи.
+        if not strategy_meta and stream_metas:
+            strategy_meta = stream_metas
+            seen_commands: set[str] = set()
+            strategies = []
+            for meta in strategy_meta:
+                cmd = str(meta.get("command") or "")
+                if cmd and cmd not in seen_commands:
+                    seen_commands.add(cmd)
+                    strategies.append(cmd)
+
+        if not first_success_meta and strategy_meta:
+            first_success_meta = strategy_meta[0]
+            first_success = str(first_success_meta.get("command") or "")
+
         bundle = build_strategy_bundle(strategy_meta)
 
         return BlockcheckResult(
-            success=len(strategies) > 0,
+            success=bool(strategies),
             strategies=strategies,
             strategy_meta=strategy_meta,
             strategies_by_scheme=bundle,
+            first_success=first_success,
+            first_success_meta=first_success_meta,
             output=full_output,
-            error="Не найдено рабочих стратегий" if not strategies else None
+            error=None if strategies else "Не найдено рабочих стратегий"
         )
     
     except Exception as e:
