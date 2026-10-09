@@ -38,3 +38,6 @@ Work/
 # Ротированные логи
 data/logs/*.log.*
 zapretpass.sh
+
+# Local user baseline profiles (not shared)
+data/baseline/

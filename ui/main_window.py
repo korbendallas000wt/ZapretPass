@@ -28,6 +28,22 @@ from .site_passport import SitePassportWidget
 
 
 
+from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtWidgets import QMessageBox
+
+
+class RestoreBaselineWorker(QThread):
+    """Minimal worker for baseline restore action."""
+    result_ready = pyqtSignal(bool, str)
+
+    def run(self):
+        try:
+            from core.zapret_config import ZapretConfigManager
+            ok, msg = ZapretConfigManager.restore_baseline(restart=True)
+        except Exception as e:
+            ok, msg = False, str(e)
+        self.result_ready.emit(ok, msg)
+
 class ServiceWorker(QThread):
     """Фоновый поток для операций с сервисом (старт/стоп/рестарт).
     
@@ -258,16 +274,116 @@ class MainWindow(QMainWindow):
         self.passport_tab.status_message_requested.connect(self.set_status_message)
         self.tabs.addTab(self.passport_tab, "📋 Паспорт сайта")
         
-        # Вкладка 2: 🌐 Мои сайты (пока заглушка)
+        # Вкладка 2: 🌐 Мои сайты (заглушка + минимальный экшн возврата эталона)
         sites_tab = QWidget()
         sites_layout = QVBoxLayout(sites_tab)
+
         sites_placeholder = QLabel("Здесь будет: 🌐 Мои сайты")
         sites_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        font = QFont()
-        font.setPointSize(14)
+        font = sites_placeholder.font()
+        font.setPointSize(font.pointSize() + 4)
         sites_placeholder.setFont(font)
         sites_layout.addWidget(sites_placeholder)
+
+        sites_layout.addStretch(1)
+
+        baseline_box = QGroupBox("Эталонный конфиг")
+        baseline_layout = QVBoxLayout(baseline_box)
+
+        baseline_info = QLabel(
+            "Восстановит нормализованный рабочий конфиг из data/baseline/config, "
+            "сделает резервную копию текущего /opt/zapret/config, проверит синтаксис "
+            "и перезапустит сервис zapret."
+        )
+        baseline_info.setWordWrap(True)
+        baseline_layout.addWidget(baseline_info)
+
+        baseline_btn = QPushButton("↩ Вернуть эталон")
+        baseline_btn.setMinimumHeight(36)
+        baseline_layout.addWidget(baseline_btn)
+
+        baseline_status = QLabel("")
+        baseline_status.setWordWrap(True)
+        baseline_layout.addWidget(baseline_status)
+
+        sites_layout.addWidget(baseline_box)
+
+        def on_restore_finished(ok, msg):
+            baseline_btn.setEnabled(True)
+
+            worker = getattr(self, "_baseline_restore_worker", None)
+            self._baseline_restore_worker = None
+            if worker is not None:
+                try:
+                    worker.deleteLater()
+                except Exception:
+                    pass
+
+            if ok:
+                baseline_status.setText(f"✅ {msg}")
+                baseline_status.setStyleSheet("color: #2ecc71; font-weight: bold;")
+                if hasattr(self, "set_status_message"):
+                    self.set_status_message(f"✅ {msg}", True)
+                QMessageBox.information(self, "Эталон восстановлен", msg)
+            else:
+                baseline_status.setText(f"❌ {msg}")
+                baseline_status.setStyleSheet("color: #e74c3c; font-weight: bold;")
+                if hasattr(self, "set_status_message"):
+                    self.set_status_message(f"❌ Ошибка восстановления эталона: {msg}", True)
+                QMessageBox.warning(self, "Ошибка восстановления эталона", msg)
+
+        def on_restore_clicked():
+            from core.zapret_config import ZapretConfigManager
+            from core import sudo
+
+            if not ZapretConfigManager.baseline_available():
+                QMessageBox.warning(
+                    self,
+                    "Эталон не найден",
+                    f"Baseline конфиг не найден:\n{ZapretConfigManager.BASELINE_CONFIG_PATH}"
+                )
+                return
+
+            if sudo.manager.get_password() is None:
+                QMessageBox.warning(
+                    self,
+                    "Нет пароля sudo",
+                    "Для восстановления эталона нужен кэшированный пароль sudo.\n"
+                    "Сначала выполните любое действие, запрашивающее пароль, или перезапустите приложение."
+                )
+                return
+
+            ret = QMessageBox.question(
+                self,
+                "Подтверждение",
+                "Будет выполнено:\n\n"
+                "1. Резервное копирование текущего /opt/zapret/config\n"
+                "2. Замена на data/baseline/config\n"
+                "3. Проверка bash -n\n"
+                "4. Перезапуск сервиса zapret\n\n"
+                "Продолжить?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+
+            if ret != QMessageBox.StandardButton.Yes:
+                return
+
+            baseline_btn.setEnabled(False)
+            baseline_status.setText("⏳ Восстанавливаю эталон...")
+            baseline_status.setStyleSheet("color: #3498db;")
+            if hasattr(self, "set_status_message"):
+                self.set_status_message("⏳ Восстановление эталона...", False)
+
+            worker = RestoreBaselineWorker(self)
+            worker.result_ready.connect(on_restore_finished)
+            self._baseline_restore_worker = worker
+            worker.start()
+
+        baseline_btn.clicked.connect(on_restore_clicked)
+
         self.tabs.addTab(sites_tab, "🌐 Мои сайты")
+
         
         # Вкладка 3: ⚙️ Дополнительно (пока заглушка)
         advanced_tab = QWidget()

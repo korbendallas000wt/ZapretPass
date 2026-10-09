@@ -1300,6 +1300,64 @@ class ZapretConfigManager:
 
         log.info(f"Чистый конфиг ZapretPass применён: scope={scope}, domain={domain}")
 
+    # =========================================================================
+    # BASELINE RESTORE (minimal action, no separate module)
+    # =========================================================================
+
+    BASELINE_CONFIG_PATH = config.PROJECT_DIR / "data" / "baseline" / "config"
+
+    @classmethod
+    def baseline_available(cls) -> bool:
+        """Returns True if normalized baseline config exists and is readable."""
+        return cls.BASELINE_CONFIG_PATH.exists() and cls.BASELINE_CONFIG_PATH.is_file()
+
+    @classmethod
+    def read_baseline_config(cls) -> str:
+        """Reads normalized baseline config from project data directory."""
+        if not cls.baseline_available():
+            raise ConfigReadError(
+                f"Baseline конфиг не найден: {cls.BASELINE_CONFIG_PATH}"
+            )
+        try:
+            return cls.BASELINE_CONFIG_PATH.read_text(encoding="utf-8", errors="ignore")
+        except Exception as e:
+            raise ConfigReadError(f"Не удалось прочитать baseline конфиг: {e}")
+
+    @classmethod
+    def restore_baseline(cls, restart: bool = True) -> tuple[bool, str]:
+        """Restores normalized baseline config to /opt/zapret/config.
+
+        Minimal safe action:
+        1. Check baseline exists.
+        2. Backup current config.
+        3. Write baseline atomically.
+        4. Validate bash syntax.
+        5. Optionally restart zapret service.
+
+        Returns (success, message).
+        """
+        try:
+            if not cls.baseline_available():
+                return False, f"Baseline конфиг не найден: {cls.BASELINE_CONFIG_PATH}"
+
+            baseline_content = cls.read_baseline_config()
+
+            ok, msg = cls.backup_config()
+            if not ok:
+                return False, f"Не удалось создать резервную копию текущего конфига: {msg}"
+
+            cls._write_config_atomic(baseline_content)
+            cls._validate_config_syntax()
+
+            if restart:
+                cls.restart_service()
+
+            return True, "Эталонный конфиг восстановлен, сервис перезапущен"
+        except ZapretConfigError as e:
+            return False, str(e)
+        except Exception as e:
+            return False, f"Непредвиденная ошибка восстановления эталона: {e}"
+
     @classmethod
     def restart_service(cls):
         """Перезапускает сервис zapret после изменения конфига."""
