@@ -205,64 +205,211 @@ def _scheme_bundle_key(scheme: str) -> str:
     return "other"
 
 
-def _prefer_existing_meta(current: Optional[dict], candidate: Optional[dict]) -> Optional[dict]:
-    if current is None:
-        return candidate
-    if candidate is None:
-        return current
+def _strategy_candidate_score(meta: dict, kind: str) -> int:
+    """Оценивает стратегию-кандидата для выбора лучшей в слоте.
 
-    candidate_ip = str(candidate.get("ipver") or "").lower()
-    current_ip = str(current.get("ipver") or "").lower()
+    Эвристика для MVP:
+    - HTTP: tpws обычно лучше подходит для plain HTTP.
+    - HTTPS: TLS 1.3 важнее TLS 1.2; внутри одного варианта nfqws предпочтительнее tpws.
+    - HTTP/3 QUIC: только nfqws.
+    - IPv4 чуть предпочтительнее IPv6, потому что ZapretPass обычно работает с DISABLE_IPV6=1.
+    """
+    tool = str(meta.get("tool") or "").strip().lower()
+    scheme = str(meta.get("scheme") or "").strip().lower()
+    ipver = str(meta.get("ipver") or "").strip().lower()
 
-    if candidate_ip == "ipv4" and current_ip == "ipv6":
-        return candidate
-    if candidate_ip == "ipv6" and current_ip == "ipv4":
-        return current
+    score = 0
 
-    return current
+    if ipver == "ipv4":
+        score += 5
+    elif ipver == "ipv6":
+        score += 0
+
+    if kind == "http":
+        if tool == "tpws":
+            score += 40
+        elif tool == "nfqws":
+            score += 20
+
+    elif kind == "https":
+        if scheme == "https_tls13":
+            score += 100
+        elif scheme == "https_tls12":
+            score += 70
+        elif scheme == "https":
+            score += 50
+
+        if tool == "nfqws":
+            score += 30
+        elif tool == "tpws":
+            score += 5
+
+    elif kind == "http3":
+        if tool == "nfqws":
+            score += 100
+        else:
+            score -= 1000
+
+        if scheme in {"http3", "quic"}:
+            score += 20
+
+    return score
+
+
+def _best_candidate(candidates: list[dict], kind: str) -> Optional[dict]:
+    """Выбирает лучшего кандидата. При равном счёте сохраняется первый по порядку."""
+    best = None
+    best_score = None
+
+    for cand in candidates or []:
+        if not isinstance(cand, dict):
+            continue
+
+        score = _strategy_candidate_score(cand, kind)
+
+        if best is None or score > best_score:
+            best = cand
+            best_score = score
+
+    return best
 
 
 def build_strategy_bundle(metas: list[dict]) -> dict:
-    """Собирает результат блокчека в три основных слота: http, https, http3.
+    """Собирает результат блокчека в слоты http, https, http3.
 
-    HTTPS может иметь варианты tls12/tls13. Для применения выбирается приоритетный:
-    https_tls13 > https_tls12 > https.
+    Совместимость:
+    - bundle["http"] / bundle["https"] / bundle["http3"] — выбранные мета-стратегии.
+    - bundle["https_variants"] — выбранные стратегии по вариантам TLS.
+    Дополнительно сохраняются кандидаты:
+    - bundle["http_candidates"]
+    - bundle["https_candidates"]
+    - bundle["https_variant_candidates"]
+    - bundle["http3_candidates"]
     """
     bundle = {
         "http": None,
+        "http_candidates": [],
         "https": None,
         "https_selected_variant": None,
         "https_variants": {},
+        "https_candidates": [],
+        "https_variant_candidates": {},
         "http3": None,
+        "http3_candidates": [],
         "other": [],
         "all": list(metas or []),
     }
 
     for meta in metas or []:
-        scheme = str(meta.get("scheme") or "").lower()
+        if not isinstance(meta, dict):
+            continue
+
+        scheme = str(meta.get("scheme") or "").strip().lower()
         key = _scheme_bundle_key(scheme)
 
         if key == "http":
-            bundle["http"] = _prefer_existing_meta(bundle["http"], meta)
+            bundle["http_candidates"].append(meta)
         elif key == "https":
             variant = scheme if scheme in {"https_tls12", "https_tls13"} else "https"
-            bundle["https_variants"][variant] = _prefer_existing_meta(
-                bundle["https_variants"].get(variant),
-                meta
-            )
+            bundle["https_candidates"].append(meta)
+            bundle["https_variant_candidates"].setdefault(variant, []).append(meta)
         elif key == "http3":
-            bundle["http3"] = _prefer_existing_meta(bundle["http3"], meta)
+            bundle["http3_candidates"].append(meta)
         else:
             bundle["other"].append(meta)
 
-    for variant in ("https_tls13", "https_tls12", "https"):
-        meta = bundle["https_variants"].get(variant)
-        if meta:
-            bundle["https"] = meta
-            bundle["https_selected_variant"] = variant
-            break
+    if bundle["http_candidates"]:
+        bundle["http"] = _best_candidate(bundle["http_candidates"], "http")
+
+    if bundle["https_candidates"]:
+        for variant, cands in bundle["https_variant_candidates"].items():
+            bundle["https_variants"][variant] = _best_candidate(cands, "https")
+
+        best_https = _best_candidate(bundle["https_candidates"], "https")
+        bundle["https"] = best_https
+
+        selected_scheme = str((best_https or {}).get("scheme") or "").strip().lower()
+        if selected_scheme in {"https_tls12", "https_tls13"}:
+            bundle["https_selected_variant"] = selected_scheme
+        elif selected_scheme == "https":
+            bundle["https_selected_variant"] = "https"
+        else:
+            for variant in ("https_tls13", "https_tls12", "https"):
+                if bundle["https_variants"].get(variant):
+                    bundle["https_selected_variant"] = variant
+                    break
+
+    if bundle["http3_candidates"]:
+        nfqws_http3 = [
+            m for m in bundle["http3_candidates"]
+            if isinstance(m, dict) and str(m.get("tool") or "").strip().lower() == "nfqws"
+        ]
+
+        # Все кандидаты оставляем для диагностики, но применяем только nfqws.
+        bundle["http3"] = _best_candidate(nfqws_http3, "http3") if nfqws_http3 else None
 
     return bundle
+
+
+def parse_strategies_with_meta_from_output(output: str) -> tuple[list[str], list[dict]]:
+    """Извлекает рабочие стратегии из SUMMARY вместе с метаданными теста.
+
+    Сохраняет контекст вида:
+        curl_test_http ipv4 example.com : tpws ...
+        curl_test_https_tls13 ipv4 example.com : nfqws ...
+
+    Дедупликация идёт по (command, scheme), поэтому одна и та же команда,
+    найденная для разных протоколов, не теряется.
+    """
+    strategies: list[str] = []
+    metas: list[dict] = []
+    seen_meta: set[tuple[str, str]] = set()
+    seen_command: set[str] = set()
+    in_summary = False
+
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+
+        if not in_summary:
+            if line.upper().startswith("* SUMMARY") or line.upper() == "SUMMARY":
+                in_summary = True
+            continue
+
+        if line.lower().startswith("press enter") or line.lower().startswith("please note"):
+            break
+
+        meta = parse_strategy_meta_from_line(line)
+        if not meta:
+            continue
+
+        command = str(meta.get("command") or "")
+        scheme = str(meta.get("scheme") or "")
+        meta_key = (command, scheme)
+
+        if command and meta_key not in seen_meta:
+            seen_meta.add(meta_key)
+            metas.append(meta)
+
+        if command and command not in seen_command:
+            seen_command.add(command)
+            strategies.append(command)
+
+    return strategies, metas
+
+
+def _scheme_bundle_key(scheme: str) -> str:
+    s = (scheme or "").lower()
+    if s == "http":
+        return "http"
+    if s in {"https", "https_tls12", "https_tls13"}:
+        return "https"
+    if s in {"http3", "quic"}:
+        return "http3"
+    return "other"
+
+
+
+
 
 
 def parse_strategies_from_output(output: str) -> list[str]:
