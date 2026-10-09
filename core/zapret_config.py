@@ -944,6 +944,362 @@ class ZapretConfigManager:
     # ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ
     # =========================================================================
     
+    # =========================================================================
+    # CLEAN ZAPRETPASS CONFIG GENERATOR
+    # =========================================================================
+
+    TARGET_HOSTLIST_PATH = config.IPSET_DIR / "zapretpass-target.txt"
+    TARGET_HOSTLIST_TMP_PATH = config.IPSET_DIR / "zapretpass-target.txt.tmp"
+    TARGET_HOSTLIST_LOCK_PATH = config.ZAPRET_DIR / ".target-hosts.lock"
+    TEMPLATE_CONFIG_PATH = config.ZAPRET_DIR / "config.default"
+
+    MANAGED_START = "# >>> ZapretPass managed block >>>"
+    MANAGED_END = "# <<< ZapretPass managed block <<<"
+
+    MANAGED_PARAMS = (
+        "FWTYPE",
+        "MODE_FILTER",
+        "TPWS_SOCKS_ENABLE",
+        "TPWS_ENABLE",
+        "TPWS_PORTS",
+        "TPWS_OPT",
+        "NFQWS_ENABLE",
+        "NFQWS_PORTS_TCP",
+        "NFQWS_PORTS_UDP",
+        "NFQWS_OPT",
+    )
+
+    @classmethod
+    def _bash_quote_double(cls, value: str) -> str:
+        """Escapes a string for inclusion into a bash double-quoted value."""
+        bs = chr(92)
+        return (
+            value.replace(bs, bs + bs)
+                 .replace('"', bs + '"')
+                 .replace('$', bs + '$')
+                 .replace('`', bs + '`')
+        )
+
+    @classmethod
+    def _write_target_hostlist(cls, domain: str):
+        """Writes a clean target hostlist containing exactly one domain."""
+        d = cls._validate_domain(domain)
+        password = cls._get_password()
+        content = d + "\n"
+
+        if cls.TARGET_HOSTLIST_LOCK_PATH.exists():
+            start_time = time.time()
+            while cls.TARGET_HOSTLIST_LOCK_PATH.exists() and (time.time() - start_time) < cls.LOCK_TIMEOUT:
+                time.sleep(0.1)
+            if cls.TARGET_HOSTLIST_LOCK_PATH.exists():
+                raise ConfigLockError(
+                    f"Не удалось получить блокировку целевого хостлиста за {cls.LOCK_TIMEOUT} сек"
+                )
+
+        try:
+            result = subprocess.run(
+                ['sudo', '-S', 'touch', str(cls.TARGET_HOSTLIST_LOCK_PATH)],
+                input=password + "\n",
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if result.returncode != 0:
+                error_msg = cls._filter_sudo_stderr(result.stderr)
+                raise ConfigWriteError(
+                    f"Не удалось создать lock-файл целевого хостлиста: {error_msg}"
+                )
+        except ZapretConfigError:
+            raise
+        except Exception as e:
+            raise ConfigWriteError(f"Ошибка создания lock-файла целевого хостлиста: {e}")
+
+        try:
+            result = subprocess.run(
+                ['sudo', '-S', 'tee', str(cls.TARGET_HOSTLIST_TMP_PATH)],
+                input=content,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            if result.returncode != 0:
+                error_msg = cls._filter_sudo_stderr(result.stderr)
+                raise ConfigWriteError(f"Не удалось записать временный целевой хостлист: {error_msg}")
+
+            result = subprocess.run(
+                ['sudo', '-S', 'mv', str(cls.TARGET_HOSTLIST_TMP_PATH), str(cls.TARGET_HOSTLIST_PATH)],
+                input=password + "\n",
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if result.returncode != 0:
+                error_msg = cls._filter_sudo_stderr(result.stderr)
+                raise ConfigWriteError(f"Не удалось заменить целевой хостлист: {error_msg}")
+        finally:
+            try:
+                subprocess.run(
+                    ['sudo', '-S', 'rm', '-f', str(cls.TARGET_HOSTLIST_LOCK_PATH)],
+                    input=password + "\n",
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+            except Exception as e:
+                log.warning(f"Не удалось удалить lock-файл целевого хостлиста: {e}")
+
+    @classmethod
+    def _read_template_config(cls) -> str:
+        password = cls._get_password()
+        try:
+            result = subprocess.run(
+                ['sudo', '-S', 'cat', str(cls.TEMPLATE_CONFIG_PATH)],
+                input=password + "\n",
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if result.returncode != 0:
+                error_msg = cls._filter_sudo_stderr(result.stderr)
+                raise ConfigReadError(
+                    f"Не удалось прочитать шаблон конфига {cls.TEMPLATE_CONFIG_PATH}: {error_msg}"
+                )
+            return result.stdout
+        except subprocess.TimeoutExpired:
+            raise ConfigReadError("Таймаут чтения шаблона конфига (10 сек)")
+        except ZapretConfigError:
+            raise
+        except Exception as e:
+            raise ConfigReadError(f"Ошибка чтения шаблона конфига: {e}")
+
+    @classmethod
+    def _strip_managed_block(cls, content: str) -> str:
+        start = content.find(cls.MANAGED_START)
+        if start == -1:
+            return content
+
+        end = content.find(cls.MANAGED_END, start)
+        if end == -1:
+            prefix = content[:start].rstrip("\n")
+            return prefix + ("\n" if prefix.strip() else "")
+
+        end += len(cls.MANAGED_END)
+        while end < len(content) and content[end] == "\n":
+            end += 1
+
+        prefix = content[:start].rstrip("\n")
+        suffix = content[end:].lstrip("\n")
+
+        if prefix and suffix:
+            return prefix + "\n\n" + suffix
+        return prefix + suffix + ("\n" if prefix or suffix else "")
+
+    @classmethod
+    def _strip_managed_params(cls, content: str) -> str:
+        for param in cls.MANAGED_PARAMS:
+            content = cls._remove_param_blocks(content, param)
+        return content
+
+    @classmethod
+    def _ports_from_profiles(cls, profiles: list[tuple[str, dict]]) -> str:
+        ports = []
+        for filter_arg, _meta in profiles:
+            port = filter_arg.split("=", 1)[1]
+            if port not in ports:
+                ports.append(port)
+        return ",".join(sorted(ports, key=lambda x: int(x) if x.isdigit() else 0))
+
+    @classmethod
+    def _render_opt_value(cls, profiles: list[tuple[str, dict]], scope: str) -> str:
+        if not profiles:
+            return ""
+
+        lines = []
+        for idx, (filter_arg, meta) in enumerate(profiles):
+            args = str(meta.get("args") or "").strip()
+            line = filter_arg
+            if args:
+                line += " " + args
+            if scope == "hostlist":
+                line += f" --hostlist={cls.TARGET_HOSTLIST_PATH}"
+            if idx < len(profiles) - 1:
+                line += " --new"
+            lines.append(line)
+
+        return "\n".join(lines)
+
+    @classmethod
+    def _sort_tcp_profiles(cls, profiles: list[tuple[str, dict]]) -> list[tuple[str, dict]]:
+        def key(item):
+            port = item[0].split("=", 1)[1]
+            # HTTPS читаем/применяем раньше HTTP.
+            return 0 if port == "443" else 1
+
+        return sorted(profiles, key=key)
+
+    @classmethod
+    def _render_managed_block(cls, bundle: dict, scope: str = "hostlist") -> str:
+        if scope not in ("hostlist", "all"):
+            raise ConfigValidationError(f"Недопустимая область применения: {scope}")
+
+        http = bundle.get("http") if isinstance(bundle, dict) else None
+        https = bundle.get("https") if isinstance(bundle, dict) else None
+        http3 = bundle.get("http3") if isinstance(bundle, dict) else None
+
+        tpws_tcp_profiles = []
+        nfqws_tcp_profiles = []
+        nfqws_udp_profiles = []
+
+        def add_profile(meta, kind):
+            if not isinstance(meta, dict):
+                return
+
+            tool = str(meta.get("tool") or "").strip().lower()
+            args = str(meta.get("args") or "").strip()
+            if not args:
+                return
+
+            if kind == "http3":
+                if tool != "nfqws":
+                    log.warning("HTTP/3 стратегия найдена не для nfqws — игнорируется в MVP")
+                    return
+                nfqws_udp_profiles.append(("--filter-udp=443", meta))
+                return
+
+            filter_arg = "--filter-tcp=80" if kind == "http" else "--filter-tcp=443"
+
+            if tool == "tpws":
+                tpws_tcp_profiles.append((filter_arg, meta))
+            elif tool == "nfqws":
+                nfqws_tcp_profiles.append((filter_arg, meta))
+            else:
+                log.warning(f"Неизвестный инструмент стратегии для {kind}: {tool!r} — игнорируется")
+
+        add_profile(https, "https")
+        add_profile(http, "http")
+        add_profile(http3, "http3")
+
+        tpws_tcp_profiles = cls._sort_tcp_profiles(tpws_tcp_profiles)
+        nfqws_tcp_profiles = cls._sort_tcp_profiles(nfqws_tcp_profiles)
+        nfqws_profiles = nfqws_tcp_profiles + nfqws_udp_profiles
+
+        if not (tpws_tcp_profiles or nfqws_profiles):
+            raise ConfigValidationError("В strategy_bundle нет применимых рабочих стратегий")
+
+        lines = [cls.MANAGED_START]
+        lines.append("FWTYPE=nftables")
+        lines.append(f"MODE_FILTER={'hostlist' if scope == 'hostlist' else 'none'}")
+        lines.append("TPWS_SOCKS_ENABLE=0")
+
+        if tpws_tcp_profiles:
+            tpws_ports = cls._ports_from_profiles(tpws_tcp_profiles)
+            lines.append("TPWS_ENABLE=1")
+            lines.append(f'TPWS_PORTS="{tpws_ports}"')
+            opt = cls._render_opt_value(tpws_tcp_profiles, scope)
+            lines.append('TPWS_OPT="')
+            lines.append(cls._bash_quote_double(opt))
+            lines.append('"')
+        else:
+            lines.append("TPWS_ENABLE=0")
+            lines.append('TPWS_PORTS=""')
+            lines.append('TPWS_OPT=""')
+
+        if nfqws_profiles:
+            nfqws_tcp_ports = cls._ports_from_profiles(nfqws_tcp_profiles)
+            nfqws_udp_ports = "443" if nfqws_udp_profiles else ""
+
+            lines.append("NFQWS_ENABLE=1")
+            if nfqws_tcp_ports:
+                lines.append(f'NFQWS_PORTS_TCP="{nfqws_tcp_ports}"')
+            else:
+                lines.append('NFQWS_PORTS_TCP=""')
+
+            if nfqws_udp_ports:
+                lines.append(f'NFQWS_PORTS_UDP="{nfqws_udp_ports}"')
+            else:
+                lines.append('NFQWS_PORTS_UDP=""')
+
+            opt = cls._render_opt_value(nfqws_profiles, scope)
+            lines.append('NFQWS_OPT="')
+            lines.append(cls._bash_quote_double(opt))
+            lines.append('"')
+        else:
+            lines.append("NFQWS_ENABLE=0")
+            lines.append('NFQWS_PORTS_TCP=""')
+            lines.append('NFQWS_PORTS_UDP=""')
+            lines.append('NFQWS_OPT=""')
+
+        lines.append(cls.MANAGED_END)
+        return "\n".join(lines) + "\n"
+
+    @classmethod
+    def _validate_config_syntax(cls):
+        password = cls._get_password()
+        try:
+            result = subprocess.run(
+                ['sudo', '-S', 'bash', '-n', str(cls.CONFIG_PATH)],
+                input=password + "\n",
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if result.returncode != 0:
+                error_msg = cls._filter_sudo_stderr(result.stderr)
+                raise ConfigWriteError(
+                    f"Сгенерированный конфиг не прошёл проверку bash -n: {error_msg}"
+                )
+        except subprocess.TimeoutExpired:
+            raise ConfigWriteError("Таймаут проверки синтаксиса конфига (10 сек)")
+        except ZapretConfigError:
+            raise
+        except Exception as e:
+            raise ConfigWriteError(f"Ошибка проверки синтаксиса конфига: {e}")
+
+    @classmethod
+    def generate_clean_config(cls, bundle: dict, scope: str = "hostlist") -> str:
+        if scope not in ("hostlist", "all"):
+            raise ConfigValidationError(f"Недопустимая область применения: {scope}")
+
+        template = cls._read_template_config()
+        template = cls._strip_managed_block(template)
+        template = cls._strip_managed_params(template)
+
+        block = cls._render_managed_block(bundle, scope)
+        template = template.rstrip("\n")
+
+        return template + "\n\n" + block
+
+    @classmethod
+    def apply_strategy_bundle(cls, domain: str, bundle: dict, scope: str = "hostlist", restart: bool = True):
+        """Applies a strategy bundle as a clean ZapretPass-managed config.
+
+        For scope=hostlist writes a single-domain target hostlist and uses
+        explicit --hostlist=... instead of <HOSTLIST> markers.
+        """
+        if scope not in ("hostlist", "all"):
+            raise ConfigValidationError(f"Недопустимая область применения: {scope}")
+        if not isinstance(bundle, dict):
+            raise ConfigValidationError("strategy_bundle должен быть dict")
+
+        # Fail fast if bundle has no usable strategies.
+        cls._render_managed_block(bundle, scope)
+
+        if scope == "hostlist":
+            cls._write_target_hostlist(domain)
+
+        ok, msg = cls.backup_config()
+        if not ok:
+            raise ConfigWriteError(f"Не удалось создать резервную копию конфига: {msg}")
+
+        new_content = cls.generate_clean_config(bundle, scope)
+        cls._write_config_atomic(new_content)
+        cls._validate_config_syntax()
+
+        if restart:
+            cls.restart_service()
+
+        log.info(f"Чистый конфиг ZapretPass применён: scope={scope}, domain={domain}")
+
     @classmethod
     def restart_service(cls):
         """Перезапускает сервис zapret после изменения конфига."""
