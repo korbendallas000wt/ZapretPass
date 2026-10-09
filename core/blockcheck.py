@@ -24,9 +24,9 @@ class BlockcheckSettings:
     """Настройки запуска блокчека."""
     ipver: str = "4"        # "4" или "6"
     http: str = "Y"         # "Y" или "N"
-    tls12: str = "N"        # "Y" или "N"
+    tls12: str = "Y"        # "Y" или "N"
     tls13: str = "Y"        # "Y" или "N"
-    quic: str = "N"         # "Y" или "N"
+    quic: str = "Y"         # "Y" или "N"
     repeat: int = 1         # 1-10
     mode: str = "1"         # "1"=Быстрый, "2"=Стандарт, "3"=Полный
     force: bool = False     # SCANLEVEL=force
@@ -226,9 +226,9 @@ def _strategy_candidate_score(meta: dict, kind: str) -> int:
         score += 0
 
     if kind == "http":
-        if tool == "tpws":
+        if tool == "nfqws":
             score += 40
-        elif tool == "nfqws":
+        elif tool == "tpws":
             score += 20
 
     elif kind == "https":
