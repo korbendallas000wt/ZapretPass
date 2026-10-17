@@ -511,27 +511,67 @@ class SitePassportWidget(QWidget):
         info_label.setStyleSheet("font-size: 11pt;")
         layout.addWidget(info_label)
         
-        # Радиокнопки для сценариев
+        # Двухколоночные GroupBox для сценариев
         from core import scenarios
         self.scenario_button_group = QButtonGroup(self)
         self.scenario_radio_buttons = {}
         
-        for i, scenario in enumerate(scenarios.registry.get_all()):
-            radio = QRadioButton(f"{scenario.icon} {scenario.name}")
-            radio.setToolTip(scenario.description)
+        # Главный контейнер, который будет растягиваться
+        container = QWidget()
+        container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        main_layout = QHBoxLayout(container)
+        main_layout.setSpacing(16)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Делим сценарии на две половины
+        scenarios_list = scenarios.registry.get_all()
+        mid = (len(scenarios_list) + 1) // 2
+        left_scenarios = scenarios_list[:mid]
+        right_scenarios = scenarios_list[mid:]
+        
+        def build_column(title, scen_list, start_idx):
+            box = QGroupBox(title)
+            box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+            v_layout = QVBoxLayout(box)
+            v_layout.setSpacing(12)
             
-            # Создаём описание под радио
-            desc_label = QLabel(f"     {scenario.description}")
-            desc_label.setStyleSheet("color: #888; margin-left: 20px;")
+            for i, scenario in enumerate(scen_list):
+                actual_idx = start_idx + i
+                item_widget = QWidget()
+                item_layout = QHBoxLayout(item_widget)
+                item_layout.setContentsMargins(0, 0, 0, 0)
+                item_layout.setSpacing(10)
+                
+                radio = QRadioButton(f"{scenario.icon} {scenario.name}")
+                radio.setToolTip(scenario.description)
+                radio.setStyleSheet("font-weight: bold; font-size: 10pt;")
+                
+                desc_label = QLabel(scenario.description)
+                desc_label.setStyleSheet("color: #888; font-size: 9pt;")
+                desc_label.setWordWrap(True)
+                
+                item_layout.addWidget(radio)
+                item_layout.addWidget(desc_label, stretch=1)
+                
+                v_layout.addWidget(item_widget)
+                
+                self.scenario_button_group.addButton(radio, actual_idx)
+                self.scenario_radio_buttons[scenario.id] = radio
+                
+                if actual_idx == 0:
+                    radio.setChecked(True)
             
-            if i == 0:
-                radio.setChecked(True)  # первый по умолчанию
-            
-            self.scenario_button_group.addButton(radio, i)
-            self.scenario_radio_buttons[scenario.id] = radio
-            
-            layout.addWidget(radio)
-            layout.addWidget(desc_label)
+            v_layout.addStretch()  # Прижимаем элементы к верху, если их мало
+            return box
+        
+        left_box = build_column("🛠 Основные сценарии", left_scenarios, 0)
+        right_box = build_column("🔍 Дополнительные сценарии", right_scenarios, mid)
+        
+        main_layout.addWidget(left_box, stretch=1)
+        main_layout.addWidget(right_box, stretch=1)
+        
+        # Добавляем контейнер в основной layout с растяжением
+        layout.addWidget(container, stretch=1)
         
         # Кнопка запуска
         btn_start = QPushButton("▶ Начать")

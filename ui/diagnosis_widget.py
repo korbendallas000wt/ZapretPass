@@ -173,6 +173,24 @@ class DiagnosisWidget(QWidget):
         self.verdict_label.setStyleSheet("font-size: 12pt; margin-top: 8px; color: #e67e22; font-weight: bold;")
         self.set_buttons_state("stopped")
 
+    def stop_all_workers(self):
+        """Корректно останавливает все фоновые воркеры (ТЗ №30)."""
+        # Geo
+        if hasattr(self, 'geo_worker') and self.geo_worker.isRunning():
+            self.geo_worker.terminate()
+            self.geo_worker.wait()
+        # DNS
+        if hasattr(self, 'dns_worker') and self.dns_worker.isRunning():
+            self.dns_worker.terminate()
+            self.dns_worker.wait()
+        # HTML
+        if hasattr(self, 'html_worker') and self.html_worker.isRunning():
+            self.html_worker.terminate()
+            self.html_worker.wait()
+        # Браузер (очищаем, чтобы разорвать соединение)
+        if hasattr(self, 'browser_widget'):
+            self.browser_widget.web_view.setHtml("")
+
     def set_provider(self, provider: str):
         self.provider_label.setText(f"📡 Провайдер: {provider}")
     
