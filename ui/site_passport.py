@@ -18,6 +18,7 @@ from typing import Optional
 
 from core import service_manager
 from core import passport
+from .diagnosis_widget import DiagnosisWidget
 
 
 class DiagnosisWorker(QThread):
@@ -672,7 +673,7 @@ class SitePassportWidget(QWidget):
         layout = QVBoxLayout(box)
         self._current_block_layout = layout  # Сохраняем для доступа из обработчиков
         
-        if block.block_type == "save":
+        if block.block_type in ("save", "diagnosis_v2"):
             box.setSizePolicy(
                 QSizePolicy.Policy.Expanding,
                 QSizePolicy.Policy.Expanding,
@@ -690,6 +691,8 @@ class SitePassportWidget(QWidget):
         # Выполняем блок по типу
         if block.block_type == "diagnosis":
             self._run_diagnosis_block(box, layout, block.flags)
+        elif block.block_type == "diagnosis_v2":
+            self._run_diagnosis_v2_block(box, layout, block.flags)
         elif block.block_type == "blockcheck":
             self._run_blockcheck_block(box, layout, block.flags)
         elif block.block_type == "sniffer":
@@ -707,6 +710,47 @@ class SitePassportWidget(QWidget):
     # БЛОКИ СЦЕНАРИЕВ
     # =========================================================================
     
+    def _run_diagnosis_v2_block(self, box: QGroupBox, layout: QVBoxLayout, flags: dict):
+        """Блок диагностики ТЗ №30: виджет 2x2 с браузером, DNS, HTML."""
+        # Очищаем layout от стандартных элементов
+        while layout.count():
+            item = layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        
+        # Создаём виджет диагностики
+        self._diag_v2_widget = DiagnosisWidget(self.domain, self)
+        layout.addWidget(self._diag_v2_widget, stretch=1)
+        
+        # Подключаем кнопки
+        self._diag_v2_widget.btn_finish.clicked.connect(self._on_diagnosis_v2_finish)
+        self._diag_v2_widget.btn_retry.clicked.connect(self._on_diagnosis_v2_retry)
+        self._diag_v2_widget.btn_proceed.clicked.connect(self._on_diagnosis_v2_proceed)
+        
+        # Начальное состояние
+        self._diag_v2_widget.set_buttons_state("running")
+        
+        # Заглушки для живого теста (имитация прогресса)
+        QTimer.singleShot(1000, lambda: self._diag_v2_widget.set_provider("Тестовый провайдер"))
+        QTimer.singleShot(2000, lambda: self._diag_v2_widget.set_dns_status("✅ Найдено 2 адреса", "IPv4: 1.2.3.4, 5.6.7.8"))
+        QTimer.singleShot(3000, lambda: self._diag_v2_widget.set_html_status("✅ HTTP 200", "Время: 245ms"))
+        QTimer.singleShot(3500, lambda: self._diag_v2_widget.set_verdict(" Доступен", "#2ecc71"))
+        QTimer.singleShot(3500, lambda: self._diag_v2_widget.set_buttons_state("success"))
+
+    def _on_diagnosis_v2_finish(self):
+        """Завершение диагностики."""
+        self.status_message_requested.emit("❌ Диагностика завершена", True)
+        self.btn_proceed.setEnabled(True)
+        self.url_input.setEnabled(True)
+
+    def _on_diagnosis_v2_retry(self):
+        """Повтор диагностики."""
+        self.status_message_requested.emit(" Повтор диагностики...", False)
+
+    def _on_diagnosis_v2_proceed(self):
+        """Переход к следующему шагу (заглушка)."""
+        self.status_message_requested.emit("▶ Продолжение (заглушка)", False)
+
     def _run_diagnosis_block(self, box: QGroupBox, layout: QVBoxLayout, flags: dict):
         """Блок диагностики с честной проверкой при остановленном сервисе."""
         status_label = QLabel(f"⏳ Проверяем доступность {self.domain}...")
