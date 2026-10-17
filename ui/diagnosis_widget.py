@@ -9,6 +9,10 @@ from PyQt6.QtWidgets import (
     QGroupBox, QLabel, QPushButton, QSizePolicy
 )
 from PyQt6.QtCore import Qt, pyqtSignal
+from .browser_widget import BrowserWidget
+from .geo_worker import GeoWorker
+from .dns_worker import DnsWorker
+from .html_worker import HtmlWorker
 
 
 class DiagnosisWidget(QWidget):
@@ -23,6 +27,7 @@ class DiagnosisWidget(QWidget):
         self.domain = domain
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._setup_ui()
+        self._start_geo_worker()
     
     def _setup_ui(self):
         """Создаёт сетку 2×2 + панель кнопок."""
@@ -91,12 +96,8 @@ class DiagnosisWidget(QWidget):
     def _fill_browser_box(self):
         """Заполняет блок браузера."""
         layout = QVBoxLayout(self.browser_box)
-        self.browser_status = QLabel("⏳ Ожидание загрузки...")
-        layout.addWidget(self.browser_status)
-        self.btn_refresh_browser = QPushButton("🔄 Обновить")
-        self.btn_refresh_browser.setEnabled(False)
-        layout.addWidget(self.btn_refresh_browser)
-        layout.addStretch()  # Пружина
+        self.browser_widget = BrowserWidget(self.domain)
+        layout.addWidget(self.browser_widget, stretch=1)
     
     def _fill_identity_box(self):
         """Заполняет блок идентификации."""
@@ -133,6 +134,45 @@ class DiagnosisWidget(QWidget):
         layout.addWidget(self.html_details)
         layout.addStretch()  # Пружина
     
+    def _start_geo_worker(self):
+        """Запускает geo-воркер для определения провайдера."""
+        self.geo_worker = GeoWorker()
+        self.geo_worker.vpn_detected.connect(self._on_vpn_detected)
+        self.geo_worker.geo_success.connect(self._on_geo_success)
+        self.geo_worker.geo_failed.connect(self._on_geo_failed)
+        self.geo_worker.error.connect(self._on_geo_error)
+        self.geo_worker.start()
+    
+    def _on_vpn_detected(self, iface: str):
+        """VPN активен — останавливаем тест."""
+        self.provider_label.setText(f" Провайдер: ⚠️ VPN обнаружен ({iface})")
+        self.provider_label.setStyleSheet("color: #e67e22;")
+        self.verdict_label.setText("📋 Вердикт: ⚠️ Тест остановлен")
+        self.verdict_label.setStyleSheet("font-size: 12pt; margin-top: 8px; color: #e67e22; font-weight: bold;")
+        self.set_buttons_state("stopped")
+    
+    def _on_geo_success(self, ip: str, provider: str):
+        """Geo успешен — обновляем провайдера и запускаем DNS."""
+        self.provider_label.setText(f"📡 Провайдер: {provider}")
+        self.provider_label.setStyleSheet("color: #2ecc71;")
+        self._start_dns_worker()
+    
+    def _on_geo_failed(self):
+        """Geo не удался — останавливаем тест."""
+        self.provider_label.setText("📡 Провайдер:  Не удалось определить")
+        self.provider_label.setStyleSheet("color: #e74c3c;")
+        self.verdict_label.setText("📋 Вердикт: ❌ Тест остановлен")
+        self.verdict_label.setStyleSheet("font-size: 12pt; margin-top: 8px; color: #e74c3c; font-weight: bold;")
+        self.set_buttons_state("stopped")
+    
+    def _on_geo_error(self, error_msg: str):
+        """Ошибка geo-воркера."""
+        self.provider_label.setText(f"📡 Провайдер: ️ Ошибка")
+        self.provider_label.setStyleSheet("color: #e67e22;")
+        self.verdict_label.setText(f" Вердикт: ⚠️ {error_msg}")
+        self.verdict_label.setStyleSheet("font-size: 12pt; margin-top: 8px; color: #e67e22; font-weight: bold;")
+        self.set_buttons_state("stopped")
+
     def set_provider(self, provider: str):
         self.provider_label.setText(f"📡 Провайдер: {provider}")
     
@@ -140,11 +180,74 @@ class DiagnosisWidget(QWidget):
         self.verdict_label.setText(f"📋 Вердикт: {verdict}")
         self.verdict_label.setStyleSheet(f"font-size: 12pt; margin-top: 8px; color: {color}; font-weight: bold;")
     
+    def _start_dns_worker(self):
+        """Запускает DNS-воркер."""
+        self.dns_worker = DnsWorker(self.domain)
+        self.dns_worker.dns_success.connect(self._on_dns_success)
+        self.dns_worker.dns_failed.connect(self._on_dns_failed)
+        self.dns_worker.start()
+
+    def _on_dns_success(self, result: dict):
+        """DNS успешен — обновляем UI и запускаем HTML."""
+        ipv4_count = len(result.get("ipv4", []))
+        ipv6_count = len(result.get("ipv6", []))
+        total = ipv4_count + ipv6_count
+        
+        # Предпочитаем IPv4, иначе берём IPv6
+        if ipv4_count > 0:
+            first_ip = result["ipv4"][0]
+            is_ipv6 = False
+        elif ipv6_count > 0:
+            first_ip = result["ipv6"][0]
+            is_ipv6 = True
+        else:
+            first_ip = ""
+            is_ipv6 = False
+            
+        extra = f" и ещё {total - 1}" if total > 1 else ""
+        
+        status_text = f"✅ Найдено {total} адресов"
+        details_text = f"IPv4: {ipv4_count}, IPv6: {ipv6_count} | Первый: {first_ip}{extra} | Время: {result['time_ms']} мс"
+        
+        self.set_dns_status(status_text, details_text)
+        
+        # Запускаем HTML-проверку по найденному IP
+        if first_ip:
+            self._start_html_worker(first_ip, is_ipv6)
+        else:
+            self._on_html_failed("Не удалось определить IP для проверки")
+
+    def _on_dns_failed(self, error_msg: str):
+        """DNS не удался — останавливаем цепочку, HTML не запускаем."""
+        self.set_dns_status("❌ Не найдено", error_msg)
+        self.set_verdict("🔴 Недоступен", "#e74c3c")
+        self.set_buttons_state("blocked")
+
     def set_dns_status(self, status: str, details: str = ""):
         self.dns_status.setText(status)
         if details:
             self.dns_details.setText(details)
     
+    def _start_html_worker(self, ip: str, is_ipv6: bool):
+        """Запускает HtmlWorker."""
+        self.set_html_status("⏳ Проверка HTTP...", "")
+        self.html_worker = HtmlWorker(ip, self.domain, is_ipv6)
+        self.html_worker.html_success.connect(self._on_html_success)
+        self.html_worker.html_failed.connect(self._on_html_failed)
+        self.html_worker.start()
+
+    def _on_html_success(self, result: dict):
+        """HTML успешен (2xx) — ставим зелёный вердикт."""
+        self.set_html_status(f"✅ HTTP {result['status_code']}", f"Время: {result['time_ms']} мс")
+        self.set_verdict("🟢 Доступен", "#2ecc71")
+        self.set_buttons_state("success")
+
+    def _on_html_failed(self, error_msg: str):
+        """HTML не удался — ставим красный вердикт."""
+        self.set_html_status("❌ Ошибка", error_msg)
+        self.set_verdict("🔴 Недоступен", "#e74c3c")
+        self.set_buttons_state("blocked")
+
     def set_html_status(self, status: str, details: str = ""):
         self.html_status.setText(status)
         if details:

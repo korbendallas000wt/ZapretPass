@@ -731,11 +731,6 @@ class SitePassportWidget(QWidget):
         self._diag_v2_widget.set_buttons_state("running")
         
         # Заглушки для живого теста (имитация прогресса)
-        QTimer.singleShot(1000, lambda: self._diag_v2_widget.set_provider("Тестовый провайдер"))
-        QTimer.singleShot(2000, lambda: self._diag_v2_widget.set_dns_status("✅ Найдено 2 адреса", "IPv4: 1.2.3.4, 5.6.7.8"))
-        QTimer.singleShot(3000, lambda: self._diag_v2_widget.set_html_status("✅ HTTP 200", "Время: 245ms"))
-        QTimer.singleShot(3500, lambda: self._diag_v2_widget.set_verdict(" Доступен", "#2ecc71"))
-        QTimer.singleShot(3500, lambda: self._diag_v2_widget.set_buttons_state("success"))
 
     def _on_diagnosis_v2_finish(self):
         """Завершение диагностики."""
