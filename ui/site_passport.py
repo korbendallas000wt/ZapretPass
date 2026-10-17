@@ -751,40 +751,24 @@ class SitePassportWidget(QWidget):
     # =========================================================================
     
     def _run_diagnosis_v2_block(self, box: QGroupBox, layout: QVBoxLayout, flags: dict):
-        """Блок диагностики ТЗ №30: виджет 2x2 с браузером, DNS, HTML."""
-        # Очищаем layout от стандартных элементов
+        """Блок диагностики ТЗ №30/31: ручной пошаговый режим."""
         while layout.count():
             item = layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
         
-        # Создаём виджет диагностики
-        self._diag_v2_widget = DiagnosisWidget(self.domain, self)
+        # Передаём общий индикатор сценария для управления подшагами
+        self._diag_v2_widget = DiagnosisWidget(self.domain, self.progress_indicator, self)
         layout.addWidget(self._diag_v2_widget, stretch=1)
         
-        # Подключаем кнопки
-        self._diag_v2_widget.btn_finish.clicked.connect(self._on_diagnosis_v2_finish)
-        self._diag_v2_widget.btn_retry.clicked.connect(self._on_diagnosis_v2_retry)
-        self._diag_v2_widget.btn_proceed.clicked.connect(self._on_diagnosis_v2_proceed)
-        
-        # Начальное состояние
-        self._diag_v2_widget.set_buttons_state("running")
-        
-        # Заглушки для живого теста (имитация прогресса)
+        self._diag_v2_widget.finish_clicked.connect(self._on_diagnosis_v2_finish)
 
     def _on_diagnosis_v2_finish(self):
-        """Завершение диагностики."""
+        """Завершение диагностики: останавливаем воркеры и возвращаемся к выбору сценария."""
+        if hasattr(self, '_diag_v2_widget') and self._diag_v2_widget is not None:
+            self._diag_v2_widget.stop_all_workers()
         self.status_message_requested.emit("❌ Диагностика завершена", True)
-        self.btn_proceed.setEnabled(True)
-        self.url_input.setEnabled(True)
-
-    def _on_diagnosis_v2_retry(self):
-        """Повтор диагностики."""
-        self.status_message_requested.emit(" Повтор диагностики...", False)
-
-    def _on_diagnosis_v2_proceed(self):
-        """Переход к следующему шагу (заглушка)."""
-        self.status_message_requested.emit("▶ Продолжение (заглушка)", False)
+        self._show_scenario_selection()
 
     def _run_diagnosis_block(self, box: QGroupBox, layout: QVBoxLayout, flags: dict):
         """Блок диагностики с честной проверкой при остановленном сервисе."""
