@@ -23,6 +23,7 @@ ZapretPass/
 │   ├── blockcheck.py           Запуск и парсинг blockcheck.sh
 │   ├── blockcheck_stats.py     Статистика проверок для детерминированного прогресса
 │   ├── applier.py              Применение стратегий, бэкапы, ротация
+│   ├── zapret_config.py        Единый менеджер конфига zapret (чтение/запись)
 │   ├── sniffer.py              Перехват SNI-доменов через tshark
 │   ├── checker.py              Проверка доступности сайтов через curl
 │   ├── passport.py             Менеджер паспортов сайтов и атомарное сохранение
@@ -70,6 +71,7 @@ ZapretPass/
 | `blockcheck.py` | Неинтерактивный запуск `blockcheck.sh` через `BATCH=1`, парсинг SUMMARY и fast-mode детект |
 | blockcheck_stats.py | Статистика количества проверок для прогресс-бара блокчека |
 | `applier.py` | Применение стратегий, бэкапы, ротация |
+| `zapret_config.py` | Единый менеджер чтения/записи `/opt/zapret/config`: атомарная запись, lock-файл, валидация, кэш с TTL, `set_many()`, иерархия исключений |
 | `sniffer.py` | Перехват SNI-доменов через `tshark` |
 | `checker.py` | Проверка доступности сайтов через `curl` |
 | `passport.py` | Менеджер паспортов сайтов: атомарная запись, история, стратегии, скриншоты |
@@ -122,55 +124,48 @@ Qt6-интерфейс приложения. Вкладка «Паспорт с�
 
 ---
 
-## Raw-ссылки на все файлы проекта
+## Raw-ссылки (machine-readable)
 
-### Корень
-- [zapretpass.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/zapretpass.py)
-- [install.sh](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/install.sh)
-- [VERSION](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/VERSION)
-- [README.md](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/README.md)
-- [.gitignore](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/.gitignore)
+Формат: одна строка — `<путь> <raw-url>`. Ветка: `dev`. Модель может взять URL целиком.
 
-### `core/`
-- [__init__.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/core/__init__.py)
-- [config.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/core/config.py)
-- [service.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/core/service.py)
-- [service_manager.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/core/service_manager.py)
-- [sudo.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/core/sudo.py)
-- [auth_limits.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/core/auth_limits.py)
-- [strategies.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/core/strategies.py)
-- [blockcheck.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/core/blockcheck.py)
-- [blockcheck_stats.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/core/blockcheck_stats.py)
-- [applier.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/core/applier.py)
-│   ├── zapret_config.py        Единый менеджер конфига zapret (чтение/запись)
-- [sniffer.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/core/sniffer.py)
-- [checker.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/core/checker.py)
-- [passport.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/core/passport.py)
-- [scenarios.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/core/scenarios.py)
-- [preflight.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/core/preflight.py)
-- [logger.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/core/logger.py)
-- [updater.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/core/updater.py)
-
-### `ui/`
-- [__init__.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/ui/__init__.py)
-- [main_window.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/ui/main_window.py)
-- [site_passport.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/ui/site_passport.py)
-- [passport_view.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/ui/passport_view.py)
-- [password_dialog.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/ui/password_dialog.py)
-- [service_controller.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/ui/service_controller.py)
-- [about_dialog.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/ui/about_dialog.py)
-- [update_indicator.py](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/ui/update_indicator.py)
-
-### `data/`
-- [strategies/.gitkeep](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/data/strategies/.gitkeep)
-- [sites/.gitkeep](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/data/sites/.gitkeep)
-- [sniffer_results/.gitkeep](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/data/sniffer_results/.gitkeep)
-- [logs/.gitkeep](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/data/logs/.gitkeep)
-
-### `resources/`
-- [.gitkeep](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/resources/.gitkeep)
-
-### `docs/`
-- [STRUCTURE.md](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/docs/STRUCTURE.md)
-- [PROJECT_MANIFEST.md](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/docs/PROJECT_MANIFEST.md)
-- [CHANGELOG.md](https://github.com/korbendallas000wt/ZapretPass/raw/refs/heads/dev/docs/CHANGELOG.md)
+```text
+.gitignore https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/.gitignore
+README.md https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/README.md
+VERSION https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/VERSION
+install.sh https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/install.sh
+zapretpass.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/zapretpass.py
+core/__init__.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/core/__init__.py
+core/applier.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/core/applier.py
+core/auth_limits.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/core/auth_limits.py
+core/blockcheck.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/core/blockcheck.py
+core/blockcheck_stats.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/core/blockcheck_stats.py
+core/checker.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/core/checker.py
+core/config.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/core/config.py
+core/logger.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/core/logger.py
+core/passport.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/core/passport.py
+core/preflight.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/core/preflight.py
+core/scenarios.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/core/scenarios.py
+core/service.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/core/service.py
+core/service_manager.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/core/service_manager.py
+core/sniffer.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/core/sniffer.py
+core/strategies.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/core/strategies.py
+core/sudo.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/core/sudo.py
+core/updater.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/core/updater.py
+core/zapret_config.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/core/zapret_config.py
+ui/__init__.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/ui/__init__.py
+ui/about_dialog.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/ui/about_dialog.py
+ui/main_window.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/ui/main_window.py
+ui/passport_view.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/ui/passport_view.py
+ui/password_dialog.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/ui/password_dialog.py
+ui/service_controller.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/ui/service_controller.py
+ui/site_passport.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/ui/site_passport.py
+ui/update_indicator.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/ui/update_indicator.py
+data/logs/.gitkeep https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/data/logs/.gitkeep
+data/sites/.gitkeep https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/data/sites/.gitkeep
+data/sniffer_results/.gitkeep https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/data/sniffer_results/.gitkeep
+data/strategies/.gitkeep https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/data/strategies/.gitkeep
+resources/.gitkeep https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/resources/.gitkeep
+docs/CHANGELOG.md https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/docs/CHANGELOG.md
+docs/PROJECT_MANIFEST.md https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/docs/PROJECT_MANIFEST.md
+docs/STRUCTURE.md https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/docs/STRUCTURE.md
+```
