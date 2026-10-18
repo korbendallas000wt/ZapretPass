@@ -561,26 +561,25 @@ class SitePassportWidget(QWidget):
         v_layout_right = QVBoxLayout(right_box)
         v_layout_right.setSpacing(12)
         
-        tools = [
-            {"id": "tool_diagnosis", "icon": "🔬", "name": "Диагностика", "desc": "Проверить доступность сайта без поиска стратегий"},
-            {"id": "tool_change_domain", "icon": "🔁", "name": "Смена целевого домена", "desc": "Вернуться к вводу нового домена"}
-        ]
+        from core.tools import registry as tools_registry
         
-        for i, tool in enumerate(tools):
+        for i, tool in enumerate(tools_registry.get_all()):
             item_widget = QWidget()
             item_layout = QHBoxLayout(item_widget)
             item_layout.setContentsMargins(0, 0, 0, 0)
             item_layout.setSpacing(10)
             
-            radio = QRadioButton(f"{tool['icon']} {tool['name']}")
+            radio = QRadioButton(f"{tool.icon} {tool.name}")
             radio.setStyleSheet("font-weight: bold; font-size: 10pt;")
+            radio.setEnabled(tool.enabled)
             
             info_btn = QPushButton("ⓘ")
             info_btn.setFixedSize(22, 22)
             info_btn.setFlat(True)
             info_btn.setToolTip("Показать описание")
             info_btn.setStyleSheet("color: palette(link); font-size: 14pt; font-weight: bold;")
-            info_btn.clicked.connect(lambda checked, desc=tool['desc'], name=tool['name']: 
+            # Кнопка (i) всегда активна, даже если инструмент disabled
+            info_btn.clicked.connect(lambda checked, desc=tool.description, name=tool.name: 
                                     QMessageBox.information(self, name, desc))
             
             item_layout.addWidget(radio)
@@ -590,7 +589,7 @@ class SitePassportWidget(QWidget):
             
             # Уникальные ID для QButtonGroup (100+)
             self.selection_button_group.addButton(radio, 100 + i)
-            self.radio_buttons[tool['id']] = radio
+            self.radio_buttons[tool.id] = radio
         v_layout_right.addStretch()
         
         main_layout.addWidget(left_box, stretch=1)
@@ -615,6 +614,13 @@ class SitePassportWidget(QWidget):
         
         if not selected_id:
             self.status_message_requested.emit("❌ Действие не выбрано", True)
+            return
+        
+        # Проверка на disabled инструменты (защитный механизм)
+        from core.tools import registry as tools_registry
+        selected_tool = tools_registry.get(selected_id)
+        if selected_tool and not selected_tool.enabled:
+            self.status_message_requested.emit(f"⚠️ Инструмент '{selected_tool.name}' в разработке", True)
             return
         
         # 1. Инструмент: Смена домена
