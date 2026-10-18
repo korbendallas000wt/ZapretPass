@@ -486,145 +486,195 @@ class SitePassportWidget(QWidget):
         return url.lower()
     
     def _show_scenario_selection(self):
-        """Показывает UI выбора сценария."""
+        """Показывает UI выбора сценария или инструмента (ТЗ №34)."""
         raw_url = self.url_input.text()
         domain = self._normalize_domain(raw_url)
         
         if not domain:
-            self.status_message_requested.emit(
-                "❌ Некорректный адрес сайта", True)
+            self.status_message_requested.emit("❌ Некорректный адрес сайта", True)
             return
         
         self.domain = domain
-        
-        # Очищаем предыдущие результаты
         self._clear_results()
-        
-        # Отмечаем точку 0 как завершённую ПОСЛЕ очистки
         self.set_domain_entered()
         
-        # Создаём UI выбора сценария
-        self._scenario_box = QGroupBox("🎯 Выберите сценарий")
+        self._scenario_box = QGroupBox("🎯 Выбор действия")
         layout = QVBoxLayout(self._scenario_box)
         
-        info_label = QLabel(f"Что будем делать с {self.domain}?")
-        info_label.setStyleSheet("font-size: 11pt;")
-        layout.addWidget(info_label)
+        # Readonly контекст домена
+        domain_label = QLabel(f"Домен: {self.domain}")
+        domain_label.setStyleSheet("font-size: 12pt; font-weight: bold; color: palette(link);")
+        domain_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(domain_label)
         
-        # Двухколоночные GroupBox для сценариев
         from core import scenarios
-        self.scenario_button_group = QButtonGroup(self)
-        self.scenario_radio_buttons = {}
+        # ОДИН общий QButtonGroup для взаимоисключения сценариев и инструментов
+        self.selection_button_group = QButtonGroup(self)
+        self.radio_buttons = {}
         
-        # Главный контейнер, который будет растягиваться
         container = QWidget()
         container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         main_layout = QHBoxLayout(container)
         main_layout.setSpacing(16)
         main_layout.setContentsMargins(0, 0, 0, 0)
         
-        # Делим сценарии на две половины
-        scenarios_list = scenarios.registry.get_all()
-        mid = (len(scenarios_list) + 1) // 2
-        left_scenarios = scenarios_list[:mid]
-        right_scenarios = scenarios_list[mid:]
+        # --- ЛЕВАЯ КОЛОНКА: СЦЕНАРИИ ---
+        left_box = QGroupBox("Сценарии")
+        left_box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        v_layout_left = QVBoxLayout(left_box)
+        v_layout_left.setSpacing(12)
         
-        def build_column(title, scen_list, start_idx):
-            box = QGroupBox(title)
-            box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-            v_layout = QVBoxLayout(box)
-            v_layout.setSpacing(12)
-            
-            for i, scenario in enumerate(scen_list):
-                actual_idx = start_idx + i
-                item_widget = QWidget()
-                item_layout = QHBoxLayout(item_widget)
-                item_layout.setContentsMargins(0, 0, 0, 0)
-                item_layout.setSpacing(10)
-                
-                radio = QRadioButton(f"{scenario.icon} {scenario.name}")
-                radio.setStyleSheet("font-weight: bold; font-size: 10pt;")
-                
-                # Кнопка (i) для показа описания
-                info_btn = QPushButton("ⓘ")
-                info_btn.setFixedSize(22, 22)
-                info_btn.setFlat(True)
-                info_btn.setToolTip("Показать описание сценария")
-                info_btn.setStyleSheet("color: palette(link); font-size: 14pt; font-weight: bold;")
-                # Используем lambda для захвата описания сценария
-                info_btn.clicked.connect(lambda checked, desc=scenario.description, name=scenario.name: 
-                                        QMessageBox.information(self, f"{name}", desc))
-                
-                item_layout.addWidget(radio)
-                item_layout.addStretch()
-                item_layout.addWidget(info_btn)
-                
-                v_layout.addWidget(item_widget)
-                
-                self.scenario_button_group.addButton(radio, actual_idx)
-                self.scenario_radio_buttons[scenario.id] = radio
-                
-                if actual_idx == 0:
-                    radio.setChecked(True)
-            
-            v_layout.addStretch()  # Прижимаем элементы к верху, если их мало
-            return box
+        # Скрываем diagnosis_v2, чтобы не дублировать с инструментами
+        scenarios_list = [s for s in scenarios.registry.get_all() if s.id != "diagnosis_v2"]
         
-        left_box = build_column("🛠 Основные сценарии", left_scenarios, 0)
-        right_box = build_column("🔍 Дополнительные сценарии", right_scenarios, mid)
+        for i, scenario in enumerate(scenarios_list):
+            item_widget = QWidget()
+            item_layout = QHBoxLayout(item_widget)
+            item_layout.setContentsMargins(0, 0, 0, 0)
+            item_layout.setSpacing(10)
+            
+            radio = QRadioButton(f"{scenario.icon} {scenario.name}")
+            radio.setStyleSheet("font-weight: bold; font-size: 10pt;")
+            
+            info_btn = QPushButton("ⓘ")
+            info_btn.setFixedSize(22, 22)
+            info_btn.setFlat(True)
+            info_btn.setToolTip("Показать описание")
+            info_btn.setStyleSheet("color: palette(link); font-size: 14pt; font-weight: bold;")
+            info_btn.clicked.connect(lambda checked, desc=scenario.description, name=scenario.name: 
+                                    QMessageBox.information(self, name, desc))
+            
+            item_layout.addWidget(radio)
+            item_layout.addStretch()
+            item_layout.addWidget(info_btn)
+            v_layout_left.addWidget(item_widget)
+            
+            self.selection_button_group.addButton(radio, i)
+            self.radio_buttons[scenario.id] = radio
+            if i == 0:
+                radio.setChecked(True)
+        v_layout_left.addStretch()
+        
+        # --- ПРАВАЯ КОЛОНКА: ИНСТРУМЕНТЫ ---
+        right_box = QGroupBox("Инструменты")
+        right_box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        v_layout_right = QVBoxLayout(right_box)
+        v_layout_right.setSpacing(12)
+        
+        tools = [
+            {"id": "tool_diagnosis", "icon": "🔬", "name": "Диагностика", "desc": "Проверить доступность сайта без поиска стратегий"},
+            {"id": "tool_change_domain", "icon": "🔁", "name": "Смена целевого домена", "desc": "Вернуться к вводу нового домена"}
+        ]
+        
+        for i, tool in enumerate(tools):
+            item_widget = QWidget()
+            item_layout = QHBoxLayout(item_widget)
+            item_layout.setContentsMargins(0, 0, 0, 0)
+            item_layout.setSpacing(10)
+            
+            radio = QRadioButton(f"{tool['icon']} {tool['name']}")
+            radio.setStyleSheet("font-weight: bold; font-size: 10pt;")
+            
+            info_btn = QPushButton("ⓘ")
+            info_btn.setFixedSize(22, 22)
+            info_btn.setFlat(True)
+            info_btn.setToolTip("Показать описание")
+            info_btn.setStyleSheet("color: palette(link); font-size: 14pt; font-weight: bold;")
+            info_btn.clicked.connect(lambda checked, desc=tool['desc'], name=tool['name']: 
+                                    QMessageBox.information(self, name, desc))
+            
+            item_layout.addWidget(radio)
+            item_layout.addStretch()
+            item_layout.addWidget(info_btn)
+            v_layout_right.addWidget(item_widget)
+            
+            # Уникальные ID для QButtonGroup (100+)
+            self.selection_button_group.addButton(radio, 100 + i)
+            self.radio_buttons[tool['id']] = radio
+        v_layout_right.addStretch()
         
         main_layout.addWidget(left_box, stretch=1)
         main_layout.addWidget(right_box, stretch=1)
-        
-        # Добавляем контейнер в основной layout с растяжением
         layout.addWidget(container, stretch=1)
         
-        # Кнопка запуска
         btn_start = QPushButton("▶ Начать")
         btn_start.setMinimumHeight(40)
-        btn_start.clicked.connect(self._start_selected_scenario)
+        btn_start.clicked.connect(self._start_selected_action)
         layout.addWidget(btn_start)
         
         self.results_layout.addWidget(self._scenario_box)
-        
-        self.status_message_requested.emit(
-            f"🎯 Выбор сценария для {self.domain}", False)
+        self.status_message_requested.emit(f"🎯 Выбор действия для {self.domain}", False)
     
-    def _start_selected_scenario(self):
-        """Запускает выбранный сценарий."""
-        # Блокируем ввод
-        self.btn_proceed.setEnabled(False)
-        self.url_input.setEnabled(False)
-        """Запускает выбранный сценарий."""
-        from core import scenarios
-        
-        # Находим выбранный сценарий
+    def _start_selected_action(self):
+        """Диспетчер: запускает сценарий или инструмент (ТЗ №34)."""
         selected_id = None
-        for scenario_id, radio in self.scenario_radio_buttons.items():
+        for item_id, radio in self.radio_buttons.items():
             if radio.isChecked():
-                selected_id = scenario_id
+                selected_id = item_id
                 break
         
         if not selected_id:
-            self.status_message_requested.emit(
-                "❌ Сценарий не выбран", True)
+            self.status_message_requested.emit("❌ Действие не выбрано", True)
             return
         
+        # 1. Инструмент: Смена домена
+        if selected_id == "tool_change_domain":
+            self._on_change_domain()
+            return
+        
+        # 2. Инструмент: Диагностика (перенаправляем на существующий сценарий)
+        if selected_id == "tool_diagnosis":
+            selected_id = "diagnosis_v2"
+        
+        # 3. Обычный сценарий
+        from core import scenarios
         self.scenario = scenarios.registry.get(selected_id)
+        if not self.scenario:
+            self.status_message_requested.emit("❌ Сценарий не найден", True)
+            return
+        
         self.current_block_index = 0
         self._create_scenario_progress(self.scenario.get_blocks())
         
-        # Удаляем UI выбора сценария
+        # Блокируем ввод
+        self.btn_proceed.setEnabled(False)
+        self.url_input.setEnabled(False)
+        
+        # Удаляем UI выбора
         if self._scenario_box:
             self.results_layout.removeWidget(self._scenario_box)
             self._scenario_box.deleteLater()
             self._scenario_box = None
         
-        self.status_message_requested.emit(
-            f"▶ Запуск сценария: {self.scenario.name}", True)
-        
-        # Запускаем первый блок
+        self.status_message_requested.emit(f"▶ Запуск: {self.scenario.name}", True)
         self._run_next_block()
+    
+    def _on_change_domain(self):
+        """Инструмент: сброс состояния и возврат к вводу домена."""
+        # Безопасно останавливаем активные воркеры
+        if hasattr(self, '_diag_v2_widget') and self._diag_v2_widget:
+            try:
+                # Проверяем, что виджет ещё не удалён из Qt
+                if self._diag_v2_widget.isVisible() or self._diag_v2_widget.parent():
+                    self._diag_v2_widget.stop_all_workers()
+            except RuntimeError:
+                # Виджет уже удалён из Qt, игнорируем
+                pass
+        
+        # Сбрасываем UI-состояния
+        self._clear_results()
+        self.scenario = None
+        self.current_block_index = 0
+        self._diag_v2_widget = None
+        
+        # Возвращаем поле ввода в исходное состояние
+        self.url_input.setText(self.domain)
+        self.url_input.setEnabled(True)
+        self.btn_proceed.setEnabled(True)
+        self.url_input.setFocus()
+        self.url_input.selectAll()
+        
+        self.status_message_requested.emit("🔄 Введите новый домен", False)
     
 
 
@@ -775,9 +825,6 @@ class SitePassportWidget(QWidget):
             self._diag_v2_widget.stop_all_workers()
         self.status_message_requested.emit("❌ Диагностика завершена", True)
         self._show_scenario_selection()
-        # Активируем поле ввода домена и ставим на него фокус
-        self.url_input.setEnabled(True)
-        self.url_input.setFocus()
 
     def _run_diagnosis_block(self, box: QGroupBox, layout: QVBoxLayout, flags: dict):
         """Блок диагностики с честной проверкой при остановленном сервисе."""
