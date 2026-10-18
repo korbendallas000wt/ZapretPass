@@ -543,15 +543,21 @@ class SitePassportWidget(QWidget):
                 item_layout.setSpacing(10)
                 
                 radio = QRadioButton(f"{scenario.icon} {scenario.name}")
-                radio.setToolTip(scenario.description)
                 radio.setStyleSheet("font-weight: bold; font-size: 10pt;")
                 
-                desc_label = QLabel(scenario.description)
-                desc_label.setStyleSheet("color: #888; font-size: 9pt;")
-                desc_label.setWordWrap(True)
+                # Кнопка (i) для показа описания
+                info_btn = QPushButton("ⓘ")
+                info_btn.setFixedSize(22, 22)
+                info_btn.setFlat(True)
+                info_btn.setToolTip("Показать описание сценария")
+                info_btn.setStyleSheet("color: palette(link); font-size: 14pt; font-weight: bold;")
+                # Используем lambda для захвата описания сценария
+                info_btn.clicked.connect(lambda checked, desc=scenario.description, name=scenario.name: 
+                                        QMessageBox.information(self, f"{name}", desc))
                 
                 item_layout.addWidget(radio)
-                item_layout.addWidget(desc_label, stretch=1)
+                item_layout.addStretch()
+                item_layout.addWidget(info_btn)
                 
                 v_layout.addWidget(item_widget)
                 
