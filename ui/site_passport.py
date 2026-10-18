@@ -769,6 +769,9 @@ class SitePassportWidget(QWidget):
             self._diag_v2_widget.stop_all_workers()
         self.status_message_requested.emit("❌ Диагностика завершена", True)
         self._show_scenario_selection()
+        # Активируем поле ввода домена и ставим на него фокус
+        self.url_input.setEnabled(True)
+        self.url_input.setFocus()
 
     def _run_diagnosis_block(self, box: QGroupBox, layout: QVBoxLayout, flags: dict):
         """Блок диагностики с честной проверкой при остановленном сервисе."""

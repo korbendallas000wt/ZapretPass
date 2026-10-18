@@ -1,40 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-ZapretPass UI - Виджет диагностики (ТЗ №30 + ТЗ №31)
-Ручной пошаговый режим: geo -> dns -> html через кнопку "Продолжить".
-Использует общий ScenarioProgressIndicator из site_passport.
-"""
-from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
-    QGroupBox, QLabel, QPushButton, QSizePolicy
-)
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QPushButton, QSizePolicy, QLabel
 from PyQt6.QtCore import Qt, pyqtSignal
 
 from .browser_widget import BrowserWidget
 from .geo_worker import GeoWorker
 from .dns_worker import DnsWorker
 from .html_worker import HtmlWorker
+from .diagnosis_block import DiagnosisBlock, BrowserBlock
 from core.scenarios import ScenarioBlock
 
-# Статусы шагов
-STEP_IDLE = "idle"
-STEP_RUNNING = "running"
-STEP_SUCCESS = "success"
-STEP_FAILED = "failed"
-STEP_BLOCKED = "blocked"
-
-# Состояния сессии
-SESSION_READY = "ready"
-SESSION_RUNNING = "running"
-SESSION_STEP_DONE = "step_done"
-SESSION_FINISHED = "finished"
-SESSION_STOPPED = "stopped"
+STEP_IDLE, STEP_RUNNING, STEP_SUCCESS, STEP_FAILED, STEP_BLOCKED = "idle", "running", "success", "failed", "blocked"
+SESSION_READY, SESSION_RUNNING, SESSION_STEP_DONE, SESSION_FINISHED, SESSION_STOPPED = "ready", "running", "step_done", "finished", "stopped"
 
 
 class DiagnosisWidget(QWidget):
-    """Виджет диагностики с ручным пошаговым управлением."""
-    
     finish_clicked = pyqtSignal()
     
     def __init__(self, domain: str, progress_indicator=None, parent=None):
@@ -43,7 +23,6 @@ class DiagnosisWidget(QWidget):
         self.progress_indicator = progress_indicator
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         
-        # Машина состояний
         self.steps = {"geo": STEP_IDLE, "dns": STEP_BLOCKED, "html": STEP_BLOCKED}
         self.session_state = SESSION_READY
         self.verdict = None
@@ -55,10 +34,6 @@ class DiagnosisWidget(QWidget):
         self._setup_progress_indicator()
         self._update_ui_from_state()
 
-    # =========================================================================
-    # UI
-    # =========================================================================
-    
     def _setup_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -67,26 +42,37 @@ class DiagnosisWidget(QWidget):
         grid = QGridLayout()
         grid.setSpacing(8)
         
-        self.browser_box = self._create_groupbox("🖼 Предпросмотр сайта")
-        self.identity_box = self._create_groupbox("🆔 Идентификация")
-        self.dns_box = self._create_groupbox("🌐 Определение адреса (DNS)")
-        self.html_box = self._create_groupbox("📄 HTML-ответ")
+        # Блоки с заголовками
+        self.browser_block = BrowserBlock()
+        self.verdict_block = DiagnosisBlock("Сеть")
+        self.dns_block = DiagnosisBlock("DNS")
+        self.html_block = DiagnosisBlock("HTML")
         
-        self._fill_browser_box()
-        self._fill_identity_box()
-        self._fill_dns_box()
-        self._fill_html_box()
+        # Браузер
+        self.browser_widget = BrowserWidget(self.domain)
+        self.browser_block.layout().addWidget(self.browser_widget, stretch=1)
         
-        grid.addWidget(self.browser_box, 0, 0)
-        grid.addWidget(self.identity_box, 0, 1)
-        grid.addWidget(self.dns_box, 1, 0)
-        grid.addWidget(self.html_box, 1, 1)
+        # Вердикт: Провайдер, Домен (крупно), Вердикт (крупно)
+        self._rebuild_verdict_block()
+        
+        # DNS: IPv4, IPv6, Время
+        self.ipv4_label = self.dns_block.add_row("IPv4", "—")
+        self.ipv6_label = self.dns_block.add_row("IPv6", "—")
+        self.dns_time_label = self.dns_block.add_row("Время", "—")
+        
+        # HTML: HTTP, Время
+        self.http_label = self.html_block.add_row("HTTP", "—")
+        self.html_time_label = self.html_block.add_row("Время", "—")
+        
+        grid.addWidget(self.browser_block, 0, 0)
+        grid.addWidget(self.verdict_block, 0, 1)
+        grid.addWidget(self.dns_block, 1, 0)
+        grid.addWidget(self.html_block, 1, 1)
         
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 1)
         grid.setRowStretch(0, 1)
         grid.setRowStretch(1, 1)
-        
         layout.addLayout(grid, stretch=1)
         
         btn_layout = QHBoxLayout()
@@ -104,124 +90,70 @@ class DiagnosisWidget(QWidget):
         self.btn_proceed.setMinimumHeight(35)
         self.btn_proceed.clicked.connect(self._on_proceed)
         btn_layout.addWidget(self.btn_proceed, stretch=1)
-        
         layout.addLayout(btn_layout)
 
+    def _rebuild_verdict_block(self):
+        """Собирает блок вердикта: Провайдер, Домен (синий, центрирован), Вердикт (цветной, центрирован)."""
+        while self.verdict_block.grid.count():
+            item = self.verdict_block.grid.takeAt(0)
+            if item.widget(): item.widget().deleteLater()
+        
+        # Провайдер
+        self.verdict_block.grid.addWidget(QLabel("Провайдер"), 0, 0, Qt.AlignmentFlag.AlignRight)
+        self.provider_val = QLabel("—")
+        self.verdict_block.grid.addWidget(self.provider_val, 0, 1)
+        
+        # Домен (крупно, синий, центрирован, на всю ширину)
+        self.domain_val = QLabel(self.domain)
+        self.domain_val.setStyleSheet("font-size: 16pt; font-weight: bold; color: palette(link);")
+        self.domain_val.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.verdict_block.grid.addWidget(self.domain_val, 1, 0, 1, 2, Qt.AlignmentFlag.AlignCenter)
+        
+        # Вердикт (крупно, центрирован, на всю ширину)
+        self.final_verdict_val = QLabel("—")
+        self.final_verdict_val.setStyleSheet("font-size: 14pt; font-weight: bold;")
+        self.final_verdict_val.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.verdict_block.grid.addWidget(self.final_verdict_val, 2, 0, 1, 2, Qt.AlignmentFlag.AlignCenter)
+
     def _setup_progress_indicator(self):
-        """Настраивает общий индикатор на 3 подшага."""
-        if self.progress_indicator is None:
-            return
-        substeps = [
+        if self.progress_indicator is None: return
+        self.progress_indicator.set_blocks([
             ScenarioBlock("geo", name="Гео", description="Определение провайдера и VPN"),
             ScenarioBlock("dns", name="DNS", description="Резолвинг адреса"),
             ScenarioBlock("html", name="HTML", description="Проверка HTTP-ответа"),
-        ]
-        self.progress_indicator.set_blocks(substeps)
+        ])
 
-    def _create_groupbox(self, title: str) -> QGroupBox:
-        box = QGroupBox(title)
-        box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        return box
-
-    def _fill_browser_box(self):
-        layout = QVBoxLayout(self.browser_box)
-        self.browser_widget = BrowserWidget(self.domain)
-        layout.addWidget(self.browser_widget, stretch=1)
-
-    def _fill_identity_box(self):
-        layout = QVBoxLayout(self.identity_box)
-        self.domain_label = QLabel(f"🌐 {self.domain}")
-        self.domain_label.setStyleSheet("font-size: 14pt; font-weight: bold;")
-        layout.addWidget(self.domain_label)
-        self.provider_label = QLabel("📡 Провайдер:  ожидается запуск...")
-        self.provider_label.setStyleSheet("color: #888;")
-        layout.addWidget(self.provider_label)
-        self.verdict_label = QLabel("📋 Вердикт: —")
-        self.verdict_label.setStyleSheet("font-size: 12pt; margin-top: 8px; color: #888;")
-        layout.addWidget(self.verdict_label)
-        layout.addStretch()
-
-    def _fill_dns_box(self):
-        layout = QVBoxLayout(self.dns_box)
-        self.dns_status = QLabel("⏳ Ожидание запуска...")
-        self.dns_status.setStyleSheet("color: #888;")
-        layout.addWidget(self.dns_status)
-        self.dns_details = QLabel("")
-        self.dns_details.setStyleSheet("color: #666; font-size: 9pt;")
-        self.dns_details.setWordWrap(True)
-        layout.addWidget(self.dns_details)
-        layout.addStretch()
-
-    def _fill_html_box(self):
-        layout = QVBoxLayout(self.html_box)
-        self.html_status = QLabel("⏳ Ожидание запуска...")
-        self.html_status.setStyleSheet("color: #888;")
-        layout.addWidget(self.html_status)
-        self.html_details = QLabel("")
-        self.html_details.setStyleSheet("color: #666; font-size: 9pt;")
-        self.html_details.setWordWrap(True)
-        layout.addWidget(self.html_details)
-        layout.addStretch()
-
-    # =========================================================================
-    # Машина состояний
-    # =========================================================================
-    
     def _update_ui_from_state(self):
-        """Синхронизирует UI и общий индикатор."""
-        # Обновляем общий индикатор
-        if self.progress_indicator is not None:
-            state_map = {
-                STEP_IDLE: self.progress_indicator.WAITING,
-                STEP_RUNNING: self.progress_indicator.RUNNING,
-                STEP_SUCCESS: self.progress_indicator.COMPLETED,
-                STEP_FAILED: self.progress_indicator.ERROR,
-                STEP_BLOCKED: self.progress_indicator.WAITING,
-            }
+        if self.progress_indicator:
+            state_map = {STEP_IDLE: self.progress_indicator.WAITING, STEP_RUNNING: self.progress_indicator.RUNNING,
+                         STEP_SUCCESS: self.progress_indicator.COMPLETED, STEP_FAILED: self.progress_indicator.ERROR, STEP_BLOCKED: self.progress_indicator.WAITING}
             for step_id, index in self._step_indices.items():
-                status = self.steps[step_id]
-                self.progress_indicator.set_state(index, state_map.get(status, self.progress_indicator.WAITING))
+                self.progress_indicator.set_state(index, state_map.get(self.steps[step_id], self.progress_indicator.WAITING))
 
-        # Обновляем вердикт в блоке
+        self.verdict_block.set_status(self.steps["geo"])
+        self.dns_block.set_status(self.steps["dns"])
+        self.html_block.set_status(self.steps["html"])
+
+        # Вердикт (цветной, центрирован)
         if self.verdict == "Доступен":
-            self.verdict_label.setText(" Вердикт: 🟢 Доступен")
-            self.verdict_label.setStyleSheet("font-size: 12pt; margin-top: 8px; color: #2ecc71; font-weight: bold;")
+            self.final_verdict_val.setText("🟢 Доступен")
+            self.final_verdict_val.setStyleSheet("font-size: 14pt; font-weight: bold; color: #2ecc71;")
         elif self.verdict == "Недоступен":
-            self.verdict_label.setText("📋 Вердикт: 🔴 Недоступен")
-            self.verdict_label.setStyleSheet("font-size: 12pt; margin-top: 8px; color: #e74c3c; font-weight: bold;")
+            self.final_verdict_val.setText("🔴 Недоступен")
+            self.final_verdict_val.setStyleSheet("font-size: 14pt; font-weight: bold; color: #e74c3c;")
         elif self.session_state == SESSION_STOPPED:
-            self.verdict_label.setText("📋 Вердикт: ⚠️ Остановлен")
-            self.verdict_label.setStyleSheet("font-size: 12pt; margin-top: 8px; color: #e67e22; font-weight: bold;")
+            self.final_verdict_val.setText("⚠️ Остановлен")
+            self.final_verdict_val.setStyleSheet("font-size: 14pt; font-weight: bold; color: #e67e22;")
         else:
-            self.verdict_label.setText("📋 Вердикт: —")
-            self.verdict_label.setStyleSheet("font-size: 12pt; margin-top: 8px; color: #888;")
+            self.final_verdict_val.setText("—")
+            self.final_verdict_val.setStyleSheet("font-size: 14pt; font-weight: bold;")
 
-        # Кнопки по ТЗ №31 §6
-        if self.session_state == SESSION_RUNNING:
-            self.btn_finish.setEnabled(True)
-            self.btn_retry.setEnabled(False)
-            self.btn_proceed.setEnabled(False)
-        elif self.session_state == SESSION_READY:
-            self.btn_finish.setEnabled(True)
-            self.btn_retry.setEnabled(False)
-            self.btn_proceed.setEnabled(True)
-        elif self.session_state == SESSION_STEP_DONE:
-            self.btn_finish.setEnabled(True)
-            self.btn_retry.setEnabled(True)
-            self.btn_proceed.setEnabled(True)
-        elif self.session_state == SESSION_FINISHED:
-            self.btn_finish.setEnabled(True)
-            self.btn_retry.setEnabled(True)
-            self.btn_proceed.setEnabled(False)
-        elif self.session_state == SESSION_STOPPED:
-            self.btn_finish.setEnabled(True)
-            self.btn_retry.setEnabled(True)
-            self.btn_proceed.setEnabled(False)
+        # Кнопки
+        en = {SESSION_RUNNING: (True, False, False), SESSION_READY: (True, False, True),
+              SESSION_STEP_DONE: (True, True, True), SESSION_FINISHED: (True, True, False), SESSION_STOPPED: (True, True, False)}
+        f, r, p = en.get(self.session_state, (True, False, False))
+        self.btn_finish.setEnabled(f); self.btn_retry.setEnabled(r); self.btn_proceed.setEnabled(p)
 
-    # =========================================================================
-    # Обработчики кнопок
-    # =========================================================================
-    
     def _on_proceed(self):
         if self.session_state == SESSION_RUNNING: return
         if self.steps["geo"] == STEP_IDLE: self._start_geo()
@@ -233,38 +165,29 @@ class DiagnosisWidget(QWidget):
         self.steps = {"geo": STEP_IDLE, "dns": STEP_BLOCKED, "html": STEP_BLOCKED}
         self.session_state = SESSION_READY
         self.verdict = None
-        self._last_dns_ip = None
-        
-        self.provider_label.setText("📡 Провайдер: ⏳ ожидается запуск...")
-        self.provider_label.setStyleSheet("color: #888;")
-        self.dns_status.setText("⏳ Ожидание запуска...")
-        self.dns_status.setStyleSheet("color: #888;")
-        self.dns_details.setText("")
-        self.html_status.setText("⏳ Ожидание запуска...")
-        self.html_status.setStyleSheet("color: #888;")
-        self.html_details.setText("")
-        
+        self.provider_val.setText("—")
+        self.final_verdict_val.setText("—")
+        self.ipv4_label.setText("—")
+        self.ipv6_label.setText("—")
+        self.dns_time_label.setText("—")
+        self.http_label.setText("—")
+        self.html_time_label.setText("—")
+        self.dns_block.set_details("")
+        self.html_block.set_details("")
         if hasattr(self, "browser_widget"):
             self.browser_widget.web_view.setHtml("")
             self.browser_widget._load_page()
-        
         self._update_ui_from_state()
 
     def _on_finish(self):
         self.stop_all_workers()
         self.finish_clicked.emit()
 
-    # =========================================================================
-    # Запуск шагов
-    # =========================================================================
-    
     def _start_geo(self):
         self.steps["geo"] = STEP_RUNNING
         self.session_state = SESSION_RUNNING
-        self.provider_label.setText("📡 Провайдер:  определяется...")
-        self.provider_label.setStyleSheet("color: #3498db;")
+        self.provider_val.setText("определение...")
         self._update_ui_from_state()
-        
         self.geo_worker = GeoWorker()
         self.geo_worker.vpn_detected.connect(self._on_vpn_detected)
         self.geo_worker.geo_success.connect(self._on_geo_success)
@@ -275,11 +198,8 @@ class DiagnosisWidget(QWidget):
     def _start_dns(self):
         self.steps["dns"] = STEP_RUNNING
         self.session_state = SESSION_RUNNING
-        self.dns_status.setText("🔵 Резолвинг...")
-        self.dns_status.setStyleSheet("color: #3498db;")
-        self.dns_details.setText("")
+        self.ipv4_label.setText("резолвинг...")
         self._update_ui_from_state()
-        
         self.dns_worker = DnsWorker(self.domain)
         self.dns_worker.dns_success.connect(self._on_dns_success)
         self.dns_worker.dns_failed.connect(self._on_dns_failed)
@@ -288,73 +208,54 @@ class DiagnosisWidget(QWidget):
     def _start_html(self):
         self.steps["html"] = STEP_RUNNING
         self.session_state = SESSION_RUNNING
-        self.html_status.setText("🔵 Проверка HTTP...")
-        self.html_status.setStyleSheet("color: #3498db;")
-        self.html_details.setText("")
+        self.http_label.setText("проверка...")
         self._update_ui_from_state()
-        
         self.html_worker = HtmlWorker(self._last_dns_ip, self.domain, self._last_dns_is_ipv6)
         self.html_worker.html_success.connect(self._on_html_success)
         self.html_worker.html_failed.connect(self._on_html_failed)
         self.html_worker.start()
 
-    # =========================================================================
-    # Обработчики воркеров
-    # =========================================================================
-    
     def _on_vpn_detected(self, iface: str):
         self.steps["geo"] = STEP_FAILED
         self.session_state = SESSION_STOPPED
-        self.provider_label.setText(f"📡 Провайдер: ⚠️ VPN обнаружен ({iface})")
-        self.provider_label.setStyleSheet("color: #e67e22;")
+        self.provider_val.setText(f"VPN ({iface})")
+        self.verdict_block.set_details(f"VPN обнаружен: {iface}\nТест остановлен.")
         self._update_ui_from_state()
 
     def _on_geo_success(self, ip: str, provider: str):
         self.steps["geo"] = STEP_SUCCESS
         self.steps["dns"] = STEP_IDLE
         self.session_state = SESSION_STEP_DONE
-        self.provider_label.setText(f"📡 Провайдер: {provider}")
-        self.provider_label.setStyleSheet("color: #2ecc71;")
+        self.provider_val.setText(provider)
+        self.verdict_block.set_details(f"IP: {ip}\nПровайдер: {provider}")
         self._update_ui_from_state()
 
     def _on_geo_failed(self):
         self.steps["geo"] = STEP_FAILED
         self.session_state = SESSION_STOPPED
-        self.provider_label.setText("📡 Провайдер: ❌ Не удалось определить")
-        self.provider_label.setStyleSheet("color: #e74c3c;")
+        self.provider_val.setText("ошибка")
+        self.verdict_block.set_details("Не удалось получить гео-информацию.")
         self._update_ui_from_state()
 
     def _on_geo_error(self, error_msg: str):
         self.steps["geo"] = STEP_FAILED
         self.session_state = SESSION_STOPPED
-        self.provider_label.setText(f" Провайдер: ⚠️ Ошибка")
-        self.provider_label.setStyleSheet("color: #e67e22;")
+        self.provider_val.setText("ошибка")
+        self.verdict_block.set_details(f"Ошибка: {error_msg}")
         self._update_ui_from_state()
 
     def _on_dns_success(self, result: dict):
         self.steps["dns"] = STEP_SUCCESS
         self.steps["html"] = STEP_IDLE
         self.session_state = SESSION_STEP_DONE
+        ipv4, ipv6 = result.get("ipv4", []), result.get("ipv6", [])
+        self._last_dns_ip = ipv4[0] if ipv4 else (ipv6[0] if ipv6 else None)
+        self._last_dns_is_ipv6 = not bool(ipv4)
         
-        ipv4 = result.get("ipv4", [])
-        ipv6 = result.get("ipv6", [])
-        total = len(ipv4) + len(ipv6)
-        
-        if ipv4:
-            self._last_dns_ip = ipv4[0]
-            self._last_dns_is_ipv6 = False
-        elif ipv6:
-            self._last_dns_ip = ipv6[0]
-            self._last_dns_is_ipv6 = True
-        else:
-            self._last_dns_ip = None
-            
-        first_ip = self._last_dns_ip or "—"
-        extra = f" и ещё {total - 1}" if total > 1 else ""
-        
-        self.dns_status.setText(f"✅ Найдено {total} адресов")
-        self.dns_status.setStyleSheet("color: #2ecc71;")
-        self.dns_details.setText(f"IPv4: {len(ipv4)}, IPv6: {len(ipv6)} | Первый: {first_ip}{extra} | Время: {result['time_ms']} мс")
+        self.ipv4_label.setText(f"{len(ipv4)} адресов" if ipv4 else "—")
+        self.ipv6_label.setText(f"{len(ipv6)} адресов" if ipv6 else "—")
+        self.dns_time_label.setText(f"{result['time_ms']} мс")
+        self.dns_block.set_details(f"IPv4: {', '.join(ipv4) or '—'}\nIPv6: {', '.join(ipv6) or '—'}\nВремя: {result['time_ms']} мс")
         self._update_ui_from_state()
 
     def _on_dns_failed(self, error_msg: str):
@@ -362,45 +263,31 @@ class DiagnosisWidget(QWidget):
         self.steps["html"] = STEP_BLOCKED
         self.session_state = SESSION_FINISHED
         self.verdict = "Недоступен"
-        
-        self.dns_status.setText("❌ Не найдено")
-        self.dns_status.setStyleSheet("color: #e74c3c;")
-        self.dns_details.setText(error_msg)
+        self.ipv4_label.setText("не найдено")
+        self.dns_block.set_details(f"Ошибка DNS: {error_msg}")
         self._update_ui_from_state()
 
     def _on_html_success(self, result: dict):
         self.steps["html"] = STEP_SUCCESS
         self.session_state = SESSION_FINISHED
         self.verdict = "Доступен"
-        
-        self.html_status.setText(f"✅ HTTP {result['status_code']}")
-        self.html_status.setStyleSheet("color: #2ecc71;")
-        self.html_details.setText(f"Время: {result['time_ms']} мс")
+        self.http_label.setText(str(result['status_code']))
+        self.html_time_label.setText(f"{result['time_ms']} мс")
+        self.html_block.set_details(f"Статус: HTTP {result['status_code']}\nВремя: {result['time_ms']} мс\nURL: {result.get('final_url', '—')}")
         self._update_ui_from_state()
 
     def _on_html_failed(self, error_msg: str):
         self.steps["html"] = STEP_FAILED
         self.session_state = SESSION_FINISHED
         self.verdict = "Недоступен"
-        
-        self.html_status.setText("❌ Ошибка")
-        self.html_status.setStyleSheet("color: #e74c3c;")
-        self.html_details.setText(error_msg)
+        self.http_label.setText("ошибка")
+        self.html_block.set_details(f"Ошибка HTTP: {error_msg}")
         self._update_ui_from_state()
 
-    # =========================================================================
-    # Утилиты
-    # =========================================================================
-    
     def stop_all_workers(self):
-        if hasattr(self, 'geo_worker') and self.geo_worker.isRunning():
-            self.geo_worker.terminate()
-            self.geo_worker.wait()
-        if hasattr(self, 'dns_worker') and self.dns_worker.isRunning():
-            self.dns_worker.terminate()
-            self.dns_worker.wait()
-        if hasattr(self, 'html_worker') and self.html_worker.isRunning():
-            self.html_worker.terminate()
-            self.html_worker.wait()
-        if hasattr(self, 'browser_widget'):
+        for w in ['geo_worker', 'dns_worker', 'html_worker']:
+            if hasattr(self, w) and getattr(self, w).isRunning():
+                getattr(self, w).terminate()
+                getattr(self, w).wait()
+        if hasattr(self, "browser_widget"):
             self.browser_widget.web_view.setHtml("")
