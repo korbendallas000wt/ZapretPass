@@ -31,6 +31,7 @@ class ScenarioBlock:
         if not self.name:
             names = {
                 "diagnosis": "🔍 Диагностика",
+                "diagnosis_v2": "Диагностика",
                 "blockcheck": "🔬 Поиск стратегии",
                 "sniffer": "🗺️ Карта сайта",
                 "test": "🧪 Тестирование",

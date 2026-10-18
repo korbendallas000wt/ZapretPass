@@ -56,13 +56,13 @@ class DiagnosisWidget(QWidget):
         self._rebuild_verdict_block()
         
         # DNS: IPv4, IPv6, Время
-        self.ipv4_label = self.dns_block.add_row("IPv4", "—")
-        self.ipv6_label = self.dns_block.add_row("IPv6", "—")
-        self.dns_time_label = self.dns_block.add_row("Время", "—")
+        self.ipv4_label = self.dns_block.add_row("IPv4:", "—")
+        self.ipv6_label = self.dns_block.add_row("IPv6:", "—")
+        self.dns_time_label = self.dns_block.add_row("Время:", "—")
         
         # HTML: HTTP, Время
-        self.http_label = self.html_block.add_row("HTTP", "—")
-        self.html_time_label = self.html_block.add_row("Время", "—")
+        self.http_label = self.html_block.add_row("HTTP:", "—")
+        self.html_time_label = self.html_block.add_row("Время:", "—")
         
         grid.addWidget(self.browser_block, 0, 0)
         grid.addWidget(self.verdict_block, 0, 1)
@@ -99,7 +99,7 @@ class DiagnosisWidget(QWidget):
             if item.widget(): item.widget().deleteLater()
         
         # Провайдер
-        self.verdict_block.grid.addWidget(QLabel("Провайдер"), 0, 0, Qt.AlignmentFlag.AlignRight)
+        self.verdict_block.grid.addWidget(QLabel("Провайдер:"), 0, 0, Qt.AlignmentFlag.AlignRight)
         self.provider_val = QLabel("—")
         self.verdict_block.grid.addWidget(self.provider_val, 0, 1)
         
