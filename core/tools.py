@@ -43,7 +43,7 @@ class ToolRegistry:
 # Глобальный реестр
 registry = ToolRegistry()
 
-# Регистрация инструментов в строгом порядке
+# Регистрация инструментов в строгом порядке (ТЗ №36)
 registry.register(Tool(
     id="tool_change_domain",
     name="Смена целевого домена",
@@ -61,18 +61,18 @@ registry.register(Tool(
 ))
 
 registry.register(Tool(
-    id="tool_blockcheck",
-    name="Блокчек",
-    icon="🛠️",
-    description="В разработке. Поиск стратегий обхода. Требует переделки под новый визуальный шаблон.",
-    enabled=False
+    id="tool_aux_domains",
+    name="Целевые домены",
+    icon="🧩",
+    description="Собрать дополнительные целевые домены и протокольные подсказки для будущего поиска стратегий.",
+    enabled=True
 ))
 
 registry.register(Tool(
-    id="tool_aux_domains",
-    name="Поиск вспомогательных доменов",
-    icon="🧩",
-    description="В разработке. Найти связанные домены и ресурсы сайта.",
+    id="tool_blockcheck",
+    name="Блокчек",
+    icon="🛠",
+    description="В разработке. Поиск стратегий обхода. Требует переделки под новый визуальный шаблон.",
     enabled=False
 ))
 

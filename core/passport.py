@@ -548,6 +548,74 @@ class PassportManager:
         }
     
     # =========================================================================
+    # РАБОТА С target_hosts.json (ТЗ №36 — Целевые домены)
+    # =========================================================================
+
+    def target_hosts_exists(self, domain: str) -> bool:
+        """Проверяет, существует ли файл target_hosts.json."""
+        domain = domain.lower().strip()
+        return (self._sites_dir / domain / "target_hosts.json").exists()
+
+    def load_target_hosts(self, domain: str) -> dict:
+        """Загружает target_hosts.json. Возвращает структуру по умолчанию при отсутствии."""
+        domain = domain.lower().strip()
+        path = self._sites_dir / domain / "target_hosts.json"
+        default = {
+            "schema_version": 1,
+            "updated_at": "",
+            "protocol_hints": {
+                "http": False,
+                "https_tls12": False,
+                "https_tls13": False,
+                "http3_quic": False,
+            },
+            "protocol_sources": {},
+            "hosts": [],
+        }
+        if not path.exists():
+            return default
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            # Мёрж с дефолтом на случай, если в файле не хватает ключей
+            for k, v in default.items():
+                if k not in data:
+                    data[k] = v
+            if isinstance(data.get("protocol_hints"), dict):
+                for hk, hv in default["protocol_hints"].items():
+                    data["protocol_hints"].setdefault(hk, hv)
+            return data
+        except (json.JSONDecodeError, Exception) as e:
+            print(f"[PassportManager] Ошибка чтения target_hosts.json для {domain}: {e}")
+            # Делаем бэкап сломанного файла
+            try:
+                bad = path.with_suffix(".json.bad")
+                if not bad.exists():
+                    shutil.copy2(path, bad)
+            except Exception:
+                pass
+            return default
+
+    def save_target_hosts(self, domain: str, data: dict) -> bool:
+        """Атомарно сохраняет target_hosts.json. Проверяет наличие паспорта."""
+        domain = domain.lower().strip()
+        passport_dir = self._sites_dir / domain
+        # Проверяем наличие именно паспорта, а не просто папки
+        if not (passport_dir / "passport.json").exists():
+            return False
+        data.setdefault("schema_version", 1)
+        data["updated_at"] = datetime.now().isoformat()
+        path = passport_dir / "target_hosts.json"
+        try:
+            fd, tmp_path = tempfile.mkstemp(dir=passport_dir, suffix=".tmp")
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, path)
+            return True
+        except Exception as e:
+            print(f"[PassportManager] Ошибка записи target_hosts.json: {e}")
+            return False
+
+    # =========================================================================
     # ВНУТРЕННИЕ МЕТОДЫ
     # =========================================================================
     

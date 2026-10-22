@@ -19,6 +19,7 @@ from typing import Optional
 from core import service_manager
 from core import passport
 from .diagnosis_widget import DiagnosisWidget
+from .target_domains_widget import TargetDomainsWidget
 
 
 class DiagnosisWorker(QThread):
@@ -447,6 +448,8 @@ class SitePassportWidget(QWidget):
         self._block_pages = []  # Список QWidget страниц для каждого блока
         self.scenario = None
         self.current_block_index = 0
+        self._diag_v2_widget = None
+        self._target_domains_widget = None
         self._clear_progress_layout()
         
         # Ссылки на активные воркеры
@@ -632,6 +635,11 @@ class SitePassportWidget(QWidget):
         if selected_id == "tool_diagnosis":
             selected_id = "diagnosis_v2"
         
+        # 2b. Инструмент: Целевые домены (ТЗ №36)
+        if selected_id == "tool_aux_domains":
+            self._run_target_domains_tool()
+            return
+        
         # 3. Обычный сценарий
         from core import scenarios
         self.scenario = scenarios.registry.get(selected_id)
@@ -667,11 +675,20 @@ class SitePassportWidget(QWidget):
                 # Виджет уже удалён из Qt, игнорируем
                 pass
         
+        # Останавливаем воркеры TargetDomainsWidget (ТЗ №36)
+        if hasattr(self, '_target_domains_widget') and self._target_domains_widget:
+            try:
+                if self._target_domains_widget.isVisible() or self._target_domains_widget.parent():
+                    self._target_domains_widget.stop_all_workers()
+            except RuntimeError:
+                pass
+        
         # Сбрасываем UI-состояния
         self._clear_results()
         self.scenario = None
         self.current_block_index = 0
         self._diag_v2_widget = None
+        self._target_domains_widget = None
         
         # Возвращаем поле ввода в исходное состояние
         self.url_input.setText(self.domain)
@@ -830,6 +847,49 @@ class SitePassportWidget(QWidget):
         if hasattr(self, '_diag_v2_widget') and self._diag_v2_widget is not None:
             self._diag_v2_widget.stop_all_workers()
         self.status_message_requested.emit("❌ Диагностика завершена", True)
+        self._show_scenario_selection()
+
+    def _run_target_domains_tool(self):
+        """Инструмент: Целевые домены (ТЗ №36)."""
+        # Блокируем ввод
+        self.btn_proceed.setEnabled(False)
+        self.url_input.setEnabled(False)
+
+        # Удаляем UI выбора
+        if self._scenario_box:
+            self.results_layout.removeWidget(self._scenario_box)
+            self._scenario_box.deleteLater()
+            self._scenario_box = None
+
+        # Создаём страницу для виджета
+        page = QWidget()
+        page_layout = QVBoxLayout(page)
+        page_layout.setContentsMargins(0, 0, 0, 0)
+        page_layout.setSpacing(8)
+
+        box = QGroupBox("🧩 Целевые домены")
+        box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        layout = QVBoxLayout(box)
+
+        # Передаём общий индикатор сценария для управления подшагами
+        self._target_domains_widget = TargetDomainsWidget(self.domain, self.progress_indicator, self)
+        layout.addWidget(self._target_domains_widget, stretch=1)
+
+        self._target_domains_widget.finish_clicked.connect(self._on_target_domains_finish)
+
+        page_layout.addWidget(box, 1)  # Добавляем box в страницу
+        self.scene.addWidget(page)
+        self._block_pages.append(page)
+        self.scene.setCurrentWidget(page)
+        self._set_active_block(box)
+
+        self.status_message_requested.emit(f"▶ Запуск: Целевые домены для {self.domain}", True)
+
+    def _on_target_domains_finish(self):
+        """Завершение инструмента Целевые домены: возвращаемся к выбору сценария."""
+        if hasattr(self, '_target_domains_widget') and self._target_domains_widget is not None:
+            self._target_domains_widget.stop_all_workers()
+        self.status_message_requested.emit("❌ Целевые домены завершены", True)
         self._show_scenario_selection()
 
     def _run_diagnosis_block(self, box: QGroupBox, layout: QVBoxLayout, flags: dict):
