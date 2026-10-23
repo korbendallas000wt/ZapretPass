@@ -9,6 +9,8 @@ from .dns_worker import DnsWorker
 from .html_worker import HtmlWorker
 from .diagnosis_block import DiagnosisBlock, BrowserBlock
 from core.scenarios import ScenarioBlock
+from core.passport import manager as passport_manager
+from core import service
 
 STEP_IDLE, STEP_RUNNING, STEP_SUCCESS, STEP_FAILED, STEP_BLOCKED = "idle", "running", "success", "failed", "blocked"
 SESSION_READY, SESSION_RUNNING, SESSION_STEP_DONE, SESSION_FINISHED, SESSION_STOPPED = "ready", "running", "step_done", "finished", "stopped"
@@ -90,6 +92,12 @@ class DiagnosisWidget(QWidget):
         self.btn_proceed.setMinimumHeight(35)
         self.btn_proceed.clicked.connect(self._on_proceed)
         btn_layout.addWidget(self.btn_proceed, stretch=1)
+        
+        self.btn_passport = QPushButton("📄 Паспорт")
+        self.btn_passport.setMinimumHeight(35)
+        self.btn_passport.clicked.connect(self._on_passport_create)
+        self.btn_passport.setEnabled(False)
+        btn_layout.addWidget(self.btn_passport, stretch=1)
         layout.addLayout(btn_layout)
 
     def _rebuild_verdict_block(self):
@@ -153,6 +161,7 @@ class DiagnosisWidget(QWidget):
               SESSION_STEP_DONE: (True, True, True), SESSION_FINISHED: (True, True, False), SESSION_STOPPED: (True, True, False)}
         f, r, p = en.get(self.session_state, (True, False, False))
         self.btn_finish.setEnabled(f); self.btn_retry.setEnabled(r); self.btn_proceed.setEnabled(p)
+        self._update_passport_button_state()
 
     def _on_proceed(self):
         if self.session_state == SESSION_RUNNING: return
@@ -178,6 +187,81 @@ class DiagnosisWidget(QWidget):
             self.browser_widget.web_view.setHtml("")
             self.browser_widget._load_page()
         self._update_ui_from_state()
+
+    def _update_passport_button_state(self):
+        """Обновляет состояние кнопки Паспорт."""
+        # Условие 1: диагностика завершена
+        if self.verdict is None:
+            self.btn_passport.setEnabled(False)
+            self.btn_passport.setToolTip("Дождись завершения диагностики.")
+            return
+        
+        # Условие 2: вердикт == Недоступен
+        if self.verdict != "Недоступен":
+            self.btn_passport.setEnabled(False)
+            if self.verdict == "Доступен":
+                self.btn_passport.setToolTip("Паспорт не требуется: сайт доступен без обхода.")
+            elif self.verdict == "Остановлен":
+                self.btn_passport.setToolTip("Диагностика остановлена: нет достоверного вердикта.")
+            else:
+                self.btn_passport.setToolTip("Вердикт не определён.")
+            return
+        
+        # Условие 3: сервис выключен
+        try:
+            status = service.get_status()
+            if status.active:
+                self.btn_passport.setEnabled(False)
+                self.btn_passport.setToolTip("Сервис запрета включён. Останови его и повтори диагностику, чтобы создать паспорт.")
+                return
+        except Exception as e:
+            print(f"[DiagnosisWidget] Ошибка проверки статуса сервиса: {e}")
+            self.btn_passport.setEnabled(False)
+            self.btn_passport.setToolTip("Не удалось проверить статус сервиса.")
+            return
+        
+        # Условие 4: паспорт не существует
+        if passport_manager.exists(self.domain):
+            self.btn_passport.setEnabled(False)
+            self.btn_passport.setToolTip("Паспорт для этого домена уже создан.")
+            return
+        
+        # Все условия выполнены
+        self.btn_passport.setEnabled(True)
+        self.btn_passport.setToolTip("Создать паспорт сайта.")
+
+    def _on_passport_create(self):
+        """Создаёт паспорт сайта."""
+        # Блокируем кнопку от двойного клика
+        self.btn_passport.setEnabled(False)
+        self.btn_passport.setText("Создание...")
+        
+        try:
+            # Нормализуем домен
+            domain = self.domain.lower().strip()
+            
+            # Проверяем ещё раз (на случай гонки)
+            if passport_manager.exists(domain):
+                print(f"[DiagnosisWidget] Паспорт уже существует: {domain}")
+            else:
+                # Создаём паспорт через существующий API
+                passport_manager.create(domain)
+                print(f"[DiagnosisWidget] Паспорт создан: {domain}")
+            
+            # Показываем сообщение
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.information(self, "Паспорт создан", f"Паспорт создан: {domain}")
+            
+            # Завершаем диагностику
+            self.finish_clicked.emit()
+            
+        except Exception as e:
+            print(f"[DiagnosisWidget] Ошибка создания паспорта: {e}")
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "Ошибка", f"Не удалось создать паспорт:\n{e}")
+            # Возвращаем кнопку в исходное состояние
+            self.btn_passport.setText("📄 Паспорт")
+            self._update_passport_button_state()
 
     def _on_finish(self):
         self.stop_all_workers()
