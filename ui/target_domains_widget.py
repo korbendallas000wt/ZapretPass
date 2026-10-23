@@ -6,7 +6,8 @@
 """
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
-    QPushButton, QSizePolicy, QLabel, QDialog, QListWidget, QMessageBox
+    QPushButton, QSizePolicy, QLabel, QDialog, QListWidget, QMessageBox,
+    QListWidgetItem, QAbstractItemView, QCheckBox
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 
@@ -105,6 +106,21 @@ class TargetDomainsWidget(QWidget):
         btn_layout.addWidget(self.btn_list, stretch=1)
 
         layout.addLayout(btn_layout)
+
+    def recreate_browser(self):
+        """Полностью пересоздаёт браузер (как при Завершить -> новый выбор)."""
+        if hasattr(self, "browser_widget") and self.browser_widget:
+            # Сначала останавливаем загрузку и отключаем страницу
+            self.browser_widget.web_view.stop()
+            if self.browser_widget.web_view.page():
+                self.browser_widget.web_view.setPage(None)
+            # Удаляем старый виджет из layout
+            self.browser_block.layout().removeWidget(self.browser_widget)
+            self.browser_widget.setParent(None)
+            self.browser_widget.deleteLater()
+        # Создаём новый браузер
+        self.browser_widget = BrowserWidget(self.domain)
+        self.browser_block.layout().addWidget(self.browser_widget, stretch=1)
 
     def _rebuild_domain_block(self):
         """Собирает блок домена."""
@@ -238,7 +254,7 @@ class TargetDomainsWidget(QWidget):
         self.domain_block.set_details("")
 
         if hasattr(self, "browser_widget"):
-            self.browser_widget.hard_reload()
+            self.recreate_browser()
 
         self._update_ui_from_state()
 
@@ -526,14 +542,14 @@ class TargetDomainsWidget(QWidget):
 
 
 class TargetHostsDialog(QDialog):
-    """Диалог просмотра и удаления целевых доменов."""
+    """Просмотр и массовое удаление целевых доменов (Вариант А: мгновенное применение)."""
 
     def __init__(self, domain: str, new_domains: set, parent=None):
         super().__init__(parent)
         self.domain = domain
-        self.new_domains = new_domains
+        self.new_domains = set(new_domains or set())
         self.setWindowTitle("Целевые домены: " + domain)
-        self.resize(600, 400)
+        self.resize(640, 440)
         self._setup_ui()
         self._load_data()
 
@@ -541,59 +557,129 @@ class TargetHostsDialog(QDialog):
         layout = QVBoxLayout(self)
 
         self.list_widget = QListWidget()
-        layout.addWidget(self.list_widget)
+        # Выделяем не строку, а именно чекбоксы
+        self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.list_widget.setAlternatingRowColors(True)
+        layout.addWidget(self.list_widget, stretch=1)
 
+        # Единый ряд кнопок во всю ширину
         btn_layout = QHBoxLayout()
-        self.btn_delete = QPushButton("Удалить выбранное")
+
+        self.btn_check_all = QPushButton("Отметить все")
+        self.btn_check_all.setToolTip("Отметить все домены в списке.")
+        self.btn_check_all.clicked.connect(lambda: self._set_all_checked(True))
+        btn_layout.addWidget(self.btn_check_all, stretch=1)
+
+        self.btn_check_none = QPushButton("Снять все")
+        self.btn_check_none.setToolTip("Снять все отметки.")
+        self.btn_check_none.clicked.connect(lambda: self._set_all_checked(False))
+        btn_layout.addWidget(self.btn_check_none, stretch=1)
+
+        self.btn_delete = QPushButton("Удалить отмеченные (0)")
+        self.btn_delete.setToolTip("Удалить все отмеченные домены. Изменение сразу запишется на диск.")
+        self.btn_delete.setEnabled(False)
         self.btn_delete.clicked.connect(self._on_delete)
-        btn_layout.addWidget(self.btn_delete)
+        btn_layout.addWidget(self.btn_delete, stretch=1)
 
-        self.btn_refresh = QPushButton("Обновить")
-        self.btn_refresh.clicked.connect(self._load_data)
-        btn_layout.addWidget(self.btn_refresh)
-
-        self.btn_close = QPushButton("Закрыть")
+        self.btn_close = QPushButton("✅ Готово")
+        self.btn_close.setToolTip("Закрыть список. Все изменения уже сохранены на диск.")
+        self.btn_close.setDefault(True)
         self.btn_close.clicked.connect(self.accept)
-        btn_layout.addWidget(self.btn_close)
+        btn_layout.addWidget(self.btn_close, stretch=1)
 
         layout.addLayout(btn_layout)
 
+        self.list_widget.itemChanged.connect(self._update_delete_button)
+
     def _load_data(self):
-        from PyQt6.QtGui import QPalette, QStandardItem
+        """Читаем реальный список с диска, а не из памяти сборки."""
+        from PyQt6.QtGui import QPalette
+
+        self.list_widget.blockSignals(True)
         self.list_widget.clear()
-        data = passport_manager.load_target_hosts(self.domain)
+
+        data = passport_manager.load_target_hosts(self.domain) or {}
         hosts = data.get("hosts", [])
+
         for host in hosts:
             domain = host.get("domain", "")
             source = host.get("source", "")
             probe = host.get("probe", "")
+
             display = domain + " — " + source
             if probe:
                 display += " (" + probe + ")"
-            
-            from PyQt6.QtWidgets import QListWidgetItem
+
             item = QListWidgetItem(display)
-            
-            # Подсветка новых доменов стандартным цветом Link, старых — Text
+            item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Unchecked)
+            # Домен храним в данных item, чтобы не парсить отображаемую строку
+            item.setData(Qt.ItemDataRole.UserRole, domain)
+
             if domain in self.new_domains:
                 item.setForeground(self.palette().color(QPalette.ColorRole.Link))
             else:
                 item.setForeground(self.palette().color(QPalette.ColorRole.Text))
-                
+
             self.list_widget.addItem(item)
 
+        self.list_widget.blockSignals(False)
+        self._update_delete_button()
+
+    def _checked_items(self):
+        return [
+            self.list_widget.item(i)
+            for i in range(self.list_widget.count())
+            if self.list_widget.item(i).checkState() == Qt.CheckState.Checked
+        ]
+
+    def _set_all_checked(self, checked: bool):
+        self.list_widget.blockSignals(True)
+        state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+        for i in range(self.list_widget.count()):
+            self.list_widget.item(i).setCheckState(state)
+        self.list_widget.blockSignals(False)
+        self._update_delete_button()
+
+    def _update_delete_button(self):
+        count = len(self._checked_items())
+        self.btn_delete.setText(f"Удалить отмеченные ({count})")
+        self.btn_delete.setEnabled(count > 0)
+
     def _on_delete(self):
-        selected = self.list_widget.currentItem()
-        if not selected:
+        """Массовое удаление отмеченных доменов с подтверждением."""
+        checked = self._checked_items()
+        if not checked:
             return
 
-        text = selected.text()
-        domain_to_delete = text.split(" — ")[0].strip()
+        domains = {item.data(Qt.ItemDataRole.UserRole) for item in checked}
 
-        data = passport_manager.load_target_hosts(self.domain)
-        hosts = data.get("hosts", [])
-        new_hosts = [h for h in hosts if h.get("domain") != domain_to_delete]
-        data["hosts"] = new_hosts
-        passport_manager.save_target_hosts(self.domain, data)
+        reply = QMessageBox.question(
+            self,
+            "Удалить домены?",
+            f"Удалить {len(domains)} доменов из целевого списка?\n"
+            "Изменение сразу запишется на диск.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
 
-        self._load_data()
+        try:
+            data = passport_manager.load_target_hosts(self.domain) or {}
+            hosts = data.get("hosts", [])
+            data["hosts"] = [h for h in hosts if h.get("domain") not in domains]
+
+            ok = passport_manager.save_target_hosts(self.domain, data)
+            if ok is False:
+                QMessageBox.critical(
+                    self, "Ошибка", "Не удалось записать список доменов на диск."
+                )
+                return
+
+            self.new_domains -= domains
+            self._load_data()
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Ошибка", f"Не удалось удалить домены:\n{e}"
+            )

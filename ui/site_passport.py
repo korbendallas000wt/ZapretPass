@@ -885,6 +885,9 @@ class SitePassportWidget(QWidget):
         self._target_domains_widget = TargetDomainsWidget(self.domain, self.progress_indicator, self)
         layout.addWidget(self._target_domains_widget, stretch=1)
 
+        # Заголовок индикатора должен отражать активный инструмент (ТЗ №36)
+        self.progress_box.setTitle("🧩 Целевые домены")
+
         self._target_domains_widget.finish_clicked.connect(self._on_target_domains_finish)
 
         page_layout.addWidget(box, 1)  # Добавляем box в страницу
@@ -1830,10 +1833,17 @@ class SitePassportWidget(QWidget):
     
     def _on_service_state_changed(self):
         """Вызывается при старте/стопе сервиса для обновления браузера."""
-        if hasattr(self, '_diag_v2_widget') and self._diag_v2_widget and hasattr(self._diag_v2_widget, 'browser_widget'):
-            self._diag_v2_widget.browser_widget.hard_reload()
-        if hasattr(self, '_target_domains_widget') and self._target_domains_widget and hasattr(self._target_domains_widget, 'browser_widget'):
-            self._target_domains_widget.browser_widget.hard_reload()
+        try:
+            from PyQt6 import sip
+            if hasattr(self, '_diag_v2_widget') and self._diag_v2_widget and hasattr(self._diag_v2_widget, 'recreate_browser'):
+                if not sip.isdeleted(self._diag_v2_widget):
+                    self._diag_v2_widget.recreate_browser()
+            if hasattr(self, '_target_domains_widget') and self._target_domains_widget and hasattr(self._target_domains_widget, 'recreate_browser'):
+                if not sip.isdeleted(self._target_domains_widget):
+                    self._target_domains_widget.recreate_browser()
+        except Exception as e:
+            # Игнорируем ошибки при обновлении браузера - не критично
+            pass
 
     def _clear_results(self):
         """Очищает область результатов."""
