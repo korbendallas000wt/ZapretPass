@@ -184,8 +184,7 @@ class DiagnosisWidget(QWidget):
         self.dns_block.set_details("")
         self.html_block.set_details("")
         if hasattr(self, "browser_widget"):
-            self.browser_widget.web_view.setHtml("")
-            self.browser_widget._load_page()
+            self.browser_widget.hard_reload()
         self._update_ui_from_state()
 
     def _update_passport_button_state(self):

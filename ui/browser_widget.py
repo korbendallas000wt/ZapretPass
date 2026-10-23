@@ -8,6 +8,7 @@ ZapretPass UI - Виджет мини-браузера для диагности
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QSizePolicy
 from PyQt6.QtCore import Qt, pyqtSignal, QUrl
 from PyQt6.QtWebEngineWidgets import QWebEngineView
+from PyQt6.QtWebEngineCore import QWebEngineProfile, QWebEngineSettings, QWebEnginePage
 
 
 class BrowserWidget(QWidget):
@@ -26,12 +27,20 @@ class BrowserWidget(QWidget):
         self._load_page()
     
     def _setup_ui(self):
-        """Создаёт layout только с браузером."""
+        """Создаёт layout только с браузером с эфемерным профилем (без кэша и cookies)."""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         
+        # Создаём изолированный эфемерный профиль для каждого экземпляра браузера
+        # Это гарантирует отсутствие кэша, cookies и localStorage между запусками
+        self.profile = QWebEngineProfile("ZapretPass_Ephemeral", self)
+        self.profile.setPersistentCookiesPolicy(QWebEngineProfile.PersistentCookiesPolicy.NoPersistentCookies)
+        self.profile.setHttpCacheType(QWebEngineProfile.HttpCacheType.MemoryHttpCache)
+        self.profile.settings().setAttribute(QWebEngineSettings.WebAttribute.LocalStorageEnabled, False)
+        
         self.web_view = QWebEngineView()
+        self.web_view.setPage(QWebEnginePage(self.profile, self.web_view))
         self.web_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         layout.addWidget(self.web_view, stretch=1)
         
@@ -47,6 +56,12 @@ class BrowserWidget(QWidget):
     def reload(self):
         """Перезагружает страницу."""
         self.web_view.reload()
+        
+    def hard_reload(self):
+        """Перезагрузка страницы (без очистки системного сетевого кэша)."""
+        self.web_view.stop()
+        self.web_view.setHtml("")
+        self._load_page()
     
     def _on_load_started(self):
         self.load_started.emit()

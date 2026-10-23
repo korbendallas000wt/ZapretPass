@@ -238,8 +238,7 @@ class TargetDomainsWidget(QWidget):
         self.domain_block.set_details("")
 
         if hasattr(self, "browser_widget"):
-            self.browser_widget.web_view.setHtml("")
-            self.browser_widget._load_page()
+            self.browser_widget.hard_reload()
 
         self._update_ui_from_state()
 
@@ -256,7 +255,7 @@ class TargetDomainsWidget(QWidget):
         self.steps["write"] = STEP_RUNNING
         self._update_ui_from_state()
 
-        # Сохраняем данные
+        # Сохраняем данные (union-save)
         ok = self._save_target_hosts()
 
         if ok:
@@ -265,9 +264,17 @@ class TargetDomainsWidget(QWidget):
             self.steps["write"] = STEP_FAILED
         self._update_ui_from_state()
 
-        # Открываем диалог
-        dialog = TargetHostsDialog(self.domain, self)
+        # Собираем множество новых доменов из текущей сборки для подсветки
+        new_domains = {h.get("domain") for h in self.assembly_result.get("hosts", []) if h.get("domain")}
+
+        # Открываем диалог, передавая новые домены
+        dialog = TargetHostsDialog(self.domain, new_domains, self)
         dialog.exec()
+        
+        # После закрытия диалога перечитываем актуальное состояние с диска,
+        # чтобы при повторном открытии не произошло повторного добавления удалённых доменов
+        self.assembly_result = passport_manager.load_target_hosts(self.domain)
+        self._update_ui_from_state()
 
     # --- Запуск воркеров ---
 
@@ -521,9 +528,10 @@ class TargetDomainsWidget(QWidget):
 class TargetHostsDialog(QDialog):
     """Диалог просмотра и удаления целевых доменов."""
 
-    def __init__(self, domain: str, parent=None):
+    def __init__(self, domain: str, new_domains: set, parent=None):
         super().__init__(parent)
         self.domain = domain
+        self.new_domains = new_domains
         self.setWindowTitle("Целевые домены: " + domain)
         self.resize(600, 400)
         self._setup_ui()
@@ -551,6 +559,7 @@ class TargetHostsDialog(QDialog):
         layout.addLayout(btn_layout)
 
     def _load_data(self):
+        from PyQt6.QtGui import QPalette, QStandardItem
         self.list_widget.clear()
         data = passport_manager.load_target_hosts(self.domain)
         hosts = data.get("hosts", [])
@@ -561,7 +570,17 @@ class TargetHostsDialog(QDialog):
             display = domain + " — " + source
             if probe:
                 display += " (" + probe + ")"
-            self.list_widget.addItem(display)
+            
+            from PyQt6.QtWidgets import QListWidgetItem
+            item = QListWidgetItem(display)
+            
+            # Подсветка новых доменов стандартным цветом Link, старых — Text
+            if domain in self.new_domains:
+                item.setForeground(self.palette().color(QPalette.ColorRole.Link))
+            else:
+                item.setForeground(self.palette().color(QPalette.ColorRole.Text))
+                
+            self.list_widget.addItem(item)
 
     def _on_delete(self):
         selected = self.list_widget.currentItem()

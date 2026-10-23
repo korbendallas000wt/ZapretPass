@@ -81,6 +81,7 @@ class MainWindow(QMainWindow):
     service_start_clicked = pyqtSignal()
     service_stop_clicked = pyqtSignal()
     service_restart_clicked = pyqtSignal()
+    service_state_changed = pyqtSignal()
     
     # Семантические цвета индикатора (светофор — не зависит от темы)
     COLOR_STOPPED = "#e74c3c"   # красный
@@ -222,6 +223,9 @@ class MainWindow(QMainWindow):
         
         # Обновляем статус после операции
         self.refresh_service_status()
+        
+        # Уведомляем UI, что состояние сервиса изменилось (для обновления браузера)
+        self.service_state_changed.emit()
     
     def _on_service_worker_thread_finished(self):
         """Вызывается по сигналу QThread.finished после полного завершения потока."""

@@ -450,6 +450,11 @@ class SitePassportWidget(QWidget):
         self.current_block_index = 0
         self._diag_v2_widget = None
         self._target_domains_widget = None
+        
+        # Подключаемся к сигналу изменения состояния сервиса для обновления браузера
+        # Используем parent(), так как MainWindow является родителем этого виджета
+        if self.parent() and hasattr(self.parent(), 'service_state_changed'):
+            self.parent().service_state_changed.connect(self._on_service_state_changed)
         self._clear_progress_layout()
         
         # Ссылки на активные воркеры
@@ -689,6 +694,11 @@ class SitePassportWidget(QWidget):
         self.current_block_index = 0
         self._diag_v2_widget = None
         self._target_domains_widget = None
+        
+        # Подключаемся к сигналу изменения состояния сервиса для обновления браузера
+        # Используем parent(), так как MainWindow является родителем этого виджета
+        if self.parent() and hasattr(self.parent(), 'service_state_changed'):
+            self.parent().service_state_changed.connect(self._on_service_state_changed)
         
         # Возвращаем поле ввода в исходное состояние
         self.url_input.setText(self.domain)
@@ -1818,6 +1828,13 @@ class SitePassportWidget(QWidget):
         self.status_message_requested.emit(
             "🌐 Введите адрес сайта для нового сценария", False)
     
+    def _on_service_state_changed(self):
+        """Вызывается при старте/стопе сервиса для обновления браузера."""
+        if hasattr(self, '_diag_v2_widget') and self._diag_v2_widget and hasattr(self._diag_v2_widget, 'browser_widget'):
+            self._diag_v2_widget.browser_widget.hard_reload()
+        if hasattr(self, '_target_domains_widget') and self._target_domains_widget and hasattr(self._target_domains_widget, 'browser_widget'):
+            self._target_domains_widget.browser_widget.hard_reload()
+
     def _clear_results(self):
         """Очищает область результатов."""
         if self._diagnosis_worker is not None:
