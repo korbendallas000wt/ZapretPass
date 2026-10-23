@@ -213,7 +213,6 @@ class MainWindow(QMainWindow):
     
     def _on_operation_finished(self, ok: bool, msg: str):
         """Вызывается после завершения фоновой операции."""
-        self._worker = None
         self._set_buttons_enabled(True)
         
         if ok:
@@ -223,6 +222,23 @@ class MainWindow(QMainWindow):
         
         # Обновляем статус после операции
         self.refresh_service_status()
+    
+    def _on_service_worker_thread_finished(self):
+        """Вызывается по сигналу QThread.finished после полного завершения потока."""
+        QTimer.singleShot(0, self._cleanup_finished_service_worker)
+    
+    def _cleanup_finished_service_worker(self):
+        """Безопасно очищает завершившийся сервисный воркер."""
+        worker = self._worker
+        
+        if worker is None:
+            return
+        
+        if worker.isRunning():
+            return
+        
+        self._worker = None
+        worker.deleteLater()
     
     def _set_buttons_enabled(self, enabled: bool):
         """Включает/выключает все кнопки управления."""
@@ -667,6 +683,17 @@ class MainWindow(QMainWindow):
                 self,
                 "ZapretPass",
                 "Идёт проверка обновлений. Подождите несколько секунд."
+            )
+            event.ignore()
+            return
+        
+        self._cleanup_finished_service_worker()
+        
+        if self._worker is not None and self._worker.isRunning():
+            QMessageBox.information(
+                self,
+                "ZapretPass",
+                "Выполняется операция с сервисом запрета. Подождите её завершения."
             )
             event.ignore()
             return
