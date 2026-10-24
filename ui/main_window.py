@@ -291,6 +291,8 @@ class MainWindow(QMainWindow):
         
         # Вкладка 1: 📋 Паспорт сайта (реальный виджет)
         self.passport_tab = SitePassportWidget()
+        # Подключаем сигнал изменения состояния сервиса для обновления браузера
+        self.service_state_changed.connect(self.passport_tab._on_service_state_changed)
         self.passport_tab.status_message_requested.connect(self.set_status_message)
         self.tabs.addTab(self.passport_tab, "📋 Паспорт сайта")
         

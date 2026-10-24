@@ -100,6 +100,21 @@ class DiagnosisWidget(QWidget):
         btn_layout.addWidget(self.btn_passport, stretch=1)
         layout.addLayout(btn_layout)
 
+    def recreate_browser(self):
+        """Полностью пересоздаёт браузер (как при Завершить -> новый выбор)."""
+        if hasattr(self, "browser_widget") and self.browser_widget:
+            # Сначала останавливаем загрузку и отключаем страницу
+            self.browser_widget.web_view.stop()
+            if self.browser_widget.web_view.page():
+                self.browser_widget.web_view.setPage(None)
+            # Удаляем старый виджет из layout
+            self.browser_block.layout().removeWidget(self.browser_widget)
+            self.browser_widget.setParent(None)
+            self.browser_widget.deleteLater()
+        # Создаём новый браузер
+        self.browser_widget = BrowserWidget(self.domain)
+        self.browser_block.layout().addWidget(self.browser_widget, stretch=1)
+
     def _rebuild_verdict_block(self):
         """Собирает блок вердикта: Провайдер, Домен (синий, центрирован), Вердикт (цветной, центрирован)."""
         while self.verdict_block.grid.count():
@@ -184,7 +199,7 @@ class DiagnosisWidget(QWidget):
         self.dns_block.set_details("")
         self.html_block.set_details("")
         if hasattr(self, "browser_widget"):
-            self.browser_widget.hard_reload()
+            self.recreate_browser()
         self._update_ui_from_state()
 
     def _update_passport_button_state(self):

@@ -58,8 +58,11 @@ class BrowserWidget(QWidget):
         self.web_view.reload()
         
     def hard_reload(self):
-        """Перезагрузка страницы (без очистки системного сетевого кэша)."""
+        """Полная перезагрузка с очисткой кэша и состояния (для кнопки Повторить)."""
         self.web_view.stop()
+        # Очищаем HTTP-кэш и историю посещений для мгновенного визуального сброса
+        self.profile.clearHttpCache()
+        self.profile.clearAllVisitedLinks()
         self.web_view.setHtml("")
         self._load_page()
     
