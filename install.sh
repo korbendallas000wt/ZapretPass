@@ -32,10 +32,10 @@ log_step() {
 
 check_environment() {
     log_step "Проверка окружения..."
-    
+
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     APP_DIR="$SCRIPT_DIR"
-    
+
     if [[ "$APP_DIR" != "$HOME"* ]]; then
         log_warn "Вы запускаете установщик из системной директории: $APP_DIR"
         log_warn "Рекомендуется распаковать архив в домашнюю директорию (например, ~/ZapretPass/)"
@@ -46,29 +46,29 @@ check_environment() {
             exit 1
         fi
     fi
-    
+
     if [ ! -f "$APP_DIR/zapretpass.py" ]; then
         log_error "Файл zapretpass.py не найден в $APP_DIR"
         log_error "Убедитесь, что вы запускаете скрипт из директории с исходным кодом"
         exit 1
     fi
-    
+
     log_info "Окружение проверено: $APP_DIR"
 }
 
 detect_os() {
     log_step "Определение операционной системы..."
-    
+
     if [ ! -f /etc/os-release ]; then
         log_error "Не удалось определить ОС: файл /etc/os-release не найден"
         exit 1
     fi
-    
+
     source /etc/os-release
     OS_ID="${ID:-unknown}"
     OS_VERSION="${VERSION_ID:-}"
     OS_NAME="${PRETTY_NAME:-Unknown Linux}"
-    
+
     case "$OS_ID" in
         ubuntu|debian|linuxmint|pop)
             PKG_MANAGER="apt"
@@ -79,13 +79,16 @@ detect_os() {
         fedora)
             PKG_MANAGER="dnf"
             ;;
+        opensuse*|suse)
+            PKG_MANAGER="zypper"
+            ;;
         *)
             log_error "Неподдерживаемая ОС: $OS_ID"
-            log_error "Поддерживаются: Ubuntu 24.04+, Manjaro/Arch, Fedora 40+"
+            log_error "Поддерживаются: Ubuntu 24.04+, Manjaro/Arch, Fedora 40+, openSUSE"
             exit 1
             ;;
     esac
-    
+
     if [ "$OS_ID" = "ubuntu" ] && [ -n "$OS_VERSION" ]; then
         MAJOR_VERSION=$(echo "$OS_VERSION" | cut -d. -f1)
         if [ "$MAJOR_VERSION" -lt 24 ]; then
@@ -95,19 +98,19 @@ detect_os() {
             exit 1
         fi
     fi
-    
+
     log_info "Обнаружена ОС: $OS_NAME"
     log_info "Пакетный менеджер: $PKG_MANAGER"
 }
 
 install_system_deps() {
     log_step "Установка системных зависимостей..."
-    
+
     case "$PKG_MANAGER" in
         apt)
             log_info "Обновление списков пакетов..."
             sudo apt-get update -qq
-            
+
             log_info "Установка зависимостей..."
             sudo apt-get install -y -qq \
                 git \
@@ -121,12 +124,14 @@ install_system_deps() {
                 libsystemd-dev \
                 python3 \
                 python3-pyqt6 \
-                python3-pyqt6.qtwebengine
+                python3-pyqt6.qtwebengine \
+                dnsutils \
+                iproute2
             ;;
         pacman)
             log_info "Обновление системы..."
             sudo pacman -Syu --noconfirm --quiet
-            
+
             log_info "Установка зависимостей..."
             sudo pacman -S --noconfirm --needed --quiet \
                 git \
@@ -139,7 +144,9 @@ install_system_deps() {
                 libmnl \
                 python \
                 python-pyqt6 \
-                python-pyqt6-webengine
+                python-pyqt6-webengine \
+                bind-tools \
+                iproute2
             ;;
         dnf)
             log_info "Установка зависимостей..."
@@ -155,28 +162,57 @@ install_system_deps() {
                 systemd-devel \
                 python3 \
                 python3-qt6 \
-                python3-qt6-webengine
+                python3-qt6-webengine \
+                bind-utils \
+                iproute
+            ;;
+        zypper)
+            log_info "Обновление списков пакетов..."
+            sudo zypper refresh --quiet
+
+            log_info "Установка зависимостей..."
+            sudo zypper install -y --quiet \
+                git \
+                curl \
+                make \
+                gcc \
+                zlib-devel \
+                libcap-devel \
+                libnetfilter_queue-devel \
+                libmnl-devel \
+                systemd-devel \
+                python3 \
+                python3-qt6 \
+                python3-qt6-webengine \
+                bind-utils \
+                iproute
             ;;
     esac
-    
+
     log_info "Системные зависимости установлены"
 }
 
 verify_pyqt6() {
-    log_step "Проверка установки PyQt6..."
-    
+    log_step "Проверка установки PyQt6 и QtWebEngine..."
+
     if ! python3 -c "import PyQt6" 2>/dev/null; then
         log_error "PyQt6 не установлен или недоступен"
         log_error "Попробуйте установить вручную: sudo $PKG_MANAGER install python3-pyqt6"
         exit 1
     fi
-    
-    log_info "PyQt6 успешно установлен и доступен"
+
+    if ! python3 -c "from PyQt6.QtWebEngineWidgets import QWebEngineView" 2>/dev/null; then
+        log_error "PyQt6 QtWebEngine не установлен или недоступен"
+        log_error "Проверьте пакет QtWebEngine для вашего дистрибутива"
+        exit 1
+    fi
+
+    log_info "PyQt6 и QtWebEngine успешно установлены и доступны"
 }
 
 install_zapret() {
     log_step "Установка zapret..."
-    
+
     if [ -d "$ZAPRET_DIR" ]; then
         log_warn "zapret уже установлен в $ZAPRET_DIR"
         log_info "Обновление существующей установки..."
@@ -186,13 +222,13 @@ install_zapret() {
         log_info "Клонирование репозитория zapret..."
         sudo git clone --quiet "$ZAPRET_REPO" "$ZAPRET_DIR"
     fi
-    
+
     cd "$ZAPRET_DIR"
-    
+
     # Проверяем наличие бинарников
     if [ ! -d "binaries/my" ] || [ ! -f "binaries/my/nfqws" ]; then
         log_info "Сборка бинарников zapret из исходников..."
-        
+
         # Определяем, есть ли systemd
         if command -v systemctl >/dev/null 2>&1; then
             log_info "Используем systemd-вариант сборки..."
@@ -204,89 +240,89 @@ install_zapret() {
     else
         log_info "Бинарники уже собраны"
     fi
-    
+
     log_info "Запуск установщика zapret (может потребовать взаимодействия)..."
     sudo ./install_bin.sh
-    
+
     log_info "zapret успешно установлен в $ZAPRET_DIR"
 }
 
 install_systemd_units() {
     log_step "Установка systemd-юнитов..."
-    
+
     UNITS_DIR="/opt/zapret/init.d/systemd"
     SYSTEMD_DIR="/etc/systemd/system"
-    
+
     if [ ! -d "$UNITS_DIR" ]; then
         log_warn "Директория юнитов не найдена: $UNITS_DIR"
         return 0
     fi
-    
+
     if [ ! -f "$UNITS_DIR/zapret.service" ]; then
         log_warn "zapret.service не найден в $UNITS_DIR"
         return 0
     fi
-    
+
     log_info "Копирование юнитов в $SYSTEMD_DIR..."
     sudo cp "$UNITS_DIR/zapret.service" "$SYSTEMD_DIR/"
     sudo cp "$UNITS_DIR/zapret-list-update.service" "$SYSTEMD_DIR/" 2>/dev/null || true
     sudo cp "$UNITS_DIR/zapret-list-update.timer" "$SYSTEMD_DIR/" 2>/dev/null || true
-    
+
     log_info "Перезагрузка демонов systemd..."
     sudo systemctl daemon-reload
-    
+
     log_info "Включение сервиса zapret..."
     sudo systemctl enable zapret --quiet
-    
+
     log_info "Systemd-юниты установлены, сервис включён"
 }
 
 create_launcher_script() {
     log_step "Создание скрипта запуска..."
-    
+
     LAUNCHER="$APP_DIR/zapretpass.sh"
-    
+
     cat > "$LAUNCHER" << 'INNER_EOF'
 #!/bin/bash
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$DIR"
 exec python3 "$DIR/zapretpass.py" "$@"
 INNER_EOF
-    
+
     chmod +x "$LAUNCHER"
-    
+
     log_info "Скрипт запуска создан: $LAUNCHER"
 }
 
 init_data_dirs() {
     log_step "Инициализация директорий данных..."
-    
+
     DATA_DIR="$APP_DIR/data"
-    
+
     mkdir -p "$DATA_DIR/sites"
     mkdir -p "$DATA_DIR/strategies"
     mkdir -p "$DATA_DIR/sniffer_results"
     mkdir -p "$DATA_DIR/logs"
-    
+
     log_info "Директории данных созданы в $DATA_DIR"
 }
 
 create_desktop_entry() {
     log_step "Создание ярлыка в меню приложений..."
-    
+
     DESKTOP_DIR="$HOME/.local/share/applications"
     mkdir -p "$DESKTOP_DIR"
-    
+
     DESKTOP_FILE="$DESKTOP_DIR/zapretpass.desktop"
     LAUNCHER="$APP_DIR/zapretpass.sh"
-    
+
     ICON_PATH=""
     if [ -f "$APP_DIR/ui/icons/zapretpass.png" ]; then
         ICON_PATH="Icon=$APP_DIR/ui/icons/zapretpass.png"
     elif [ -f "$APP_DIR/ui/icons/app-icon.png" ]; then
         ICON_PATH="Icon=$APP_DIR/ui/icons/app-icon.png"
     fi
-    
+
     cat > "$DESKTOP_FILE" << EOF
 [Desktop Entry]
 Version=1.0
@@ -300,45 +336,61 @@ Categories=Network;Security;
 Keywords=dpi;zapret;bypass;firewall;
 StartupNotify=true
 EOF
-    
+
     chmod 644 "$DESKTOP_FILE"
-    
+
     log_info "Ярлык создан: $DESKTOP_FILE"
 }
 
 final_verification() {
     log_step "Финальная проверка установки..."
-    
+
     ERRORS=0
-    
+
     if ! python3 -c "import PyQt6" 2>/dev/null; then
         log_error "PyQt6 недоступен"
         ERRORS=$((ERRORS + 1))
     else
         log_info "✓ PyQt6 установлен"
     fi
-    
+
+    if ! python3 -c "from PyQt6.QtWebEngineWidgets import QWebEngineView" 2>/dev/null; then
+        log_error "QtWebEngine недоступен"
+        ERRORS=$((ERRORS + 1))
+    else
+        log_info "✓ QtWebEngine установлен"
+    fi
+
+    for cmd in curl dig ip; do
+        if command -v "$cmd" >/dev/null 2>&1; then
+            log_info "✓ $cmd доступен"
+        else
+            log_error "$cmd не найден в PATH"
+            ERRORS=$((ERRORS + 1))
+        fi
+    done
+
     if [ ! -d "$ZAPRET_DIR" ]; then
         log_error "zapret не установлен в $ZAPRET_DIR"
         ERRORS=$((ERRORS + 1))
     else
         log_info "✓ zapret установлен"
     fi
-    
+
     if [ ! -f "$APP_DIR/zapretpass.sh" ]; then
         log_error "Скрипт запуска не создан"
         ERRORS=$((ERRORS + 1))
     else
         log_info "✓ Скрипт запуска создан"
     fi
-    
+
     if [ ! -d "$APP_DIR/data" ]; then
         log_error "Директория данных не создана"
         ERRORS=$((ERRORS + 1))
     else
         log_info "✓ Директория данных создана"
     fi
-    
+
     DESKTOP_FILE="$HOME/.local/share/applications/zapretpass.desktop"
     if [ ! -f "$DESKTOP_FILE" ]; then
         log_error "Ярлык не создан"
@@ -346,12 +398,12 @@ final_verification() {
     else
         log_info "✓ Ярлык создан"
     fi
-    
+
     if [ $ERRORS -gt 0 ]; then
         log_error "Обнаружено $ERRORS проблем с установкой"
         exit 1
     fi
-    
+
     log_info "Все компоненты установлены корректно"
 }
 
@@ -380,7 +432,7 @@ main() {
     echo -e "${BLUE} Установка $APP_NAME${NC}"
     echo -e "${BLUE}========================================${NC}"
     echo
-    
+
     check_environment
     detect_os
     install_system_deps

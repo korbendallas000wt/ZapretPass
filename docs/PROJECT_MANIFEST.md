@@ -4,11 +4,11 @@
 
 ## Архитектура
 
-Приложение разделено на три слоя:
+Приложение разделено на слои:
 
 1. core/ — ядро, бизнес-логика без привязки к UI
 2. core/scenarios.py — Workflow Engine, описание сценариев как данных (не импортирует Qt)
-3. ui/ — Qt6-интерфейс, исполняет сценарии через блоки
+3. ui/ — Qt6-интерфейс, исполняет сценарии через блоки, визуальные воркеры и инструменты
 
 Центральная продуктовая сущность — паспорт сайта: накапливаемое состояние диагностики, стратегий, вспомогательных доменов и скриншотов.
 
@@ -90,6 +90,44 @@ core/applier.py — Применение стратегий к конфигу
 - apply_all(mode, strategy, password, restart_service) — комплексное применение
 - restore_from_backup(password) — откат к бэкапу конфига
 
+core/zapret_config.py — Единый менеджер конфига zapret
+- ZapretConfigManager — classmethod-интерфейс для чтения и записи /opt/zapret/config
+- Атомарная запись через временный файл + mv (защита от повреждения конфига)
+- Блокировка от гонок данных через lock-файл /opt/zapret/.config.lock
+- Использование кэшированного пароля из sudo.manager (без повторного запроса)
+- read_strategy() — чтение текущей стратегии (tool, args)
+- read_mode_filter() — чтение MODE_FILTER (none/hostlist/autohostlist/ipset)
+- read_mode_http/https_tls12/https_tls13/quic() — чтение булевых параметров
+- read_param(name) — универсальное чтение любого параметра
+- read_all() / read_all_cached() — чтение всех параметров с кэшированием
+- set_strategy(tool, args) — установка стратегии (nfqws/tpws)
+- set_mode_filter(mode) — установка режима фильтрации
+- set_mode_http/https_tls12/https_tls13/quic(enabled) — установка булевых параметров
+- set_param(name, value) — универсальная установка любого параметра
+- set_many(params_dict) — массовое обновление за одну транзакцию
+- restart_service() — перезапуск сервиса после изменения конфига
+- Иерархия исключений: ZapretConfigError, ConfigLockError, ConfigReadError, ConfigWriteError, ConfigValidationError
+
+core/geo.py — Geo & VPN detection
+- detect_vpn() — проверяет наличие активных туннельных интерфейсов через `ip link`.
+- get_geo_info() — получает IP и провайдера через несколько HTTP-источников с fallback.
+- Не импортирует Qt и не использует sudo.
+
+core/dns_resolver.py — Локальный DNS-резолвинг
+- resolve_domain() — резолвит домен через `socket.getaddrinfo`.
+- Возвращает IPv4/IPv6 адреса, время ответа и ошибку в структурированном dict.
+- Работает без sudo и без внешних DNS-утилит.
+
+core/html_checker.py — HTTP/HTML-проверка по IP
+- check_html(ip, domain, is_ipv6=False) — выполняет `curl --resolve` к `https://{domain}/`, форсируя указанный IP.
+- Возвращает HTTP status, final URL, время ответа и ошибку.
+- Используется визуальной диагностикой `diagnosis_v2`.
+
+core/tools.py — Реестр инструментов
+- Tool — минимальная сущность инструмента: id, name, icon, description, enabled.
+- ToolRegistry — сохраняет порядок регистрации и выдаёт список инструментов для UI.
+- Используется в `ui/site_passport.py` для группы «Инструменты».
+
 core/sniffer.py — Перехват SNI через tshark
 - SnifferSettings — dataclass с interface, duration, filter
 - SnifferResult — dataclass с success, domains, output, error
@@ -159,13 +197,19 @@ core/updater.py — Проверка и применение обновлени�
 - UpdateInfo — dataclass: has_update, current_version, latest_version, release_url, release_notes, zip_url, zip_size, error_message
 - get_version() — чтение текущей версии из файла VERSION
 - compare_versions(v1, v2) — сравнение семантических версий
-- check_for_updates() — запрос к GitHub Releases API (`releases/latest`)
-- download_update(update_info, progress_callback) — скачивание ZIP-архива в кэш `~/.cache/zapretpass/downloads`
-- apply_update(zip_path, app_dir) — распаковка в staging, создание бэкапа, замена верхнеуровневых файлов/папок, откат при ошибке
+- check_for_updates() — читает `VERSION` из raw-ветки `main`, сравнивает с локальной версией и собирает `UpdateInfo`
+- get_release_notes(version) — приоритетно парсит `docs/CHANGELOG.md` из `main`, fallback — GitHub Release body
+- parse_changelog_section(changelog_text, version) — извлекает Markdown-секцию `## [x.y.z]`
+- fetch_changelog_text() / fetch_github_release_body(version) — источники текста обновления
+- download_update(update_info, progress_callback) — скачивает ZIP ветки `main` в `~/.cache/zapretpass/downloads`; при отсутствии размера использует `Content-Length`
+- apply_update(zip_path, app_dir) — распаковывает в staging, создаёт бэкап в `~/.local/share/zapretpass/backups`, заменяет верхнеуровневые элементы, восстанавливает exec-биты, при ошибке откатывает; после успеха вызывает `prune_old_artifacts()`
+- restore_exec_bits(app_dir) — возвращает `+x` для `install.sh`, `zapretpass.sh`, `zapretpass.py` и всех `.sh` в корне
+- get_data_dir() — XDG data-каталог `~/.local/share/zapretpass` для `backups/` и `releases/`
+- prune_old_artifacts(...) — оставляет последние 3 бэкапа, 3 скачанных ZIP и 3 fallback-архива
 - load_update_state() / save_update_state(state) — состояние обновлений в `data/update_state.json`
 - is_safe_path(base_dir, target_path) — защита от path traversal при распаковке ZIP
 
-Важно: текущая реализация `apply_update()` заменяет верхнеуровневые элементы целиком. В dev-директории это может удалить dev-only файлы (например, `Work/WORKLOG.md`) и сбросить бит исполнения. Для релизных пользователей схема приемлема, но требует доработки: file-level overlay, preserve-списки, восстановление прав, ActivityGuard.
+Важно: `apply_update()` по-прежнему работает на уровне верхнеуровневых элементов из релизного ZIP, но внутренние dev-каталоги (`Work/`, `Repo/`, `.venv/`, кэши) исключены из релиза и бэкапов, а exec-биты восстанавливаются после распаковки. Полностью file-level overlay остаётся желательным улучшением, но не блокером для v1.1.x.
 
 ---
 
@@ -256,9 +300,13 @@ strategies может быть списком списков (для совме�
 - Блокчек: /opt/zapret/blockcheck.sh
 
 ### Обновления
-- GitHub Releases API: https://api.github.com/repos/korbendallas000wt/ZapretPass/releases/latest
+- Raw `VERSION`: https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/main/VERSION
+- Raw `docs/CHANGELOG.md`: https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/main/docs/CHANGELOG.md
+- ZIP обновления: https://github.com/korbendallas000wt/ZapretPass/archive/refs/heads/main.zip
+- GitHub Releases API используется только как fallback для текста release notes конкретной версии
 - ZIP-ассет релиза: `ZapretPass-<version>.zip`
-- Кэш: `~/.cache/zapretpass/{downloads,backups,releases,staging}`
+- Временный кэш: `~/.cache/zapretpass/{downloads,staging}`
+- Persistent-данные апдейтера: `~/.local/share/zapretpass/{backups,releases}`
 - Состояние: `data/update_state.json`
 
 ### Системные компоненты
@@ -267,6 +315,13 @@ strategies может быть списком списков (для совме�
 - tshark (пакет wireshark-cli) — перехват SNI
 - curl — проверка доступности сайтов
 - kdialog (KDE) — графический диалог запроса пароля
+
+### Зависимости визуальной диагностики
+- PyQt6 QtWebEngine — требуется `ui/browser_widget.py`.
+- `curl` — требуется `core/html_checker.py` и `ui/aux_worker.py`.
+- `dig` — используется `ui/ech_worker.py`; при недоступности возможен DoH fallback.
+- `ip` — используется `core/geo.py` для детекции туннельных интерфейсов.
+- `install.sh` устанавливает и проверяет эти компоненты.
 
 ### Системные файлы (для чтения статуса)
 - /sys/fs/cgroup/.../zapret.service/cgroup.procs — PID процесса nfqws
@@ -289,6 +344,15 @@ strategies может быть списком списков (для совме�
 ### Пользователь нажал "Применить настройки"
 1. password = core.sudo.manager.get_password()
 2. core.applier.apply_all(mode, strategy, password, restart_service=True)
+
+### Пользователь нажал "Применить стратегию" (после blockcheck)
+1. UI показывает кнопку "🎯 Применить стратегию" после успешного blockcheck
+2. Пользователь нажимает кнопку
+3. core.zapret_config.ZapretConfigManager.set_strategy(tool, args) — запись стратегии
+4. core.zapret_config.ZapretConfigManager.set_mode_filter("autohostlist") — точечный обход
+5. core.zapret_config.ZapretConfigManager.restart_service() — перезапуск сервиса
+6. core.passport.manager.set_primary_strategy(domain, strategy) — сохранение в паспорт
+7. UI показывает диалог успеха
 
 ### Пользователь нажал "Найти стратегии для домена"
 1. settings = core.blockcheck.BlockcheckSettings(mode="2")  # Стандарт
@@ -346,12 +410,21 @@ tshark+curl не воспроизводят цепочку запросов бр
 
 
 ### Обновления в dev-директории
-`core/updater.py` применяет релизный ZIP заменой верхнеуровневых папок/файлов. Все внутренние файлы должны жить в `Work/`, чтобы не удаляться при обновлении. Известная проблема: после применения ZIP может сбрасываться бит исполнения у `install.sh`, `zapretpass.py` и других скриптов; требуется восстановление прав из бэкапа или по явному списку исполняемых файлов.
+`core/updater.py` применяет релизный ZIP заменой верхнеуровневых папок/файлов. Внутренние файлы должны жить в `Work/`, который не попадает в релиз и исключён из бэкапов. После применения ZIP exec-биты восстанавливаются, а старые артефакты ротируются.
 
-Решение: держать внутренние файлы в `Work/` и не класть dev-only документы в публичные папки. Дополнительно нужно починить восстановление exec-битов после применения ZIP; file-level overlay остаётся желательным улучшением, но не единственным вариантом.
+Решение: держать внутренние файлы в `Work/` и не класть dev-only документы в публичные папки. Восстановление exec-битов после применения ZIP уже реализовано; file-level overlay остаётся желательным улучшением, но не блокером для текущего updater-цикла.
 
 ### Локальный changelog для release notes
-Сейчас `release_notes` берётся из тела GitHub Release. Для отображаемых заметок нужно либо наполнять body релиза при публикации, либо парсить `docs/CHANGELOG.md` по заголовку `## [x.y.z]`.
+`release_notes` парсятся из `docs/CHANGELOG.md` ветки `main` по секции конкретной версии; GitHub Release body — только fallback. Поэтому публичные GitHub Releases не обязательны для работы обновлений.
+
+---
+
+### Визуальная диагностика и инструменты (dev, unreleased)
+- `diagnosis_v2` работает как ручная пошаговая цепочка Geo -> DNS -> HTML; это не автоматический ремонт.
+- Браузерный виджет требует QtWebEngine и может быть чувствителен к дистрибутивным пакетам.
+- Инструмент «Целевые домены» выполняет ECH -> AUX -> Сборка -> Запись и сохраняет target hosts только в существующий паспорт.
+- В текущем срезе отсутствует каталог `tests/`; проверка состояния выполняется через compile/import/manual smoke, а не unit-тесты.
+- Старая экспериментальная линия с боевым apply/pipeline/live passport не входит в текущий `dev`.
 
 ---
 
@@ -407,6 +480,10 @@ Qt6-интерфейс на PyQt6. Точка входа: zapretpass.py.
 - Нижняя панель: строка статуса + индикатор (светофор) + кнопки Старт/Стоп/Рестарт
 - ServiceWorker(QThread) — фоновые операции с сервисом
 - Таймер проверки статуса каждые 2 секунды (пропускается во время операций)
+- UpdateIndicator — версия, статус проверки, ошибка и доступное обновление; клик открывает AboutDialog
+- UpdateCheckerWorker / AboutDialog — фоновая проверка обновлений и диалог release notes
+- ActivityGuard для обновлений: `_update_check_in_progress`, `_update_apply_in_progress`; блокировка повторных операций и закрытия окна во время критических операций
+- `manual_check_updates()` — ручная проверка обновлений через меню / F5
 
 ### ui/site_passport.py — визард «Паспорт сайта»
 - SitePassportWidget(QWidget) — исполнение сценариев из core.scenarios
@@ -447,13 +524,61 @@ Qt6-интерфейс на PyQt6. Точка входа: zapretpass.py.
 ### ui/about_dialog.py — диалог «О программе»
 - Отображает текущую версию, доступную версию, ссылку на релиз и release notes.
 - Использует `core.updater.UpdateInfo`.
-- Пока показывает `release_notes` из GitHub Release; локальный парсинг CHANGELOG — следующая доработка.
+- Показывает `release_notes`, полученные через `core.updater.get_release_notes()`: сначала `docs/CHANGELOG.md`, затем fallback на GitHub Release body.
 
 ### ui/update_indicator.py — индикатор обновления
 - Виджет/элемент главного окна для отображения статуса проверки обновлений.
 - Сигнализирует о доступной новой версии и открывает диалог обновления/о программе.
 
 ---
+
+### Диагностика и инструменты (ui/)
+
+ui/browser_widget.py — мини-браузер для диагностики
+- BrowserWidget — QWidget на базе QWebEngineView.
+- Использует ephemeral QWebEngineProfile: без persistent cookies, memory HTTP cache, local storage disabled.
+- Сигналы: load_started, load_finished, load_error, load_progress.
+- Предназначен для визуального параллельного наблюдения загрузки сайта.
+
+ui/diagnosis_block.py — каркас визуальных блоков
+- DiagnosisBlock — группбокс с заголовком, деталями, анимацией running-состояния и сеткой параметров.
+- BrowserBlock — контейнер для браузерного виджета.
+
+ui/diagnosis_widget.py — сценарий diagnosis_v2
+- DiagnosisWidget реализует ручную пошаговую цепочку Geo -> DNS -> HTML.
+- Ведёт машину состояний шагов: idle / running / success / failed / blocked.
+- Браузер работает параллельно как визуальный свидетель и не блокирует цепочку.
+- Кнопки «Продолжить», «Повторить», «Завершить» управляют воркерами и сбросом состояния.
+- Кнопка создания паспорта доступна только после корректного завершения диагностики.
+
+ui/target_domains_widget.py — инструмент «Целевые домены»
+- TargetDomainsWidget реализует ручной прогон ECH -> AUX -> Сборка -> Запись.
+- Использует ECHWorker, AUXWorker, AssemblyWorker.
+- TargetHostsDialog позволяет просматривать и удалять записанные целевые домены.
+- Запись target hosts выполняется только в уже существующий паспорт сайта.
+
+ui/geo_worker.py — фоновый поток Geo/VPN
+- GeoWorker вызывает core.geo.detect_vpn() и core.geo.get_geo_info().
+- Передаёт результаты в UI через Qt-сигналы.
+
+ui/dns_worker.py — фоновый поток DNS
+- DnsWorker вызывает core.dns_resolver.resolve_domain().
+
+ui/html_worker.py — фоновый поток HTML-проверки
+- HtmlWorker вызывает core.html_checker.check_html() для выбранного IP.
+
+ui/ech_worker.py — фоновый поток ECH/HTTPS DNS
+- ECHWorker запрашивает HTTPS-запись домена через dig.
+- При отсутствии dig или ошибке использует DoH fallback.
+- Парсит ECH config и извлекает public_name.
+
+ui/aux_worker.py — фоновый поток вспомогательных доменов
+- AUXWorker выполняет вариативные HTTP-пробы через curl с разными схемами и User-Agent.
+- Парсит HTML, извлекает hostname-кандидаты и Alt-Svc подсказки.
+
+ui/assembly_worker.py — фоновый поток сборки target hosts
+- AssemblyWorker агрегирует данные ECH и AUX.
+- Формирует список target hosts и protocol hints с приоритетом источников.
 
 ## Идеи и планы на будущее
 
@@ -507,11 +632,10 @@ Qt6-интерфейс на PyQt6. Точка входа: zapretpass.py.
 ### Мультисистемность
 Ядро использует машинно-читаемые форматы (systemctl show, cgroup) вместо парсинга человекочитаемого вывода. Это делает его переносимым между дистрибутивами с systemd.
 
-### Доработка системы обновлений
-- Перевести `apply_update()` с замены верхнеуровневых папок на file-level overlay по манифесту релиза.
-- Сохранять бит исполнения для `install.sh`, `zapretpass.py` и будущих скриптов.
-- Добавить preserve-списки для dev-only файлов и пользовательских данных вне `data/`.
-- Реализовать ActivityGuard: блокировка UI/фоновых операций на время download/apply/restart.
-- Парсить `docs/CHANGELOG.md` для release notes конкретной версии.
-- Добавить очистку старых backup/staging/downloads с политикой хранения.
+### Доработка системы обновлений (остаточные задачи)
+
+- Покрыть updater тестами: dry-run, rollback, artifact rotation, exec-bit restore, парсинг CHANGELOG на крайних случаях.
+- При желании перевести `apply_update()` на file-level overlay по манифесту релиза; текущая схема стала заметно безопаснее за счёт исключений и ротации.
+- Интегрировать обновления в мастер первого запуска, если понадобится.
+- Решить, нужны ли GitHub Releases как основной канал или остаётся только raw `main` + fallback.
 

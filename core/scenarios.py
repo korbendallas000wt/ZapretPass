@@ -31,6 +31,7 @@ class ScenarioBlock:
         if not self.name:
             names = {
                 "diagnosis": "🔍 Диагностика",
+                "diagnosis_v2": "Диагностика",
                 "blockcheck": "🔬 Поиск стратегии",
                 "sniffer": "🗺️ Карта сайта",
                 "test": "🧪 Тестирование",
@@ -214,3 +215,18 @@ class ScenarioRegistry:
 
 # Глобальный реестр сценариев
 registry = ScenarioRegistry()
+
+# Сценарий 5: Диагностика (ТЗ №30)
+diagnosis_only_scenario = Scenario(
+    id="diagnosis_v2",
+    name="Диагностика",
+    description="Проверить доступность сайта без поиска стратегий",
+    icon="🔍",
+    blocks=[
+        ScenarioBlock(
+            "diagnosis_v2",
+            flags={},
+        ),
+    ]
+)
+registry.register(diagnosis_only_scenario)

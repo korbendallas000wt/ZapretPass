@@ -253,17 +253,33 @@ def backup_config(password: str) -> tuple[bool, str]:
         
         config_content = stdout
         
-        # Проверяем наличие непустой стратегии в конфиге
+        # Проверяем наличие непустой стратегии в конфиге, включая многострочные NFQWS_OPT/TPWS_OPT
         has_strategy = False
-        for line in config_content.splitlines():
-            line_stripped = line.strip()
-            if line_stripped.startswith('NFQWS_OPT=') or line_stripped.startswith('TPWS_OPT='):
-                match = re.search(r'^(NFQWS_OPT|TPWS_OPT)="([^"]*)"', line_stripped)
-                if match:
-                    value = match.group(2).strip()
-                    if value:
+        in_multiline = False
+        multiline_buf = []
+        for raw_line in config_content.splitlines():
+            line = raw_line.strip()
+            if not in_multiline:
+                m = re.match(r'^(NFQWS_OPT|TPWS_OPT)="(.*)$', line)
+                if m:
+                    rest = m.group(2)
+                    if rest.endswith('"'):
+                        inner = rest[:-1].strip() if len(rest) >= 2 else ""
+                        if inner and not inner.startswith('#'):
+                            has_strategy = True
+                            break
+                    else:
+                        in_multiline = True
+                        multiline_buf = [rest] if rest else []
+            else:
+                if line == '"':
+                    if any(x.strip() and not x.strip().startswith('#') for x in multiline_buf):
                         has_strategy = True
                         break
+                    in_multiline = False
+                    multiline_buf = []
+                else:
+                    multiline_buf.append(raw_line)
         
         if not has_strategy:
             return False, "Конфиг не содержит активной стратегии — бэкап пропущен (защита от мусора)"

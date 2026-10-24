@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QGroupBox, QProgressBar, QScrollArea, QStackedWidget,
     QFrame, QSizePolicy, QComboBox, QTextEdit, QRadioButton,
-    QButtonGroup, QToolTip
+    QButtonGroup, QCheckBox, QToolTip, QMessageBox
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QThread, QTimer, QPoint, QRectF, QPointF
 import threading
@@ -18,6 +18,8 @@ from typing import Optional
 
 from core import service_manager
 from core import passport
+from .diagnosis_widget import DiagnosisWidget
+from .target_domains_widget import TargetDomainsWidget
 
 
 class DiagnosisWorker(QThread):
@@ -104,6 +106,45 @@ class BlockcheckWorker(QThread):
         """Возвращает текущее количество AVAILABLE."""
         return self._available_count
 
+
+class ApplyStrategyWorker(QThread):
+    # Фоновый поток применения strategy bundle.
+    apply_finished = pyqtSignal(bool, str)
+
+    def __init__(self, domain, bundle, scope, parent=None):
+        super().__init__(parent)
+        self.domain = domain
+        self.bundle = bundle or {}
+        self.scope = scope
+
+    def _has_strategy(self):
+        for key in ("http", "https", "http3"):
+            meta = self.bundle.get(key)
+            if isinstance(meta, dict) and str(meta.get("command") or "").strip():
+                return True
+        return False
+
+    def run(self):
+        try:
+            from core.zapret_config import ZapretConfigManager
+            if not self._has_strategy():
+                self.apply_finished.emit(False, "Нет рабочих стратегий для применения")
+                return
+
+            ZapretConfigManager.apply_strategy_bundle(
+                self.domain,
+                self.bundle,
+                scope=self.scope,
+                restart=True
+            )
+
+            scope_txt = "целевой хостлист" if self.scope == "hostlist" else "весь трафик"
+            self.apply_finished.emit(
+                True,
+                f"Стратегия применена для {self.domain} ({scope_txt}), сервис перезапущен"
+            )
+        except Exception as e:
+            self.apply_finished.emit(False, str(e))
 
 class ScenarioProgressIndicator(QWidget):
     """Горизонтальный индикатор этапов сценария: линия + круглые точки."""
@@ -407,6 +448,13 @@ class SitePassportWidget(QWidget):
         self._block_pages = []  # Список QWidget страниц для каждого блока
         self.scenario = None
         self.current_block_index = 0
+        self._diag_v2_widget = None
+        self._target_domains_widget = None
+        
+        # Подключаемся к сигналу изменения состояния сервиса для обновления браузера
+        # Используем parent(), так как MainWindow является родителем этого виджета
+        if self.parent() and hasattr(self.parent(), 'service_state_changed'):
+            self.parent().service_state_changed.connect(self._on_service_state_changed)
         self._clear_progress_layout()
         
         # Ссылки на активные воркеры
@@ -421,6 +469,7 @@ class SitePassportWidget(QWidget):
         self._diagnosis_result = None
         self._found_strategy = None
         self._found_strategies = []
+        self._strategy_bundle = {}
         self._active_block = None
         
         # UI элементы
@@ -445,99 +494,220 @@ class SitePassportWidget(QWidget):
         return url.lower()
     
     def _show_scenario_selection(self):
-        """Показывает UI выбора сценария."""
+        """Показывает UI выбора сценария или инструмента (ТЗ №34)."""
         raw_url = self.url_input.text()
         domain = self._normalize_domain(raw_url)
         
         if not domain:
-            self.status_message_requested.emit(
-                "❌ Некорректный адрес сайта", True)
+            self.status_message_requested.emit("❌ Некорректный адрес сайта", True)
             return
         
         self.domain = domain
-        
-        # Очищаем предыдущие результаты
         self._clear_results()
-        
-        # Отмечаем точку 0 как завершённую ПОСЛЕ очистки
         self.set_domain_entered()
         
-        # Создаём UI выбора сценария
-        self._scenario_box = QGroupBox("🎯 Выберите сценарий")
+        self._scenario_box = QGroupBox("🎯 Выбор действия")
         layout = QVBoxLayout(self._scenario_box)
         
-        info_label = QLabel(f"Что будем делать с {self.domain}?")
-        info_label.setStyleSheet("font-size: 11pt;")
-        layout.addWidget(info_label)
+        # Readonly контекст домена
+        domain_label = QLabel(f"Домен: {self.domain}")
+        domain_label.setStyleSheet("font-size: 12pt; font-weight: bold; color: palette(link);")
+        domain_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(domain_label)
         
-        # Радиокнопки для сценариев
         from core import scenarios
-        self.scenario_button_group = QButtonGroup(self)
-        self.scenario_radio_buttons = {}
+        # ОДИН общий QButtonGroup для взаимоисключения сценариев и инструментов
+        self.selection_button_group = QButtonGroup(self)
+        self.radio_buttons = {}
         
-        for i, scenario in enumerate(scenarios.registry.get_all()):
+        container = QWidget()
+        container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        main_layout = QHBoxLayout(container)
+        main_layout.setSpacing(16)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # --- ЛЕВАЯ КОЛОНКА: СЦЕНАРИИ ---
+        left_box = QGroupBox("Сценарии")
+        left_box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        v_layout_left = QVBoxLayout(left_box)
+        v_layout_left.setSpacing(12)
+        
+        # Скрываем diagnosis_v2, чтобы не дублировать с инструментами
+        scenarios_list = [s for s in scenarios.registry.get_all() if s.id != "diagnosis_v2"]
+        
+        for i, scenario in enumerate(scenarios_list):
+            item_widget = QWidget()
+            item_layout = QHBoxLayout(item_widget)
+            item_layout.setContentsMargins(0, 0, 0, 0)
+            item_layout.setSpacing(10)
+            
             radio = QRadioButton(f"{scenario.icon} {scenario.name}")
-            radio.setToolTip(scenario.description)
+            radio.setStyleSheet("font-weight: bold; font-size: 10pt;")
             
-            # Создаём описание под радио
-            desc_label = QLabel(f"     {scenario.description}")
-            desc_label.setStyleSheet("color: #888; margin-left: 20px;")
+            info_btn = QPushButton("ⓘ")
+            info_btn.setFixedSize(22, 22)
+            info_btn.setFlat(True)
+            info_btn.setToolTip("Показать описание")
+            info_btn.setStyleSheet("color: palette(link); font-size: 14pt; font-weight: bold;")
+            info_btn.clicked.connect(lambda checked, desc=scenario.description, name=scenario.name: 
+                                    QMessageBox.information(self, name, desc))
             
+            item_layout.addWidget(radio)
+            item_layout.addStretch()
+            item_layout.addWidget(info_btn)
+            v_layout_left.addWidget(item_widget)
+            
+            self.selection_button_group.addButton(radio, i)
+            self.radio_buttons[scenario.id] = radio
             if i == 0:
-                radio.setChecked(True)  # первый по умолчанию
-            
-            self.scenario_button_group.addButton(radio, i)
-            self.scenario_radio_buttons[scenario.id] = radio
-            
-            layout.addWidget(radio)
-            layout.addWidget(desc_label)
+                radio.setChecked(True)
+        v_layout_left.addStretch()
         
-        # Кнопка запуска
+        # --- ПРАВАЯ КОЛОНКА: ИНСТРУМЕНТЫ ---
+        right_box = QGroupBox("Инструменты")
+        right_box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        v_layout_right = QVBoxLayout(right_box)
+        v_layout_right.setSpacing(12)
+        
+        from core.tools import registry as tools_registry
+        
+        for i, tool in enumerate(tools_registry.get_all()):
+            item_widget = QWidget()
+            item_layout = QHBoxLayout(item_widget)
+            item_layout.setContentsMargins(0, 0, 0, 0)
+            item_layout.setSpacing(10)
+            
+            radio = QRadioButton(f"{tool.icon} {tool.name}")
+            radio.setStyleSheet("font-weight: bold; font-size: 10pt;")
+            radio.setEnabled(tool.enabled)
+            
+            info_btn = QPushButton("ⓘ")
+            info_btn.setFixedSize(22, 22)
+            info_btn.setFlat(True)
+            info_btn.setToolTip("Показать описание")
+            info_btn.setStyleSheet("color: palette(link); font-size: 14pt; font-weight: bold;")
+            # Кнопка (i) всегда активна, даже если инструмент disabled
+            info_btn.clicked.connect(lambda checked, desc=tool.description, name=tool.name: 
+                                    QMessageBox.information(self, name, desc))
+            
+            item_layout.addWidget(radio)
+            item_layout.addStretch()
+            item_layout.addWidget(info_btn)
+            v_layout_right.addWidget(item_widget)
+            
+            # Уникальные ID для QButtonGroup (100+)
+            self.selection_button_group.addButton(radio, 100 + i)
+            self.radio_buttons[tool.id] = radio
+        v_layout_right.addStretch()
+        
+        main_layout.addWidget(left_box, stretch=1)
+        main_layout.addWidget(right_box, stretch=1)
+        layout.addWidget(container, stretch=1)
+        
         btn_start = QPushButton("▶ Начать")
         btn_start.setMinimumHeight(40)
-        btn_start.clicked.connect(self._start_selected_scenario)
+        btn_start.clicked.connect(self._start_selected_action)
         layout.addWidget(btn_start)
         
         self.results_layout.addWidget(self._scenario_box)
-        
-        self.status_message_requested.emit(
-            f"🎯 Выбор сценария для {self.domain}", False)
+        self.status_message_requested.emit(f"🎯 Выбор действия для {self.domain}", False)
     
-    def _start_selected_scenario(self):
-        """Запускает выбранный сценарий."""
-        # Блокируем ввод
-        self.btn_proceed.setEnabled(False)
-        self.url_input.setEnabled(False)
-        """Запускает выбранный сценарий."""
-        from core import scenarios
-        
-        # Находим выбранный сценарий
+    def _start_selected_action(self):
+        """Диспетчер: запускает сценарий или инструмент (ТЗ №34)."""
         selected_id = None
-        for scenario_id, radio in self.scenario_radio_buttons.items():
+        for item_id, radio in self.radio_buttons.items():
             if radio.isChecked():
-                selected_id = scenario_id
+                selected_id = item_id
                 break
         
         if not selected_id:
-            self.status_message_requested.emit(
-                "❌ Сценарий не выбран", True)
+            self.status_message_requested.emit("❌ Действие не выбрано", True)
             return
         
+        # Проверка на disabled инструменты (защитный механизм)
+        from core.tools import registry as tools_registry
+        selected_tool = tools_registry.get(selected_id)
+        if selected_tool and not selected_tool.enabled:
+            self.status_message_requested.emit(f"⚠️ Инструмент '{selected_tool.name}' в разработке", True)
+            return
+        
+        # 1. Инструмент: Смена домена
+        if selected_id == "tool_change_domain":
+            self._on_change_domain()
+            return
+        
+        # 2. Инструмент: Диагностика (перенаправляем на существующий сценарий)
+        if selected_id == "tool_diagnosis":
+            selected_id = "diagnosis_v2"
+        
+        # 2b. Инструмент: Целевые домены (ТЗ №36)
+        if selected_id == "tool_aux_domains":
+            self._run_target_domains_tool()
+            return
+        
+        # 3. Обычный сценарий
+        from core import scenarios
         self.scenario = scenarios.registry.get(selected_id)
+        if not self.scenario:
+            self.status_message_requested.emit("❌ Сценарий не найден", True)
+            return
+        
         self.current_block_index = 0
         self._create_scenario_progress(self.scenario.get_blocks())
         
-        # Удаляем UI выбора сценария
+        # Блокируем ввод
+        self.btn_proceed.setEnabled(False)
+        self.url_input.setEnabled(False)
+        
+        # Удаляем UI выбора
         if self._scenario_box:
             self.results_layout.removeWidget(self._scenario_box)
             self._scenario_box.deleteLater()
             self._scenario_box = None
         
-        self.status_message_requested.emit(
-            f"▶ Запуск сценария: {self.scenario.name}", True)
-        
-        # Запускаем первый блок
+        self.status_message_requested.emit(f"▶ Запуск: {self.scenario.name}", True)
         self._run_next_block()
+    
+    def _on_change_domain(self):
+        """Инструмент: сброс состояния и возврат к вводу домена."""
+        # Безопасно останавливаем активные воркеры
+        if hasattr(self, '_diag_v2_widget') and self._diag_v2_widget:
+            try:
+                # Проверяем, что виджет ещё не удалён из Qt
+                if self._diag_v2_widget.isVisible() or self._diag_v2_widget.parent():
+                    self._diag_v2_widget.stop_all_workers()
+            except RuntimeError:
+                # Виджет уже удалён из Qt, игнорируем
+                pass
+        
+        # Останавливаем воркеры TargetDomainsWidget (ТЗ №36)
+        if hasattr(self, '_target_domains_widget') and self._target_domains_widget:
+            try:
+                if self._target_domains_widget.isVisible() or self._target_domains_widget.parent():
+                    self._target_domains_widget.stop_all_workers()
+            except RuntimeError:
+                pass
+        
+        # Сбрасываем UI-состояния
+        self._clear_results()
+        self.scenario = None
+        self.current_block_index = 0
+        self._diag_v2_widget = None
+        self._target_domains_widget = None
+        
+        # Подключаемся к сигналу изменения состояния сервиса для обновления браузера
+        # Используем parent(), так как MainWindow является родителем этого виджета
+        if self.parent() and hasattr(self.parent(), 'service_state_changed'):
+            self.parent().service_state_changed.connect(self._on_service_state_changed)
+        
+        # Возвращаем поле ввода в исходное состояние
+        self.url_input.setText(self.domain)
+        self.url_input.setEnabled(True)
+        self.btn_proceed.setEnabled(True)
+        self.url_input.setFocus()
+        self.url_input.selectAll()
+        
+        self.status_message_requested.emit("🔄 Введите новый домен", False)
     
 
 
@@ -632,7 +802,7 @@ class SitePassportWidget(QWidget):
         layout = QVBoxLayout(box)
         self._current_block_layout = layout  # Сохраняем для доступа из обработчиков
         
-        if block.block_type == "save":
+        if block.block_type in ("save", "diagnosis_v2"):
             box.setSizePolicy(
                 QSizePolicy.Policy.Expanding,
                 QSizePolicy.Policy.Expanding,
@@ -650,6 +820,8 @@ class SitePassportWidget(QWidget):
         # Выполняем блок по типу
         if block.block_type == "diagnosis":
             self._run_diagnosis_block(box, layout, block.flags)
+        elif block.block_type == "diagnosis_v2":
+            self._run_diagnosis_v2_block(box, layout, block.flags)
         elif block.block_type == "blockcheck":
             self._run_blockcheck_block(box, layout, block.flags)
         elif block.block_type == "sniffer":
@@ -667,6 +839,72 @@ class SitePassportWidget(QWidget):
     # БЛОКИ СЦЕНАРИЕВ
     # =========================================================================
     
+    def _run_diagnosis_v2_block(self, box: QGroupBox, layout: QVBoxLayout, flags: dict):
+        """Блок диагностики ТЗ №30/31: ручной пошаговый режим."""
+        while layout.count():
+            item = layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        
+        # Передаём общий индикатор сценария для управления подшагами
+        self._diag_v2_widget = DiagnosisWidget(self.domain, self.progress_indicator, self)
+        layout.addWidget(self._diag_v2_widget, stretch=1)
+        
+        self._diag_v2_widget.finish_clicked.connect(self._on_diagnosis_v2_finish)
+
+    def _on_diagnosis_v2_finish(self):
+        """Завершение диагностики: останавливаем воркеры и возвращаемся к выбору сценария."""
+        if hasattr(self, '_diag_v2_widget') and self._diag_v2_widget is not None:
+            self._diag_v2_widget.stop_all_workers()
+        self.status_message_requested.emit("❌ Диагностика завершена", True)
+        self._show_scenario_selection()
+
+    def _run_target_domains_tool(self):
+        """Инструмент: Целевые домены (ТЗ №36)."""
+        # Блокируем ввод
+        self.btn_proceed.setEnabled(False)
+        self.url_input.setEnabled(False)
+
+        # Удаляем UI выбора
+        if self._scenario_box:
+            self.results_layout.removeWidget(self._scenario_box)
+            self._scenario_box.deleteLater()
+            self._scenario_box = None
+
+        # Создаём страницу для виджета
+        page = QWidget()
+        page_layout = QVBoxLayout(page)
+        page_layout.setContentsMargins(0, 0, 0, 0)
+        page_layout.setSpacing(8)
+
+        box = QGroupBox("🧩 Целевые домены")
+        box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        layout = QVBoxLayout(box)
+
+        # Передаём общий индикатор сценария для управления подшагами
+        self._target_domains_widget = TargetDomainsWidget(self.domain, self.progress_indicator, self)
+        layout.addWidget(self._target_domains_widget, stretch=1)
+
+        # Заголовок индикатора должен отражать активный инструмент (ТЗ №36)
+        self.progress_box.setTitle("🧩 Целевые домены")
+
+        self._target_domains_widget.finish_clicked.connect(self._on_target_domains_finish)
+
+        page_layout.addWidget(box, 1)  # Добавляем box в страницу
+        self.scene.addWidget(page)
+        self._block_pages.append(page)
+        self.scene.setCurrentWidget(page)
+        self._set_active_block(box)
+
+        self.status_message_requested.emit(f"▶ Запуск: Целевые домены для {self.domain}", True)
+
+    def _on_target_domains_finish(self):
+        """Завершение инструмента Целевые домены: возвращаемся к выбору сценария."""
+        if hasattr(self, '_target_domains_widget') and self._target_domains_widget is not None:
+            self._target_domains_widget.stop_all_workers()
+        self.status_message_requested.emit("❌ Целевые домены завершены", True)
+        self._show_scenario_selection()
+
     def _run_diagnosis_block(self, box: QGroupBox, layout: QVBoxLayout, flags: dict):
         """Блок диагностики с честной проверкой при остановленном сервисе."""
         status_label = QLabel(f"⏳ Проверяем доступность {self.domain}...")
@@ -883,6 +1121,8 @@ class SitePassportWidget(QWidget):
             f"⚠ Ошибка диагностики: {error_msg}", True)
         self.btn_proceed.setEnabled(True)
         self.url_input.setEnabled(True)
+
+
     def _cleanup_after_blockcheck(self, layout=None, result=None):
         """Гарантированно завершает сервисные действия после блокчека."""
         if getattr(self, "_blockcheck_cleanup_done", False):
@@ -1177,20 +1417,19 @@ class SitePassportWidget(QWidget):
                 blockcheck_stats.update_stats(self._blockcheck_settings, actual_checks)
             
             self._found_strategies = result.strategies
-            self._found_strategy = result.strategies[0] if result.strategies else None
+            self._strategy_bundle = getattr(result, "strategies_by_scheme", {}) or {}
+            self._found_strategy = self._primary_strategy_from_bundle(self._strategy_bundle) or (result.strategies[0] if result.strategies else None)
 
-            # ВРЕМЕННО: Записываем основную стратегию в паспорт сайта
+            # Сохраняем метаданные блокчека для явного применения стратегии.
+            # В паспорт сайта стратегия пишется только после нажатия "Применить".
             if result.strategies:
                 mode = "fast"
                 if hasattr(self, '_blockcheck_settings') and self._blockcheck_settings:
                     mode = getattr(self._blockcheck_settings, 'mode', 'fast')
-                passport.manager.set_primary_strategy(
-                    self.domain,
-                    result.strategies[0],
-                    mode=mode,
-                    checks_count=actual_checks,
-                    duration=0  # TODO: добавить таймер работы блокчека
-                )
+
+                self._blockcheck_mode = mode
+                self._blockcheck_checks_count = actual_checks
+                self._blockcheck_duration = 0  # TODO: добавить таймер работы блокчека
             
             status_label = QLabel(
                 f"✅ Найдено стратегий: {len(result.strategies)}"
@@ -1213,6 +1452,7 @@ class SitePassportWidget(QWidget):
             self.status_message_requested.emit(
                 f"✅ Найдено {len(result.strategies)} стратегий", True)
             self._mark_current_progress("completed")
+            
         else:
             error_msg = result.error or "Неизвестная ошибка"
             status_label = QLabel(f"❌ {error_msg}")
@@ -1279,18 +1519,231 @@ class SitePassportWidget(QWidget):
         btn_next.clicked.connect(self._run_next_block)
         layout.addWidget(btn_next)
     
+    def _primary_strategy_from_bundle(self, bundle):
+        if not isinstance(bundle, dict):
+            return ""
+        for key in ("https", "http3", "http"):
+            meta = bundle.get(key)
+            if isinstance(meta, dict) and str(meta.get("command") or "").strip():
+                return str(meta["command"])
+        return ""
+
+    def _bundle_has_strategy(self, bundle):
+        if not isinstance(bundle, dict):
+            return False
+        for key in ("http", "https", "http3"):
+            meta = bundle.get(key)
+            if isinstance(meta, dict) and str(meta.get("command") or "").strip():
+                return True
+        return False
+
     def _run_apply_block(self, box: QGroupBox, layout: QVBoxLayout, flags: dict):
-        """Блок применения (заглушка)."""
-        if self._found_strategy:
-            layout.addWidget(QLabel(f"🎯 Применение стратегии:\n{self._found_strategy[:100]}..."))
+        """Блок применения strategy bundle через чистый генератор конфига."""
+        bundle = getattr(self, "_strategy_bundle", {}) or {}
+
+        if not self._bundle_has_strategy(bundle):
+            layout.addWidget(QLabel("❌ Нет стратегии для применения"))
+            btn_next = QPushButton("Далее")
+            btn_next.setProperty("scenario_transition_button", True)
+            btn_next.clicked.connect(self._run_next_block)
+            layout.addWidget(btn_next)
+            return
+
+        layout.addWidget(QLabel(f"Домен: <b>{self.domain}</b>"))
+        layout.addWidget(QLabel("Найденные стратегии по протоколам:"))
+
+        slot_specs = (
+            ("HTTP tcp/80", "http"),
+            ("HTTPS tcp/443", "https"),
+            ("HTTP/3 QUIC udp/443", "http3"),
+        )
+
+        for label, key in slot_specs:
+            meta = bundle.get(key)
+            if isinstance(meta, dict) and str(meta.get("command") or "").strip():
+                cmd = str(meta["command"])
+                scheme = str(meta.get("scheme") or "")
+                variant = ""
+                if scheme == "https_tls13":
+                    variant = " [TLS 1.3]"
+                elif scheme == "https_tls12":
+                    variant = " [TLS 1.2]"
+
+                lbl = QLabel(f"{label}: {cmd}{variant}")
+                lbl.setWordWrap(True)
+                lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+                lbl.setStyleSheet("font-family: monospace; font-size: 9pt;")
+                layout.addWidget(lbl)
+            else:
+                lbl = QLabel(f"{label}: не найдена")
+                lbl.setStyleSheet("color: #7f8c8d; font-style: italic;")
+                layout.addWidget(lbl)
+
+        layout.addWidget(QLabel("Область применения:"))
+
+        self._apply_info_label = QLabel(
+            "Режим списка обхода: ZapretPass создаст чистый целевой хостлист "
+            "/opt/zapret/ipset/zapretpass-target.txt с одним доменом и применит "
+            "профили только к найденным портам."
+        )
+        self._apply_info_label.setWordWrap(True)
+        self._apply_info_label.setStyleSheet("color: #7f8c8d;")
+
+        self._apply_scope_group = QButtonGroup(self)
+        rb_hostlist = QRadioButton("Только список обхода (рекомендуется)")
+        rb_hostlist.setToolTip(
+            "Используется чистый целевой хостлист из одного домена. "
+            "Старые ручные хвосты конфига не участвуют."
+        )
+        rb_all = QRadioButton("Весь трафик (не рекомендуется)")
+        rb_all.setStyleSheet("color: #e74c3c;")
+        rb_all.setToolTip(
+            "Стратегии применяются без хостлиста — может нарушить работу других ресурсов."
+        )
+        rb_hostlist.setChecked(True)
+
+        self._apply_scope_group.addButton(rb_hostlist, 0)
+        self._apply_scope_group.addButton(rb_all, 1)
+        self._apply_scope_group.buttonClicked.connect(self._on_apply_scope_changed)
+
+        layout.addWidget(rb_hostlist)
+        layout.addWidget(rb_all)
+        layout.addWidget(self._apply_info_label)
+
+        self._apply_progress = QProgressBar()
+        self._apply_progress.setRange(0, 0)
+        self._apply_progress.setTextVisible(False)
+        self._apply_progress.setMaximumHeight(6)
+        self._apply_progress.hide()
+        layout.addWidget(self._apply_progress)
+
+        self._apply_status_label = QLabel("")
+        self._apply_status_label.setWordWrap(True)
+        layout.addWidget(self._apply_status_label)
+
+        btn_row = QHBoxLayout()
+        self._apply_btn = QPushButton("🎯 Применить")
+        self._apply_btn.setMinimumHeight(36)
+        self._apply_btn.clicked.connect(self._do_apply_strategy)
+
+        self._apply_skip_btn = QPushButton("Пропустить")
+        self._apply_skip_btn.clicked.connect(self._run_next_block)
+
+        btn_row.addWidget(self._apply_btn)
+        btn_row.addWidget(self._apply_skip_btn)
+        btn_row.addStretch(1)
+        layout.addLayout(btn_row)
+
+        self._apply_next_btn = None
+        self._apply_worker = None
+
+    def _on_apply_scope_changed(self, btn):
+        scope_all = (btn is self._apply_scope_group.button(1))
+        if hasattr(self, "_apply_info_label") and self._apply_info_label is not None:
+            if scope_all:
+                self._apply_info_label.setText(
+                    "Внимание: весь трафик. Стратегии будут применены без хостлиста "
+                    "и могут нарушить работу других ресурсов."
+                )
+                self._apply_info_label.setStyleSheet("color: #e74c3c;")
+            else:
+                self._apply_info_label.setText(
+                    "Режим списка обхода: ZapretPass создаст чистый целевой хостлист "
+                    "/opt/zapret/ipset/zapretpass-target.txt с одним доменом и применит "
+                    "профили только к найденным портам."
+                )
+                self._apply_info_label.setStyleSheet("color: #7f8c8d;")
+
+    def _do_apply_strategy(self):
+        from core import sudo
+
+        if sudo.manager.get_password() is None:
+            self._apply_status_label.setText("❌ Нет кэшированного пароля sudo")
+            self._apply_status_label.setStyleSheet("color: #e74c3c;")
+            return
+
+        bundle = getattr(self, "_strategy_bundle", {}) or {}
+        if not self._bundle_has_strategy(bundle):
+            self._apply_status_label.setText("❌ Нет стратегии для применения")
+            self._apply_status_label.setStyleSheet("color: #e74c3c;")
+            return
+
+        scope = "all" if self._apply_scope_group.checkedId() == 1 else "hostlist"
+
+        self._apply_btn.setEnabled(False)
+        self._apply_skip_btn.setEnabled(False)
+        self._apply_progress.show()
+        self._apply_status_label.setText("⏳ Применяю стратегию...")
+        self._apply_status_label.setStyleSheet("color: #3498db;")
+        self.status_message_requested.emit(
+            f"⏳ Применение стратегии для {self.domain}...", False
+        )
+
+        self._apply_worker = ApplyStrategyWorker(
+            domain=self.domain,
+            bundle=bundle,
+            scope=scope
+        )
+        self._apply_worker.apply_finished.connect(self._on_apply_finished)
+        self._apply_worker.start()
+
+    def _on_apply_finished(self, ok, msg):
+        self._apply_progress.hide()
+        self._apply_btn.setEnabled(True)
+        self._apply_skip_btn.setEnabled(True)
+
+        if self._apply_worker is not None:
+            self._apply_worker.deleteLater()
+        self._apply_worker = None
+
+        bundle = getattr(self, "_strategy_bundle", {}) or {}
+
+        if ok:
+            text = f"✅ {msg}"
+
+            https_meta = bundle.get("https")
+            if not (isinstance(https_meta, dict) and str(https_meta.get("command") or "").strip()):
+                text += "\n⚠ HTTPS-стратегия не найдена. Если сайт открывается по https, этого может быть недостаточно."
+
+            self._apply_status_label.setText(text)
+            self._apply_status_label.setStyleSheet("color: #2ecc71; font-weight: bold;")
+            self.status_message_requested.emit(f"✅ {msg}", True)
+
+            try:
+                from core import passport
+
+                primary = self._primary_strategy_from_bundle(bundle)
+                if primary:
+                    mode = getattr(self, "_blockcheck_mode", "fast")
+                    checks_count = getattr(self, "_blockcheck_checks_count", 0)
+                    duration = getattr(self, "_blockcheck_duration", 0)
+
+                    passport.manager.set_primary_strategy(
+                        self.domain,
+                        primary,
+                        mode=mode,
+                        checks_count=checks_count,
+                        duration=duration,
+                    )
+            except Exception:
+                # Сохранение паспорта не должно ломать факт применения стратегии.
+                pass
+
+            self._apply_btn.hide()
+            self._apply_skip_btn.hide()
+
+            if self._apply_next_btn is None:
+                self._apply_next_btn = QPushButton("Далее")
+                self._apply_next_btn.setProperty("scenario_transition_button", True)
+                self._apply_next_btn.clicked.connect(self._run_next_block)
+                self._current_block_layout.addWidget(self._apply_next_btn)
         else:
-            layout.addWidget(QLabel("🎯 Нечего применять"))
-        
-        btn_next = QPushButton("Далее")
-        btn_next.setProperty("scenario_transition_button", True)
-        btn_next.clicked.connect(self._run_next_block)
-        layout.addWidget(btn_next)
-    
+            self._apply_status_label.setText(f"❌ {msg}")
+            self._apply_status_label.setStyleSheet("color: #e74c3c; font-weight: bold;")
+            self.status_message_requested.emit(
+                f"❌ Ошибка применения: {msg}", True
+            )
+
     def _run_save_block(self, box: QGroupBox, layout: QVBoxLayout, flags: dict):
         """Блок сохранения: финальный виджет паспорта сайта."""
         try:
@@ -1365,6 +1818,7 @@ class SitePassportWidget(QWidget):
         self._blockcheck_cleanup_done = True
         self._found_strategy = None
         self._found_strategies = []
+        self._strategy_bundle = {}
         self._active_block = None
         self._scenario_box = None
         
@@ -1377,6 +1831,20 @@ class SitePassportWidget(QWidget):
         self.status_message_requested.emit(
             "🌐 Введите адрес сайта для нового сценария", False)
     
+    def _on_service_state_changed(self):
+        """Вызывается при старте/стопе сервиса для обновления браузера."""
+        try:
+            from PyQt6 import sip
+            if hasattr(self, '_diag_v2_widget') and self._diag_v2_widget and hasattr(self._diag_v2_widget, 'recreate_browser'):
+                if not sip.isdeleted(self._diag_v2_widget):
+                    self._diag_v2_widget.recreate_browser()
+            if hasattr(self, '_target_domains_widget') and self._target_domains_widget and hasattr(self._target_domains_widget, 'recreate_browser'):
+                if not sip.isdeleted(self._target_domains_widget):
+                    self._target_domains_widget.recreate_browser()
+        except Exception as e:
+            # Игнорируем ошибки при обновлении браузера - не критично
+            pass
+
     def _clear_results(self):
         """Очищает область результатов."""
         if self._diagnosis_worker is not None:
@@ -1413,4 +1881,5 @@ class SitePassportWidget(QWidget):
         self._diagnosis_result = None
         self._found_strategy = None
         self._found_strategies = []
+        self._strategy_bundle = {}
         self._active_block = None

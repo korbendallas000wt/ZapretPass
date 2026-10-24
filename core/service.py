@@ -167,12 +167,14 @@ def _read_mode_filter() -> str:
         
         content = config.CONFIG_FILE.read_text(encoding="utf-8")
         
-        # Ищем активную (не закомментированную) строку MODE_FILTER=...
-        match = re.search(r'^\s*MODE_FILTER\s*=\s*([A-Za-z_]+)', content, re.MULTILINE)
-        if not match:
+        # Ищем ВСЕ активные строки MODE_FILTER=... и берём последнюю
+        # (в bash последнее значение побеждает)
+        # Поддерживаем значения с кавычками: MODE_FILTER="hostlist"
+        matches = re.findall(r'^\s*MODE_FILTER\s*=\s*"?([A-Za-z_]+)"?', content, re.MULTILINE)
+        if not matches:
             return "unknown"
         
-        value = match.group(1).strip().lower()
+        value = matches[-1].strip().lower()
         return _MODE_TO_INTERNAL.get(value, "unknown")
     
     except PermissionError:
