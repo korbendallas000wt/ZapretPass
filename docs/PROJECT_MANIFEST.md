@@ -4,11 +4,11 @@
 
 ## Архитектура
 
-Приложение разделено на три слоя:
+Приложение разделено на слои:
 
 1. core/ — ядро, бизнес-логика без привязки к UI
 2. core/scenarios.py — Workflow Engine, описание сценариев как данных (не импортирует Qt)
-3. ui/ — Qt6-интерфейс, исполняет сценарии через блоки
+3. ui/ — Qt6-интерфейс, исполняет сценарии через блоки, визуальные воркеры и инструменты
 
 Центральная продуктовая сущность — паспорт сайта: накапливаемое состояние диагностики, стратегий, вспомогательных доменов и скриншотов.
 
@@ -107,6 +107,26 @@ core/zapret_config.py — Единый менеджер конфига zapret
 - set_many(params_dict) — массовое обновление за одну транзакцию
 - restart_service() — перезапуск сервиса после изменения конфига
 - Иерархия исключений: ZapretConfigError, ConfigLockError, ConfigReadError, ConfigWriteError, ConfigValidationError
+
+core/geo.py — Geo & VPN detection
+- detect_vpn() — проверяет наличие активных туннельных интерфейсов через `ip link`.
+- get_geo_info() — получает IP и провайдера через несколько HTTP-источников с fallback.
+- Не импортирует Qt и не использует sudo.
+
+core/dns_resolver.py — Локальный DNS-резолвинг
+- resolve_domain() — резолвит домен через `socket.getaddrinfo`.
+- Возвращает IPv4/IPv6 адреса, время ответа и ошибку в структурированном dict.
+- Работает без sudo и без внешних DNS-утилит.
+
+core/html_checker.py — HTTP/HTML-проверка по IP
+- check_html(ip, domain, is_ipv6=False) — выполняет `curl --resolve` к `https://{domain}/`, форсируя указанный IP.
+- Возвращает HTTP status, final URL, время ответа и ошибку.
+- Используется визуальной диагностикой `diagnosis_v2`.
+
+core/tools.py — Реестр инструментов
+- Tool — минимальная сущность инструмента: id, name, icon, description, enabled.
+- ToolRegistry — сохраняет порядок регистрации и выдаёт список инструментов для UI.
+- Используется в `ui/site_passport.py` для группы «Инструменты».
 
 core/sniffer.py — Перехват SNI через tshark
 - SnifferSettings — dataclass с interface, duration, filter
@@ -296,6 +316,13 @@ strategies может быть списком списков (для совме�
 - curl — проверка доступности сайтов
 - kdialog (KDE) — графический диалог запроса пароля
 
+### Зависимости визуальной диагностики
+- PyQt6 QtWebEngine — требуется `ui/browser_widget.py`.
+- `curl` — требуется `core/html_checker.py` и `ui/aux_worker.py`.
+- `dig` — используется `ui/ech_worker.py`; при недоступности возможен DoH fallback.
+- `ip` — используется `core/geo.py` для детекции туннельных интерфейсов.
+- `install.sh` устанавливает и проверяет эти компоненты.
+
 ### Системные файлы (для чтения статуса)
 - /sys/fs/cgroup/.../zapret.service/cgroup.procs — PID процесса nfqws
 - /usr/lib/systemd/system/zapret.service — unit-файл сервиса
@@ -389,6 +416,15 @@ tshark+curl не воспроизводят цепочку запросов бр
 
 ### Локальный changelog для release notes
 `release_notes` парсятся из `docs/CHANGELOG.md` ветки `main` по секции конкретной версии; GitHub Release body — только fallback. Поэтому публичные GitHub Releases не обязательны для работы обновлений.
+
+---
+
+### Визуальная диагностика и инструменты (dev, unreleased)
+- `diagnosis_v2` работает как ручная пошаговая цепочка Geo -> DNS -> HTML; это не автоматический ремонт.
+- Браузерный виджет требует QtWebEngine и может быть чувствителен к дистрибутивным пакетам.
+- Инструмент «Целевые домены» выполняет ECH -> AUX -> Сборка -> Запись и сохраняет target hosts только в существующий паспорт.
+- В текущем срезе отсутствует каталог `tests/`; проверка состояния выполняется через compile/import/manual smoke, а не unit-тесты.
+- Старая экспериментальная линия с боевым apply/pipeline/live passport не входит в текущий `dev`.
 
 ---
 
@@ -495,6 +531,54 @@ Qt6-интерфейс на PyQt6. Точка входа: zapretpass.py.
 - Сигнализирует о доступной новой версии и открывает диалог обновления/о программе.
 
 ---
+
+### Диагностика и инструменты (ui/)
+
+ui/browser_widget.py — мини-браузер для диагностики
+- BrowserWidget — QWidget на базе QWebEngineView.
+- Использует ephemeral QWebEngineProfile: без persistent cookies, memory HTTP cache, local storage disabled.
+- Сигналы: load_started, load_finished, load_error, load_progress.
+- Предназначен для визуального параллельного наблюдения загрузки сайта.
+
+ui/diagnosis_block.py — каркас визуальных блоков
+- DiagnosisBlock — группбокс с заголовком, деталями, анимацией running-состояния и сеткой параметров.
+- BrowserBlock — контейнер для браузерного виджета.
+
+ui/diagnosis_widget.py — сценарий diagnosis_v2
+- DiagnosisWidget реализует ручную пошаговую цепочку Geo -> DNS -> HTML.
+- Ведёт машину состояний шагов: idle / running / success / failed / blocked.
+- Браузер работает параллельно как визуальный свидетель и не блокирует цепочку.
+- Кнопки «Продолжить», «Повторить», «Завершить» управляют воркерами и сбросом состояния.
+- Кнопка создания паспорта доступна только после корректного завершения диагностики.
+
+ui/target_domains_widget.py — инструмент «Целевые домены»
+- TargetDomainsWidget реализует ручной прогон ECH -> AUX -> Сборка -> Запись.
+- Использует ECHWorker, AUXWorker, AssemblyWorker.
+- TargetHostsDialog позволяет просматривать и удалять записанные целевые домены.
+- Запись target hosts выполняется только в уже существующий паспорт сайта.
+
+ui/geo_worker.py — фоновый поток Geo/VPN
+- GeoWorker вызывает core.geo.detect_vpn() и core.geo.get_geo_info().
+- Передаёт результаты в UI через Qt-сигналы.
+
+ui/dns_worker.py — фоновый поток DNS
+- DnsWorker вызывает core.dns_resolver.resolve_domain().
+
+ui/html_worker.py — фоновый поток HTML-проверки
+- HtmlWorker вызывает core.html_checker.check_html() для выбранного IP.
+
+ui/ech_worker.py — фоновый поток ECH/HTTPS DNS
+- ECHWorker запрашивает HTTPS-запись домена через dig.
+- При отсутствии dig или ошибке использует DoH fallback.
+- Парсит ECH config и извлекает public_name.
+
+ui/aux_worker.py — фоновый поток вспомогательных доменов
+- AUXWorker выполняет вариативные HTTP-пробы через curl с разными схемами и User-Agent.
+- Парсит HTML, извлекает hostname-кандидаты и Alt-Svc подсказки.
+
+ui/assembly_worker.py — фоновый поток сборки target hosts
+- AssemblyWorker агрегирует данные ECH и AUX.
+- Формирует список target hosts и protocol hints с приоритетом источников.
 
 ## Идеи и планы на будущее
 
