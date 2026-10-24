@@ -125,7 +125,8 @@ install_system_deps() {
                 python3 \
                 python3-pyqt6 \
                 python3-pyqt6.qtwebengine \
-                dnsutils
+                dnsutils \
+                iproute2
             ;;
         pacman)
             log_info "Обновление системы..."
@@ -144,7 +145,8 @@ install_system_deps() {
                 python \
                 python-pyqt6 \
                 python-pyqt6-webengine \
-                bind-tools
+                bind-tools \
+                iproute2
             ;;
         dnf)
             log_info "Установка зависимостей..."
@@ -161,7 +163,8 @@ install_system_deps() {
                 python3 \
                 python3-qt6 \
                 python3-qt6-webengine \
-                bind-utils
+                bind-utils \
+                iproute
             ;;
         zypper)
             log_info "Обновление списков пакетов..."
@@ -181,7 +184,8 @@ install_system_deps() {
                 python3 \
                 python3-qt6 \
                 python3-qt6-webengine \
-                bind-utils
+                bind-utils \
+                iproute
             ;;
     esac
     
@@ -189,15 +193,21 @@ install_system_deps() {
 }
 
 verify_pyqt6() {
-    log_step "Проверка установки PyQt6..."
-    
+    log_step "Проверка установки PyQt6 и QtWebEngine..."
+
     if ! python3 -c "import PyQt6" 2>/dev/null; then
         log_error "PyQt6 не установлен или недоступен"
         log_error "Попробуйте установить вручную: sudo $PKG_MANAGER install python3-pyqt6"
         exit 1
     fi
-    
-    log_info "PyQt6 успешно установлен и доступен"
+
+    if ! python3 -c "from PyQt6.QtWebEngineWidgets import QWebEngineView" 2>/dev/null; then
+        log_error "PyQt6 QtWebEngine не установлен или недоступен"
+        log_error "Проверьте пакет QtWebEngine для вашего дистрибутива"
+        exit 1
+    fi
+
+    log_info "PyQt6 и QtWebEngine успешно установлены и доступны"
 }
 
 install_zapret() {
@@ -343,6 +353,22 @@ final_verification() {
     else
         log_info "✓ PyQt6 установлен"
     fi
+
+    if ! python3 -c "from PyQt6.QtWebEngineWidgets import QWebEngineView" 2>/dev/null; then
+        log_error "QtWebEngine недоступен"
+        ERRORS=$((ERRORS + 1))
+    else
+        log_info "✓ QtWebEngine установлен"
+    fi
+
+    for cmd in curl dig ip; do
+        if command -v "$cmd" >/dev/null 2>&1; then
+            log_info "✓ $cmd доступен"
+        else
+            log_error "$cmd не найден в PATH"
+            ERRORS=$((ERRORS + 1))
+        fi
+    done
     
     if [ ! -d "$ZAPRET_DIR" ]; then
         log_error "zapret не установлен в $ZAPRET_DIR"
