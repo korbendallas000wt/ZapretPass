@@ -1357,7 +1357,10 @@ class ZapretConfigManager:
             whitelist_restored = ""
             if cls.BASELINE_WHITELIST_PATH.exists() and cls.BASELINE_WHITELIST_PATH.is_file():
                 try:
+                    # Копируем в data/whitelist.txt (для UI)
                     shutil.copy2(cls.BASELINE_WHITELIST_PATH, config.WHITELIST_FILE)
+                    # Копируем в /opt/zapret/ipset/zapret-hosts-user.txt (для zapret)
+                    shutil.copy2(cls.BASELINE_WHITELIST_PATH, config.IPSET_USER)
                     whitelist_restored = " и whitelist"
                 except Exception as e:
                     log.warning(f"Не удалось восстановить baseline whitelist: {e}")

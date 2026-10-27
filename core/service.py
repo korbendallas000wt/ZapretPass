@@ -120,7 +120,7 @@ def _get_pid_fallback() -> Optional[int]:
     """Универсальный поиск PID процессов nfqws или tpws."""
     try:
         result = subprocess.run(
-            ['pgrep', '-f', 'nfqws|tpws'],
+            ['pgrep', '-f', 'zapret|nfqws|tpws'],
             capture_output=True, text=True, timeout=5
         )
         if result.returncode == 0 and result.stdout.strip():

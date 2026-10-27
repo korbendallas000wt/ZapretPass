@@ -461,12 +461,25 @@ init_baseline_configs() {
         log_warn "Файл assets/defaults/config не найден. Baseline не инициализирован."
     fi
 
-    # Копируем whitelist, только если его ещё нет
-    if [ ! -f "$BASELINE_DIR/whitelist.txt" ] && [ -f "$APP_DIR/assets/defaults/whitelist.txt" ]; then
-        cp "$APP_DIR/assets/defaults/whitelist.txt" "$BASELINE_DIR/whitelist.txt"
-        log_info "Эталонный whitelist.txt скопирован в data/baseline/"
+    # Копируем whitelist из ipset в baseline, только если его ещё нет
+    if [ ! -f "$BASELINE_DIR/whitelist.txt" ] && [ -f "$APP_DIR/assets/defaults/ipset/zapret-hosts-user.txt" ]; then
+        cp "$APP_DIR/assets/defaults/ipset/zapret-hosts-user.txt" "$BASELINE_DIR/whitelist.txt"
+        log_info "Эталонный whitelist скопирован в data/baseline/"
     elif [ -f "$BASELINE_DIR/whitelist.txt" ]; then
         log_info "Пользовательский baseline whitelist уже существует, пропуск."
+    fi
+
+    # Копируем стандартные списки ipset для zapret, если их нет в /opt/zapret/ipset/
+    if [ -d "$APP_DIR/assets/defaults/ipset" ]; then
+        sudo mkdir -p /opt/zapret/ipset
+        if [ ! -f /opt/zapret/ipset/zapret-hosts-user.txt ]; then
+            sudo cp "$APP_DIR/assets/defaults/ipset/zapret-hosts-user.txt" /opt/zapret/ipset/
+            log_info "Эталонный zapret-hosts-user.txt скопирован в /opt/zapret/ipset/"
+        fi
+        if [ ! -f /opt/zapret/ipset/zapret-hosts-user-exclude.txt ]; then
+            sudo cp "$APP_DIR/assets/defaults/ipset/zapret-hosts-user-exclude.txt" /opt/zapret/ipset/
+            log_info "Эталонный zapret-hosts-user-exclude.txt скопирован в /opt/zapret/ipset/"
+        fi
     fi
 }
 
