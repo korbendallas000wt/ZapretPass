@@ -372,8 +372,19 @@ configure_autostart() {
             log_info "Ручной запуск: через s6-svc или init-скрипт"
             ;;
         none)
-            log_warn "⚠️ Init-система не обнаружена. Автозапуск не настроен."
-            log_info "Ручной запуск: sudo $ZAPRET_DIR/nfqws или скрипты из $ZAPRET_DIR/init.d/"
+            log_warn "⚠️ Init-система не обнаружена. Настраиваем fallback через sysvinit-скрипт."
+            # Копируем sysvinit-скрипт как fallback
+            if [ -f "/opt/zapret/init.d/sysvinit/zapret" ]; then
+                sudo cp /opt/zapret/init.d/sysvinit/zapret /etc/init.d/
+                sudo chmod +x /etc/init.d/zapret
+                log_info "Sysvinit-скрипт скопирован в /etc/init.d/zapret (fallback)"
+            fi
+            # Копируем daemon-скрипт
+            if [ -f "$APP_DIR/scripts/zapretpass-daemon.sh" ]; then
+                sudo cp "$APP_DIR/scripts/zapretpass-daemon.sh" "$ZAPRET_DIR/zapretpass-daemon.sh"
+                sudo chmod +x "$ZAPRET_DIR/zapretpass-daemon.sh"
+                log_info "Daemon-скрипт установлен: $ZAPRET_DIR/zapretpass-daemon.sh"
+            fi
             ;;
     esac
 }
@@ -548,6 +559,15 @@ show_completion_message() {
             openrc)   echo "  • sudo rc-service zapret start|stop|restart" ;;
             runit)    echo "  • sudo sv start|stop|restart zapret" ;;
             s6)       echo "  • через s6-svc или init-скрипты" ;;
+            none)
+                echo "  • sudo $ZAPRET_DIR/zapretpass-daemon.sh start|stop|restart|status"
+                echo
+                echo "Для автозапуска при загрузке добавьте в crontab:"
+                echo "  sudo crontab -e"
+                echo "  @reboot $ZAPRET_DIR/zapretpass-daemon.sh start"
+                echo
+                echo "⚠️ Процесс будет работать в фоне (PID-файл: /var/run/zapretpass.pid)"
+                ;;
             *)        echo "  • вручную через $ZAPRET_DIR/nfqws или скрипты из $ZAPRET_DIR/init.d/" ;;
         esac
         echo
