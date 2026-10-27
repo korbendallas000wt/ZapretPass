@@ -315,8 +315,8 @@ configure_autostart() {
             fi
             ;;
         sysvinit)
-            if [ -f "/opt/zapret/init.d/sysvinit/zapret" ]; then
-                sudo cp /opt/zapret/init.d/sysvinit/zapret /etc/init.d/
+            if [ -f "/opt/zapret/init.d/sysv/zapret" ]; then
+                sudo cp /opt/zapret/init.d/sysv/zapret /etc/init.d/
                 sudo chmod +x /etc/init.d/zapret
                 if command -v update-rc.d >/dev/null 2>&1; then
                     sudo update-rc.d zapret defaults
@@ -343,15 +343,15 @@ configure_autostart() {
             fi
             ;;
         runit)
-            # Runit может использовать /var/service или /etc/service
-            local RUNIT_SRC=""
+            # Runit использует /etc/runit/runsvdir/default/, /var/service/ или /etc/service/
+            local RUNIT_SRC="/opt/zapret/init.d/runit/zapret"
             local RUNIT_DST=""
-            if [ -d "/opt/zapret/init.d/runit" ]; then
-                RUNIT_SRC="/opt/zapret/init.d/runit/zapret"
-            fi
 
-            if [ -n "$RUNIT_SRC" ] && [ -f "$RUNIT_SRC" ]; then
-                if [ -d /var/service ]; then
+            if [ -d "$RUNIT_SRC" ]; then
+                # Определяем правильную директорию для runit-сервисов
+                if [ -d /etc/runit/runsvdir/default ]; then
+                    RUNIT_DST="/etc/runit/runsvdir/default/zapret"
+                elif [ -d /var/service ]; then
                     RUNIT_DST="/var/service/zapret"
                 elif [ -d /etc/service ]; then
                     RUNIT_DST="/etc/service/zapret"
@@ -359,10 +359,11 @@ configure_autostart() {
                     sudo mkdir -p /var/service
                     RUNIT_DST="/var/service/zapret"
                 fi
-                sudo ln -sf "$RUNIT_SRC" "$RUNIT_DST"
-                log_info "✅ Автозапуск настроен через runit (symlink: $RUNIT_DST)"
+                # Копируем директорию сервиса (не symlink, а содержимое run/finish)
+                sudo cp -r "$RUNIT_SRC" "$RUNIT_DST"
+                log_info "✅ Автозапуск настроен через runit (сервис: $RUNIT_DST)"
             else
-                log_warn "Скрипт runit не найден в /opt/zapret/init.d/runit/"
+                log_warn "Runit-service не найден в $RUNIT_SRC"
                 log_info "Ручной запуск: sudo sv start zapret"
             fi
             ;;
@@ -374,8 +375,8 @@ configure_autostart() {
         none)
             log_warn "⚠️ Init-система не обнаружена. Настраиваем fallback через sysvinit-скрипт."
             # Копируем sysvinit-скрипт как fallback
-            if [ -f "/opt/zapret/init.d/sysvinit/zapret" ]; then
-                sudo cp /opt/zapret/init.d/sysvinit/zapret /etc/init.d/
+            if [ -f "/opt/zapret/init.d/sysv/zapret" ]; then
+                sudo cp /opt/zapret/init.d/sysv/zapret /etc/init.d/
                 sudo chmod +x /etc/init.d/zapret
                 log_info "Sysvinit-скрипт скопирован в /etc/init.d/zapret (fallback)"
             fi

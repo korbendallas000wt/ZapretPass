@@ -57,7 +57,15 @@ def _get_service_command(action: str) -> list[str]:
     elif init == 'openrc':
         return ['rc-service', 'zapret', action]
     elif init == 'runit':
-        svc_path = '/var/service/zapret' if Path('/var/service/zapret').exists() else '/etc/service/zapret'
+        # AntiX использует /etc/runit/runsvdir/default/, другие — /var/service/ или /etc/service/
+        if Path('/etc/runit/runsvdir/default/zapret').exists():
+            svc_path = '/etc/runit/runsvdir/default/zapret'
+        elif Path('/var/service/zapret').exists():
+            svc_path = '/var/service/zapret'
+        elif Path('/etc/service/zapret').exists():
+            svc_path = '/etc/service/zapret'
+        else:
+            svc_path = '/etc/runit/runsvdir/default/zapret'  # fallback для AntiX
         return ['sv', action, svc_path]
     elif init == 'daemon':
         return ['/opt/zapret/zapretpass-daemon.sh', action]
