@@ -1305,6 +1305,7 @@ class ZapretConfigManager:
     # =========================================================================
 
     BASELINE_CONFIG_PATH = config.PROJECT_DIR / "data" / "baseline" / "config"
+    BASELINE_WHITELIST_PATH = config.PROJECT_DIR / "data" / "baseline" / "whitelist.txt"
 
     @classmethod
     def baseline_available(cls) -> bool:
@@ -1325,17 +1326,20 @@ class ZapretConfigManager:
 
     @classmethod
     def restore_baseline(cls, restart: bool = True) -> tuple[bool, str]:
-        """Restores normalized baseline config to /opt/zapret/config.
+        """Restores normalized baseline config and whitelist to system.
 
         Minimal safe action:
-        1. Check baseline exists.
+        1. Check baseline config exists.
         2. Backup current config.
-        3. Write baseline atomically.
+        3. Write baseline config atomically.
         4. Validate bash syntax.
-        5. Optionally restart zapret service.
+        5. Restore baseline whitelist.txt if it exists.
+        6. Optionally restart zapret service.
 
         Returns (success, message).
         """
+        import shutil
+
         try:
             if not cls.baseline_available():
                 return False, f"Baseline конфиг не найден: {cls.BASELINE_CONFIG_PATH}"
@@ -1349,10 +1353,19 @@ class ZapretConfigManager:
             cls._write_config_atomic(baseline_content)
             cls._validate_config_syntax()
 
+            # Восстанавливаем whitelist, если он есть в baseline
+            whitelist_restored = ""
+            if cls.BASELINE_WHITELIST_PATH.exists() and cls.BASELINE_WHITELIST_PATH.is_file():
+                try:
+                    shutil.copy2(cls.BASELINE_WHITELIST_PATH, config.WHITELIST_FILE)
+                    whitelist_restored = " и whitelist"
+                except Exception as e:
+                    log.warning(f"Не удалось восстановить baseline whitelist: {e}")
+
             if restart:
                 cls.restart_service()
 
-            return True, "Эталонный конфиг восстановлен, сервис перезапущен"
+            return True, f"Эталонный конфиг{whitelist_restored} восстановлен, сервис перезапущен"
         except ZapretConfigError as e:
             return False, str(e)
         except Exception as e:

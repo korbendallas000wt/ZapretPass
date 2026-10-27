@@ -430,6 +430,34 @@ EOF
     log_info "Ярлык создан: $DESKTOP_FILE"
 }
 
+
+# ============================================================
+# Инициализация baseline конфигов из assets/defaults
+# ============================================================
+init_baseline_configs() {
+    log_step "Инициализация эталонных конфигураций (baseline)..."
+    local BASELINE_DIR="$APP_DIR/data/baseline"
+    mkdir -p "$BASELINE_DIR"
+
+    # Копируем config, только если его ещё нет (не перезаписываем пользовательский baseline)
+    if [ ! -f "$BASELINE_DIR/config" ] && [ -f "$APP_DIR/assets/defaults/config" ]; then
+        cp "$APP_DIR/assets/defaults/config" "$BASELINE_DIR/config"
+        log_info "Эталонный config скопирован в data/baseline/"
+    elif [ -f "$BASELINE_DIR/config" ]; then
+        log_info "Пользовательский baseline config уже существует, пропуск."
+    else
+        log_warn "Файл assets/defaults/config не найден. Baseline не инициализирован."
+    fi
+
+    # Копируем whitelist, только если его ещё нет
+    if [ ! -f "$BASELINE_DIR/whitelist.txt" ] && [ -f "$APP_DIR/assets/defaults/whitelist.txt" ]; then
+        cp "$APP_DIR/assets/defaults/whitelist.txt" "$BASELINE_DIR/whitelist.txt"
+        log_info "Эталонный whitelist.txt скопирован в data/baseline/"
+    elif [ -f "$BASELINE_DIR/whitelist.txt" ]; then
+        log_info "Пользовательский baseline whitelist уже существует, пропуск."
+    fi
+}
+
 # ============================================================
 # Финальная проверка
 # ============================================================
@@ -564,10 +592,11 @@ main() {
     install_zapret
     configure_autostart
 
-    # СЛОЙ 2: Надстройка (UI)
+    # СЛОЙ 2: Надстройка (UI) и данные
     install_ui_deps
     check_ui_availability
     setup_ui
+    init_baseline_configs
 
     # Финал
     final_verification
