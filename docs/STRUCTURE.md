@@ -56,11 +56,15 @@ ZapretPass/
 │   ├── service_controller.py   Контроллер статуса сервиса для UI
 │   ├── about_dialog.py         Диалог «О программе» и обновлений
 │   └── update_indicator.py     Индикатор доступного обновления
-├── data/                       Данные приложения
+├── assets/                     Эталонные конфиги и списки (в git)
+│   └── defaults/               Baseline config/ipset для установки и restore
+├── data/                       Данные приложения (runtime, вне git)
 │   ├── strategies/             Результаты blockcheck: {domain}.json
 │   ├── sites/                  Паспорта сайтов: {domain}/passport.json, strategies.json, screenshots/
 │   ├── sniffer_results/        Результаты сниффинга: {domain}.txt
 │   └── logs/                   Логи приложения
+├── scripts/                    Вспомогательные скрипты установки/запуска
+│   └── zapretpass-daemon.sh    Fallback daemon-обёртка для систем без init
 ├── resources/                  Ресурсы приложения (пока .gitkeep)
 ├── docs/                       Документация проекта
 │   ├── STRUCTURE.md            Этот файл — карта проекта
@@ -124,7 +128,7 @@ Qt6-интерфейс приложения. Вкладка «Паспорт с�
 | `about_dialog.py` | Диалог «О программе» и обновлений |
 | `update_indicator.py` | Индикатор доступного обновления |
 
-### `data/` — данные приложения
+### `data/` — данные приложения (runtime, не отслеживается в git)
 
 | Директория | Содержимое |
 |---|---|
@@ -222,6 +226,9 @@ domain
 .gitignore https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/.gitignore
 README.md https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/README.md
 VERSION https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/VERSION
+assets/defaults/config https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/assets/defaults/config
+assets/defaults/ipset/zapret-hosts-user-exclude.txt https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/assets/defaults/ipset/zapret-hosts-user-exclude.txt
+assets/defaults/ipset/zapret-hosts-user.txt https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/assets/defaults/ipset/zapret-hosts-user.txt
 core/__init__.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/core/__init__.py
 core/applier.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/core/applier.py
 core/auth_limits.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/core/auth_limits.py
@@ -244,15 +251,12 @@ core/sudo.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/
 core/tools.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/core/tools.py
 core/updater.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/core/updater.py
 core/zapret_config.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/core/zapret_config.py
-data/logs/.gitkeep https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/data/logs/.gitkeep
-data/sites/.gitkeep https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/data/sites/.gitkeep
-data/sniffer_results/.gitkeep https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/data/sniffer_results/.gitkeep
-data/strategies/.gitkeep https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/data/strategies/.gitkeep
 docs/CHANGELOG.md https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/docs/CHANGELOG.md
 docs/PROJECT_MANIFEST.md https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/docs/PROJECT_MANIFEST.md
 docs/STRUCTURE.md https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/docs/STRUCTURE.md
 install.sh https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/install.sh
 resources/.gitkeep https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/resources/.gitkeep
+scripts/zapretpass-daemon.sh https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/scripts/zapretpass-daemon.sh
 ui/__init__.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/ui/__init__.py
 ui/about_dialog.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/ui/about_dialog.py
 ui/assembly_worker.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/dev/ui/assembly_worker.py

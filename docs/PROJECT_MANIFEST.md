@@ -402,11 +402,11 @@ tshark+curl не воспроизводят цепочку запросов бр
 ### Неинтерактивный blockcheck и Ubuntu без QUIC
 `core/blockcheck.py` запускает `blockcheck.sh` через `BATCH=1` и переменные окружения. Это устраняет сдвиг ответов в stdin на системах, где `curl` собран без HTTP/3 и блокчек пропускает QUIC-вопрос. Если пользователь включил QUIC, тест всё равно остаётся на автодетекте `blockcheck.sh`: на Ubuntu без HTTP/3 он корректно пропускается.
 
-### install.sh и systemd-юниты
-Стандартный `install_bin.sh` из zapret устанавливает бинарники, но не регистрирует systemd-юниты автоматически. `install.sh` отдельно копирует юниты из `/opt/zapret/init.d/systemd` в `/etc/systemd/system`, выполняет `daemon-reload` и `systemctl enable zapret`.
+### install.sh и автозапуск
+Стандартный `install_bin.sh` из zapret устанавливает бинарники, но не регистрирует автозапуск. `install.sh` определяет init-систему и настраивает запуск корректно: для systemd копирует юниты и включает `zapret.service`; для sysvinit/openrc/runit/s6 использует соответствующие скрипты/сервисы; при отсутствии init устанавливает fallback через `/etc/init.d/zapret` и `scripts/zapretpass-daemon.sh`.
 
 ### Dev-зависимости для сборки zapret
-Для сборки `nfqws`/`tpws` из исходников нужны dev-пакеты. `install.sh` ставит их для apt/pacman/dnf; без них установка может упасть на чистой системе.
+Для сборки `nfqws`/`tpws` из исходников нужны dev-пакеты. `install.sh` ставит их для apt/pacman/dnf/zypper; без них установка может упасть на чистой системе.
 
 
 ### Обновления в dev-директории
@@ -433,7 +433,7 @@ tshark+curl не воспроизводят цепочку запросов бр
 ### Пути (в core/config.py)
 - PROJECT_DIR = `Path(__file__).parent.parent` — динамическая папка проекта (portable-режим)
 - ZAPRET_DIR = /opt/zapret — системный путь к движку (может быть симлинком)
-- Данные: data/ внутри PROJECT_DIR
+- Данные: `data/` внутри `PROJECT_DIR` (runtime, не отслеживается в git); эталонные конфиги и списки лежат в `assets/defaults/`
 
 ### Настройки блокчека (в core/blockcheck.py, класс BlockcheckSettings)
 По умолчанию:
@@ -590,8 +590,8 @@ ui/assembly_worker.py — фоновый поток сборки target hosts
 - клонирует или обновляет `/opt/zapret`
 - собирает бинарники `nfqws`/`tpws` при отсутствии, включая `make systemd` при наличии systemd
 - запускает `install_bin.sh` из zapret
-- копирует systemd-юниты `zapret.service`, `zapret-list-update.service`, `zapret-list-update.timer`
-- создаёт `zapretpass.sh`, каталоги `data/` и desktop-ярлык
+- копирует юниты/скрипты автозапуска для доступной init-системы (`systemd`, `sysvinit`, `openrc`, `runit`, `s6`)
+- создаёт `zapretpass.sh`, каталоги `data/`, инициализирует baseline из `assets/defaults/` и desktop-ярлык
 - выполняет финальную проверку установки
 
 Осталось:
