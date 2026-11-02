@@ -56,11 +56,15 @@ ZapretPass/
 │   ├── service_controller.py   Контроллер статуса сервиса для UI
 │   ├── about_dialog.py         Диалог «О программе» и обновлений
 │   └── update_indicator.py     Индикатор доступного обновления
-├── data/                       Данные приложения
+├── assets/                     Эталонные конфиги и списки (в git)
+│   └── defaults/               Baseline config/ipset для установки и restore
+├── data/                       Данные приложения (runtime, вне git)
 │   ├── strategies/             Результаты blockcheck: {domain}.json
 │   ├── sites/                  Паспорта сайтов: {domain}/passport.json, strategies.json, screenshots/
 │   ├── sniffer_results/        Результаты сниффинга: {domain}.txt
 │   └── logs/                   Логи приложения
+├── scripts/                    Вспомогательные скрипты установки/запуска
+│   └── zapretpass-daemon.sh    Fallback daemon-обёртка для систем без init
 ├── resources/                  Ресурсы приложения (пока .gitkeep)
 ├── docs/                       Документация проекта
 │   ├── STRUCTURE.md            Этот файл — карта проекта
@@ -124,7 +128,7 @@ Qt6-интерфейс приложения. Вкладка «Паспорт с�
 | `about_dialog.py` | Диалог «О программе» и обновлений |
 | `update_indicator.py` | Индикатор доступного обновления |
 
-### `data/` — данные приложения
+### `data/` — данные приложения (runtime, не отслеживается в git)
 
 | Директория | Содержимое |
 |---|---|
@@ -216,12 +220,15 @@ domain
 
 Формат: одна строка — `<путь> <raw-url>`. Ветка: `dev`. Модель может взять URL целиком.
 
-Примечание: это релизная версия документа; raw-ссылки привязаны к ветке `main`.
+Примечание: ссылки привязаны к текущей ветке документации. При переносе документа в `main` необходимо заменить `/dev/` на `/main/`.
 
 ```text
 .gitignore https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/main/.gitignore
 README.md https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/main/README.md
 VERSION https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/main/VERSION
+assets/defaults/config https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/main/assets/defaults/config
+assets/defaults/ipset/zapret-hosts-user-exclude.txt https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/main/assets/defaults/ipset/zapret-hosts-user-exclude.txt
+assets/defaults/ipset/zapret-hosts-user.txt https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/main/assets/defaults/ipset/zapret-hosts-user.txt
 core/__init__.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/main/core/__init__.py
 core/applier.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/main/core/applier.py
 core/auth_limits.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/main/core/auth_limits.py
@@ -244,15 +251,12 @@ core/sudo.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/main
 core/tools.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/main/core/tools.py
 core/updater.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/main/core/updater.py
 core/zapret_config.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/main/core/zapret_config.py
-data/logs/.gitkeep https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/main/data/logs/.gitkeep
-data/sites/.gitkeep https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/main/data/sites/.gitkeep
-data/sniffer_results/.gitkeep https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/main/data/sniffer_results/.gitkeep
-data/strategies/.gitkeep https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/main/data/strategies/.gitkeep
 docs/CHANGELOG.md https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/main/docs/CHANGELOG.md
 docs/PROJECT_MANIFEST.md https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/main/docs/PROJECT_MANIFEST.md
 docs/STRUCTURE.md https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/main/docs/STRUCTURE.md
 install.sh https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/main/install.sh
 resources/.gitkeep https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/main/resources/.gitkeep
+scripts/zapretpass-daemon.sh https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/main/scripts/zapretpass-daemon.sh
 ui/__init__.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/main/ui/__init__.py
 ui/about_dialog.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/main/ui/about_dialog.py
 ui/assembly_worker.py https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/main/ui/assembly_worker.py

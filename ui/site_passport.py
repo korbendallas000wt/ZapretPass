@@ -1348,6 +1348,47 @@ class SitePassportWidget(QWidget):
         timer.timeout.connect(tick)
         timer.start()
 
+    def _show_password_error(self, layout, reason: str, message: str):
+        """Универсальный обработчик ошибок аутентификации.
+        
+        Args:
+            layout: контейнер для добавления виджетов
+            reason: строка от sudo.manager.last_failure_reason()
+            message: сообщение о том, что не было запущено
+        """
+        from core import sudo
+        
+        # Получаем актуальную причину
+        current_reason = sudo.manager.last_failure_reason()
+        
+        if current_reason == "system_locked":
+            # Системная блокировка через faillock
+            lock_info = sudo.manager.get_system_lock_info()
+            self._show_system_lockout(layout, lock_info)
+            return
+        
+        if current_reason == "locked":
+            # Внутренняя блокировка SudoManager
+            remaining = int(sudo.manager.seconds_until_unlock())
+            self._show_password_cooldown(layout, remaining)
+            return
+        
+        # Остальные случаи: cancelled, empty, no_dialog, invalid, none
+        error_messages = {
+            "cancelled": "❌ Ввод пароля отменён.",
+            "empty": "❌ Пароль не может быть пустым.",
+            "no_dialog": "❌ Диалог запроса пароля не настроен.",
+            "invalid": "❌ Неверный пароль.",
+        }
+        
+        error_text = error_messages.get(current_reason, f"❌ Ошибка аутентификации: {current_reason}")
+        
+        label = QLabel(f"{error_text}\n{message}")
+        label.setWordWrap(True)
+        label.setStyleSheet("color: #e74c3c; font-weight: bold;")
+        layout.addWidget(label)
+
+
     def _stop_blockcheck(self):
         """Останавливает блокчек по запросу пользователя."""
         if self._blockcheck_worker is not None:

@@ -235,7 +235,7 @@ def backup_config(password: str) -> tuple[bool, str]:
     from datetime import datetime
     
     if not CONFIG_FILE.exists():
-        return False, "Конфиг не существует"
+        return True, "Конфиг не существует, бэкап пропущен (первая установка)"
     
     # Проверяем содержимое конфига перед бэкапом
     try:
