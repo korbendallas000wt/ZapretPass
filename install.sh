@@ -125,7 +125,32 @@ detect_os() {
 # ============================================================
 install_core_deps() {
     log_step "Установка базовых зависимостей (ядро zapret)..."
-
+    # Предохранители для свежих систем: инструменты сборки + dig для диагностики
+    case "$PKG_MANAGER" in
+        pacman)
+            log_info "Обновление ключей pacman (manjaro-keyring / archlinux-keyring)..."
+            sudo pacman -Sy --noconfirm manjaro-keyring archlinux-keyring 2>/dev/null || sudo pacman -Sy --noconfirm archlinux-keyring 2>/dev/null || true
+            log_info "Установка base-devel (make, gcc) и dig (bind)..."
+            sudo pacman -S --needed --noconfirm base-devel bind 2>/dev/null || true
+            ;;
+        apt)
+            log_info "Обновление списков пакетов apt..."
+            sudo apt-get update -qq 2>/dev/null || true
+            log_info "Установка build-essential (make, gcc) и dig (dnsutils)..."
+            sudo apt-get install -y build-essential dnsutils 2>/dev/null || true
+            ;;
+        dnf)
+            log_info "Установка инструментов сборки (gcc, make) и dig (bind-utils)..."
+            sudo dnf install -y gcc make bind-utils 2>/dev/null || true
+            ;;
+        zypper)
+            log_info "Установка инструментов сборки (gcc, make) и dig (bind-utils)..."
+            sudo zypper install -y gcc make bind-utils 2>/dev/null || true
+            ;;
+        *)
+            log_warn "Неизвестный пакетный менеджер. Пропускаем установку базовых зависимостей."
+            ;;
+    esac
     # libsystemd-dev нужен ТОЛЬКО для systemd
     local SYSTEMD_DEV_PKG=""
     if [ "$INIT_SYSTEM" = "systemd" ]; then
