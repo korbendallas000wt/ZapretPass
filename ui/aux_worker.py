@@ -129,7 +129,7 @@ class AUXWorker(QThread):
                 result["final_url"] = url
 
             # Разделяем заголовки и тело
-            header_end = headers_and_body.find("\r\n\r\n")
+            header_end = headers_and_body.find("\n\n")
             if header_end > 0:
                 headers_text = headers_and_body[:header_end]
                 body = headers_and_body[header_end + 4:]
@@ -161,7 +161,7 @@ class AUXWorker(QThread):
             is_html_content_type = "text/html" in content_type or "application/xhtml" in content_type
             
             # Проверяем тело на HTML-теги (расширенная проверка)
-            lower_body = body.lower()[:10000]
+            lower_body = body.lower()[:50000]
             looks_html = (
                 "<html" in lower_body or 
                 "<head" in lower_body or 
