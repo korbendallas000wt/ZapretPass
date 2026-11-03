@@ -13,7 +13,7 @@ from pathlib import Path
 LOGGER_NAME = "zapretpass"
 
 # Путь к логам
-LOG_DIR = Path.home() / "Scripts" / "ZapretPass" / "data" / "logs"
+LOG_DIR = Path(__file__).parent.parent / "data" / "logs"
 LOG_FILE = LOG_DIR / "zapretpass.log"
 LOG_FILE_DEBUG = LOG_DIR / "zapretpass_debug.log"
 
