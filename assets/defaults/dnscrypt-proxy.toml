@@ -1,47 +1,16 @@
-# ZapretPass Minimalist dnscrypt-proxy config
-# Optimized for low-RAM systems (e.g., Asus X50VL)
-# No ad-blocking, no heavy caching, just secure DNS (DoT/DoH)
-
+# Минималистичный конфиг для ZapretPass DoT (совместим с dnscrypt-proxy 2.1.x)
 listen_addresses = ['127.0.0.1:53']
-max_clients = 250
+server_names = ['cloudflare', 'quad9']
 
-# Use servers implementing DNSCrypt, DoH, or DoT
-dnscrypt_servers = true
-doh_servers = true
-require_dnssec = false
-require_nolog = true
-require_nofilter = true
+[query_log]
+  file = ''
 
-# Force TCP to avoid UDP fragmentation issues with some DPIs
-force_tcp = false
+[nx_log]
+  file = ''
 
-# Timeout and keepalive
-timeout = 2500
-keepalive = 30
-
-# Minimalist caching (LRU only, saves RAM)
-cache = true
-cache_size = 256
-cache_min_ttl = 60
-cache_max_ttl = 600
-cache_neg_min_ttl = 10
-cache_neg_max_ttl = 60
-
-# Disable heavy features
-block_ipv6 = false
-lb_strategy = 'p2'
-lb_estimator = true
-
-# Logging (Errors only to save I/O)
-log_level = 1
-log_file = '/var/log/zapretpass/dnscrypt-proxy.log'
-log_file_latest = true
-
-# Reliable DoT/DoH servers (Quad9 & Cloudflare)
-server_names = ['quad9-doh-ip4-port443-nofilter-dnssec', 'cloudflare-security']
-
-# Fallback resolvers (used ONLY if encrypted DNS is completely unreachable during bootstrap)
-fallback_resolvers = ['9.9.9.9:53', '8.8.8.8:53']
-ignore_system_dns = true
-netprobe_timeout = 5
-netprobe_address = '9.9.9.9:53'
+[sources]
+  [sources.'public-resolvers']
+    url = 'https://download.dnscrypt.info/resolvers-list/v3/public-resolvers.md'
+    cache_file = '/var/cache/dnscrypt-proxy/public-resolvers.md'
+    minisign_key = 'RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3'
+    refresh_delay = 72
