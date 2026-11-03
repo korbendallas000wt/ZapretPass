@@ -631,6 +631,65 @@ show_completion_message() {
 # ============================================================
 # Главная функция
 # ============================================================
+
+# ============================================================
+# Установка и настройка модуля защищённого DNS (DoT/DoH)
+# ============================================================
+install_dot_module() {
+    log_step "Установка модуля защищённого DNS (DoT/DoH)..."
+    
+    # Определяем переменные, если они не заданы глобально
+    local APP_DIR="${APP_DIR:-$(dirname "$(readlink -f "$0")")}"
+    local ZAPRET_DIR="${ZAPRET_DIR:-/opt/zapret}"
+    
+    # Определяем пакетный менеджер и устанавливаем dnscrypt-proxy
+    if command -v pacman >/dev/null 2>&1; then
+        log_info "Установка dnscrypt-proxy через pacman (Arch/Manjaro)..."
+        sudo pacman -S --noconfirm --needed --quiet dnscrypt-proxy || log_warn "Не удалось установить dnscrypt-proxy через pacman"
+    elif command -v apt-get >/dev/null 2>&1; then
+        log_info "Установка dnscrypt-proxy через apt (Debian/Ubuntu/AntiX)..."
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq dnscrypt-proxy || log_warn "Не удалось установить dnscrypt-proxy через apt"
+    elif command -v zypper >/dev/null 2>&1; then
+        log_info "Установка dnscrypt-proxy через zypper (openSUSE)..."
+        sudo zypper install -y --quiet dnscrypt-proxy || log_warn "Не удалось установить dnscrypt-proxy через zypper"
+    elif command -v apk >/dev/null 2>&1; then
+        log_info "Установка dnscrypt-proxy через apk (Alpine)..."
+        sudo apk add --quiet dnscrypt-proxy || log_warn "Не удалось установить dnscrypt-proxy через apk"
+    else
+        log_warn "Неизвестный пакетный менеджер. Установите dnscrypt-proxy вручную."
+    fi
+    
+    # Копируем минималистичный конфиг и скрипт управления в /opt/zapret/
+    if [ -d "$ZAPRET_DIR" ]; then
+        sudo mkdir -p "$ZAPRET_DIR/assets/defaults"
+        if [ -f "$APP_DIR/assets/defaults/dnscrypt-proxy.toml" ]; then
+            sudo cp "$APP_DIR/assets/defaults/dnscrypt-proxy.toml" "$ZAPRET_DIR/assets/defaults/"
+            log_info "Эталонный конфиг скопирован в $ZAPRET_DIR/assets/defaults/"
+        fi
+        
+        sudo mkdir -p "$ZAPRET_DIR/scripts"
+        if [ -f "$APP_DIR/scripts/zapretpass-dot.sh" ]; then
+            sudo cp "$APP_DIR/scripts/zapretpass-dot.sh" "$ZAPRET_DIR/scripts/"
+            sudo chmod +x "$ZAPRET_DIR/scripts/zapretpass-dot.sh"
+            log_info "Скрипт управления DoT установлен: $ZAPRET_DIR/scripts/zapretpass-dot.sh"
+        fi
+    else
+        log_warn "Директория $ZAPRET_DIR не найдена. Модуль DoT доступен только в исходниках."
+    fi
+    
+    # Если передан флаг --enable-dot, сразу включаем
+    if [ "$ENABLE_DOT" -eq 1 ]; then
+        log_info "Флаг --enable-dot активен, включаю защищённый DNS..."
+        if [ -x "$ZAPRET_DIR/scripts/zapretpass-dot.sh" ]; then
+            sudo "$ZAPRET_DIR/scripts/zapretpass-dot.sh" enable
+        else
+            log_warn "Скрипт zapretpass-dot.sh не найден или не исполняемый"
+        fi
+    fi
+    
+    log_info "✅ Модуль DoT/DoH готов к использованию"
+}
 main() {
     echo
     echo -e "${BLUE}========================================${NC}"
@@ -638,6 +697,16 @@ main() {
     echo -e "${BLUE} Многослойная архитектура: ядро + UI${NC}"
     echo -e "${BLUE}========================================${NC}"
     echo
+
+    # Парсинг аргументов командной строки
+    ENABLE_DOT=0
+    for arg in "$@"; do
+        case "$arg" in
+            --enable-dot)
+                ENABLE_DOT=1
+                ;;
+        esac
+    done
 
     check_environment
 
@@ -650,6 +719,9 @@ main() {
     install_core_deps
     install_zapret
     configure_autostart
+
+    # СЛОЙ 1.5: Защищённый DNS (DoT/DoH)
+    install_dot_module
 
     # СЛОЙ 2: Надстройка (UI) и данные
     install_ui_deps
