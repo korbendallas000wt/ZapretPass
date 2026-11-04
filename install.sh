@@ -29,6 +29,53 @@ log_warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 log_step()  { echo -e "${BLUE}[STEP]${NC} $1"; }
 
+# === ЛОГИРОВАНИЕ УСТАНОВКИ ДЛЯ ДЕИНСТАЛЛЯТОРА ===
+INSTALL_LOG="/var/log/zapretpass-install.log"
+
+log_install_action() {
+    local action="$1"
+    local target="$2"
+    local extra="${3:-}"
+    echo "[ACTION] $action $target $extra" | sudo tee -a "$INSTALL_LOG" >/dev/null 2>&1
+}
+
+log_packages_installed() {
+    local pkg_manager="$1"
+    shift
+    for pkg in "$@"; do
+        local status="installed_by_us"
+        case "$pkg_manager" in
+            apt)
+                dpkg -l "$pkg" 2>/dev/null | grep -q "^ii" && status="already_installed"
+                ;;
+            pacman)
+                pacman -Q "$pkg" >/dev/null 2>&1 && status="already_installed"
+                ;;
+            dnf)
+                rpm -q "$pkg" >/dev/null 2>&1 && status="already_installed"
+                ;;
+            zypper)
+                rpm -q "$pkg" >/dev/null 2>&1 && status="already_installed"
+                ;;
+        esac
+        log_install_action "package" "$pkg" "($status)"
+    done
+}
+
+
+init_install_log() {
+    sudo mkdir -p "$(dirname "$INSTALL_LOG")"
+    {
+        echo "# ZapretPass Installation Log"
+        echo "# Date: $(date '+%Y-%m-%d %H:%M:%S')"
+        echo "# Init system: $(detect_init_system)"
+        echo "# OS: $(grep PRETTY_NAME /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"' || echo 'unknown')"
+        echo ""
+    } | sudo tee "$INSTALL_LOG" >/dev/null
+    log_info "Лог установки: $INSTALL_LOG"
+}
+
+
 # ============================================================
 # Определение init-системы
 # ============================================================
@@ -131,20 +178,24 @@ install_core_deps() {
             log_info "Обновление ключей pacman (manjaro-keyring / archlinux-keyring)..."
             sudo pacman -Sy --noconfirm manjaro-keyring archlinux-keyring 2>/dev/null || sudo pacman -Sy --noconfirm archlinux-keyring 2>/dev/null || true
             log_info "Установка base-devel (make, gcc) и dig (bind)..."
+            log_packages_installed "pacman" base-devel bind
             sudo pacman -S --needed --noconfirm base-devel bind 2>/dev/null || true
             ;;
         apt)
             log_info "Обновление списков пакетов apt..."
             sudo apt-get update -qq 2>/dev/null || true
             log_info "Установка build-essential (make, gcc) и dig (dnsutils)..."
+            log_packages_installed "apt" build-essential dnsutils
             sudo apt-get install -y build-essential dnsutils 2>/dev/null || true
             ;;
         dnf)
             log_info "Установка инструментов сборки (gcc, make) и dig (bind-utils)..."
+            log_packages_installed "dnf" gcc make bind-utils
             sudo dnf install -y gcc make bind-utils 2>/dev/null || true
             ;;
         zypper)
             log_info "Установка инструментов сборки (gcc, make) и dig (bind-utils)..."
+            log_packages_installed "zypper" gcc make bind-utils
             sudo zypper install -y gcc make bind-utils 2>/dev/null || true
             ;;
         *)
@@ -169,6 +220,7 @@ install_core_deps() {
             sudo apt-get update -qq || log_warn "Не удалось обновить списки apt"
             # Используем DEBIAN_FRONTEND=noninteractive для избежания hang'ов
             # || true — чтобы libdvd-pkg и другие post-install hooks не ломали установку
+            log_packages_installed "apt" git curl make gcc zlib1g-dev libcap-dev libnetfilter-queue-dev libmnl-dev dnsutils iproute2 $SYSTEMD_DEV_PKG
             sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
                 git curl make gcc \
                 zlib1g-dev libcap-dev libnetfilter-queue-dev libmnl-dev \
@@ -177,6 +229,7 @@ install_core_deps() {
             ;;
         pacman)
             sudo pacman -Syu --noconfirm --quiet || log_warn "Не удалось обновить pacman"
+            log_packages_installed "pacman" git curl make gcc pkgconf libcap libnetfilter_queue libmnl bind-tools iproute2 $SYSTEMD_DEV_PKG
             sudo pacman -S --noconfirm --needed --quiet \
                 git curl make gcc pkgconf \
                 libcap libnetfilter_queue libmnl \
@@ -184,6 +237,7 @@ install_core_deps() {
                 $SYSTEMD_DEV_PKG || log_warn "Некоторые пакеты pacman не установились"
             ;;
         dnf)
+            log_packages_installed "dnf" git curl make gcc zlib-devel libcap-devel libnetfilter-queue-devel libmnl-devel bind-utils iproute $SYSTEMD_DEV_PKG
             sudo dnf install -y -q \
                 git curl make gcc \
                 zlib-devel libcap-devel libnetfilter_queue-devel libmnl-devel \
@@ -192,6 +246,7 @@ install_core_deps() {
             ;;
         zypper)
             sudo zypper refresh --quiet || log_warn "Не удалось обновить zypper"
+            log_packages_installed "zypper" git curl make gcc zlib-devel libcap-devel libnetfilter-queue-devel libmnl-devel bind-utils iproute $SYSTEMD_DEV_PKG
             sudo zypper install -y --quiet \
                 git curl make gcc \
                 zlib-devel libcap-devel libnetfilter_queue-devel libmnl-devel \
@@ -224,21 +279,25 @@ install_ui_deps() {
 
     case "$PKG_MANAGER" in
         apt)
+            log_packages_installed "apt" python3 python3-pyqt6 python3-pyqt6.qtwebengine
             sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
                 python3 python3-pyqt6 python3-pyqt6.qtwebengine \
                 || log_warn "PyQt6/QtWebEngine недоступны в репозиториях apt"
             ;;
         pacman)
+            log_packages_installed "pacman" python python-pyqt6 python-pyqt6-webengine
             sudo pacman -S --noconfirm --needed --quiet \
                 python python-pyqt6 python-pyqt6-webengine \
                 || log_warn "PyQt6/QtWebEngine недоступны в репозиториях pacman"
             ;;
         dnf)
+            log_packages_installed "dnf" python3 python3-qt6 python3-qt6-webengine
             sudo dnf install -y -q \
                 python3 python3-qt6 python3-qt6-webengine \
                 || log_warn "PyQt6/QtWebEngine недоступны в репозиториях dnf"
             ;;
         zypper)
+            log_packages_installed "zypper" python3 python3-qt6 python3-qt6-webengine
             sudo zypper install -y --quiet \
                 python3 python3-qt6 python3-qt6-webengine \
                 || log_warn "PyQt6/QtWebEngine недоступны в репозиториях zypper"
@@ -330,10 +389,14 @@ configure_autostart() {
         systemd)
             if [ -f "/opt/zapret/init.d/systemd/zapret.service" ]; then
                 sudo cp /opt/zapret/init.d/systemd/zapret.service /etc/systemd/system/
+                log_install_action "copy" "/etc/systemd/system/zapret.service" "(systemd_service)"
                 sudo cp /opt/zapret/init.d/systemd/zapret-list-update.service /etc/systemd/system/ 2>/dev/null || true
+                log_install_action "copy" "/etc/systemd/system/zapret-list-update.service" "(systemd_service)"
                 sudo cp /opt/zapret/init.d/systemd/zapret-list-update.timer /etc/systemd/system/ 2>/dev/null || true
+                log_install_action "copy" "/etc/systemd/system/zapret-list-update.timer" "(systemd_service)"
                 sudo systemctl daemon-reload
                 sudo systemctl enable zapret --quiet
+                log_install_action "systemctl_enable" "zapret" "(systemd_service)"
                 log_info "✅ Автозапуск настроен через systemd (systemctl enable zapret)"
             else
                 log_warn "zapret.service не найден. Автозапуск не настроен."
@@ -342,9 +405,11 @@ configure_autostart() {
         sysvinit)
             if [ -f "/opt/zapret/init.d/sysv/zapret" ]; then
                 sudo cp /opt/zapret/init.d/sysv/zapret /etc/init.d/
+                log_install_action "copy" "/etc/init.d/zapret" "(sysvinit_service)" 
                 sudo chmod +x /etc/init.d/zapret
                 if command -v update-rc.d >/dev/null 2>&1; then
                     sudo update-rc.d zapret defaults
+                    log_install_action "update_rc_d" "zapret" "(sysvinit)" 
                 elif command -v chkconfig >/dev/null 2>&1; then
                     sudo chkconfig zapret on
                 else
@@ -382,10 +447,12 @@ configure_autostart() {
                     RUNIT_DST="/etc/service/zapret"
                 else
                     sudo mkdir -p /var/service
+                    log_install_action "mkdir" "/var/service" "(runit_fallback)" 
                     RUNIT_DST="/var/service/zapret"
                 fi
                 # Копируем директорию сервиса (не symlink, а содержимое run/finish)
                 sudo cp -r "$RUNIT_SRC" "$RUNIT_DST"
+                log_install_action "mkdir" "$RUNIT_DST" "(runit_service)"
                 log_info "✅ Автозапуск настроен через runit (сервис: $RUNIT_DST)"
             else
                 log_warn "Runit-service не найден в $RUNIT_SRC"
@@ -435,11 +502,13 @@ cd "$DIR"
 exec python3 "$DIR/zapretpass.py" "$@"
 INNER_EOF
     chmod +x "$LAUNCHER"
+    log_install_action "copy" "$LAUNCHER" "(launcher)"
     log_info "Скрипт запуска создан: $LAUNCHER"
 
     # Директории данных
     local DATA_DIR="$APP_DIR/data"
-    mkdir -p "$DATA_DIR/sites" "$DATA_DIR/strategies" "$DATA_DIR/sniffer_results" "$DATA_DIR/logs"
+    mkdir -p "$DATA_DIR/sites" "$DATA_DIR/strategies"
+    log_install_action "mkdir" "$DATA_DIR" "(user_data)" "$DATA_DIR/sniffer_results" "$DATA_DIR/logs"
     log_info "Директории данных созданы: $DATA_DIR"
 
     # Desktop-файл
@@ -464,6 +533,7 @@ Keywords=dpi;zapret;bypass;firewall;
 StartupNotify=true
 EOF
     chmod 644 "$DESKTOP_FILE"
+    log_install_action "copy" "$DESKTOP_FILE" "(desktop_file)"
     log_info "Ярлык создан: $DESKTOP_FILE"
 }
 
@@ -479,6 +549,7 @@ init_baseline_configs() {
     # Копируем config, только если его ещё нет (не перезаписываем пользовательский baseline)
     if [ ! -f "$BASELINE_DIR/config" ] && [ -f "$APP_DIR/assets/defaults/config" ]; then
         cp "$APP_DIR/assets/defaults/config" "$BASELINE_DIR/config"
+        log_install_action "copy" "$BASELINE_DIR/config" "(baseline_config)"
         log_info "Эталонный config скопирован в data/baseline/"
     elif [ -f "$BASELINE_DIR/config" ]; then
         log_info "Пользовательский baseline config уже существует, пропуск."
@@ -499,10 +570,12 @@ init_baseline_configs() {
         sudo mkdir -p /opt/zapret/ipset
         if [ ! -f /opt/zapret/ipset/zapret-hosts-user.txt ]; then
             sudo cp "$APP_DIR/assets/defaults/ipset/zapret-hosts-user.txt" /opt/zapret/ipset/
+            log_install_action "copy" "/opt/zapret/ipset/zapret-hosts-user.txt" "(ipset)" 
             log_info "Эталонный zapret-hosts-user.txt скопирован в /opt/zapret/ipset/"
         fi
         if [ ! -f /opt/zapret/ipset/zapret-hosts-user-exclude.txt ]; then
             sudo cp "$APP_DIR/assets/defaults/ipset/zapret-hosts-user-exclude.txt" /opt/zapret/ipset/
+            log_install_action "copy" "/opt/zapret/ipset/zapret-hosts-user-exclude.txt" "(ipset)" 
             log_info "Эталонный zapret-hosts-user-exclude.txt скопирован в /opt/zapret/ipset/"
         fi
     fi
@@ -665,12 +738,14 @@ install_dot_module() {
         sudo mkdir -p "$ZAPRET_DIR/assets/defaults"
         if [ -f "$APP_DIR/assets/defaults/dnscrypt-proxy.toml" ]; then
             sudo cp "$APP_DIR/assets/defaults/dnscrypt-proxy.toml" "$ZAPRET_DIR/assets/defaults/"
+            log_install_action "copy" "$ZAPRET_DIR/assets/defaults/dnscrypt-proxy.toml" "(dot_config)"
             log_info "Эталонный конфиг скопирован в $ZAPRET_DIR/assets/defaults/"
         fi
         
         sudo mkdir -p "$ZAPRET_DIR/scripts"
         if [ -f "$APP_DIR/scripts/zapretpass-dot.sh" ]; then
             sudo cp "$APP_DIR/scripts/zapretpass-dot.sh" "$ZAPRET_DIR/scripts/"
+            log_install_action "copy" "$ZAPRET_DIR/scripts/zapretpass-dot.sh" "(dot_script)"
             sudo chmod +x "$ZAPRET_DIR/scripts/zapretpass-dot.sh"
             log_info "Скрипт управления DoT установлен: $ZAPRET_DIR/scripts/zapretpass-dot.sh"
         fi
@@ -700,15 +775,38 @@ main() {
 
     # Парсинг аргументов командной строки
     ENABLE_DOT=0
+    REINSTALL=0
     for arg in "$@"; do
         case "$arg" in
             --enable-dot)
                 ENABLE_DOT=1
                 ;;
+            --reinstall)
+                REINSTALL=1
+                ;;
         esac
     done
 
+    # Режим переустановки: сначала деинсталляция
+    if [ "$REINSTALL" = "1" ]; then
+        log_step "Режим переустановки: запуск деинсталляции..."
+        if [ -f "/var/log/zapretpass-install.log" ]; then
+            if [ -f "$(dirname "$0")/uninstall.sh" ]; then
+                sudo bash "$(dirname "$0")/uninstall.sh" --quiet || {
+                    log_error "Деинсталляция не удалась. Продолжаем установку..."
+                }
+            else
+                log_warn "uninstall.sh не найден. Продолжаем без деинсталляции."
+            fi
+        else
+            log_warn "Лог установки не найден. Деинсталляция пропущена."
+        fi
+    fi
+
     check_environment
+    
+    # Инициализация лога установки
+    init_install_log
 
     INIT_SYSTEM=$(detect_init_system)
     log_info "Обнаружена init-система: $INIT_SYSTEM"
