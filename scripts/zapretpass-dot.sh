@@ -70,7 +70,7 @@ cmd_enable() {
         # Самый надёжный способ для runit без изменения системных файлов - симлинк и ручной запуск через sv
         if [ -d "/etc/sv/dnscrypt-proxy" ]; then
             ln -sf /etc/sv/dnscrypt-proxy /etc/runit/runsvdir/default/ 2>/dev/null || true
-            sv restart dnscrypt-proxy 2>/dev/null || sv start dnscrypt-proxy
+            sv restart dnscrypt-proxy 2>/dev/null || sv up dnscrypt-proxy
         else
             # Fallback: если системного сервиса нет, создаём свой минимальный
             mkdir -p /etc/sv/dnscrypt-proxy
@@ -81,7 +81,7 @@ exec dnscrypt-proxy -config /etc/dnscrypt-proxy/zapretpass.toml
 RUNEOF
             chmod +x /etc/sv/dnscrypt-proxy/run
             ln -sf /etc/sv/dnscrypt-proxy /etc/runit/runsvdir/default/
-            sv start dnscrypt-proxy
+            sv up dnscrypt-proxy
         fi
         sleep 2
     fi
