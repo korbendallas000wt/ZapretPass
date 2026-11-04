@@ -719,13 +719,17 @@ class MainWindow(QMainWindow):
 
     def _on_settings_sudo_requested(self, cmd_list: list, prompt_msg: str):
         """Обработка запроса sudo из диалога настроек."""
-        from .password_dialog import PasswordDialog
-        pwd_dialog = PasswordDialog(prompt_msg, self)
-        if pwd_dialog.exec() == PasswordDialog.DialogCode.Accepted:
-            self._dot_worker = DotToggleWorker(cmd_list[1], pwd_dialog.password, self)
-            self._dot_worker.finished_signal.connect(self._on_dot_toggle_finished)
-            self._dot_worker.start()
-        else:
+        from .password_dialog import get_password_from_user, PasswordDialogCancelled
+        try:
+            password = get_password_from_user(prompt_msg)
+            if password is not None:
+                self._dot_worker = DotToggleWorker(cmd_list[1], password, self)
+                self._dot_worker.finished_signal.connect(self._on_dot_toggle_finished)
+                self._dot_worker.start()
+            else:
+                if hasattr(self, '_settings_dialog'):
+                    self._settings_dialog.on_sudo_result(False, "Отменено")
+        except PasswordDialogCancelled:
             if hasattr(self, '_settings_dialog'):
                 self._settings_dialog.on_sudo_result(False, "Отменено")
 
