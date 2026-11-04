@@ -18,13 +18,17 @@ check_root() {
     fi
 }
 
+detect_init() {
+    if [ -d "/run/systemd/system" ] || command -v systemctl >/dev/null 2>&1; then echo "systemd"
+    elif command -v sv >/dev/null 2>&1; then echo "runit"
+    else echo "unknown"
+    fi
+}
+
 cmd_enable() {
     check_root
     log_step "Включение защищённого DNS (DoT/DoH)..."
     
-    pkill -x dnscrypt-proxy 2>/dev/null || true
-    sleep 1
-
     local listen_addr="127.0.0.1"
     if ss -tuln 2>/dev/null | grep -qE '127\.0\.0\.1(%[a-zA-Z0-9]+)?:53'; then
         log_warn "Порт 127.0.0.1:53 занят, используем 127.0.0.2:53"
@@ -32,10 +36,10 @@ cmd_enable() {
     fi
 
     mkdir -p "$(dirname "$CONFIG_FILE")" "$(dirname "$LOG_FILE")" /var/cache/dnscrypt-proxy
-
     sed "s|127.0.0.1:53|${listen_addr}:53|g" "$DEFAULT_CONFIG" > "$CONFIG_FILE"
     log_info "Конфиг создан: $CONFIG_FILE (слушает ${listen_addr}:53)"
 
+    # Очистка и запись resolv.conf.head
     if [ -f "$RESOLV_HEAD" ]; then
         grep -v "# ZapretPass DoT" "$RESOLV_HEAD" > "${RESOLV_HEAD}.tmp" 2>/dev/null || true
         grep -v "^nameserver 127\.0\.0\.[12]$" "${RESOLV_HEAD}.tmp" > "$RESOLV_HEAD" 2>/dev/null || true
@@ -45,12 +49,45 @@ cmd_enable() {
     echo "nameserver ${listen_addr}" >> "$RESOLV_HEAD"
     log_info "Добавлен nameserver ${listen_addr} в $RESOLV_HEAD"
 
-    log_step "Запуск dnscrypt-proxy..."
-    nohup dnscrypt-proxy -config "$CONFIG_FILE" >> "$LOG_FILE" 2>&1 &
-    sleep 2
+    log_step "Настройка автозапуска и запуск dnscrypt-proxy..."
+    local init_sys=$(detect_init)
+    
+    if [ "$init_sys" = "systemd" ]; then
+        # Для systemd используем стандартный сервис, но с нашим конфигом (если пакет Debian/Arch это поддерживает)
+        # Или просто включаем и перезапускаем
+        systemctl enable dnscrypt-proxy 2>/dev/null || true
+        systemctl restart dnscrypt-proxy 2>/dev/null || true
+        sleep 2
+    elif [ "$init_sys" = "runit" ]; then
+        # Для runit (antiX): создаём сервис, если его нет
+        if [ ! -d "/etc/sv/dnscrypt-proxy" ]; then
+            # Используем стандартный run-скрипт, если пакет его предоставил, или создаём минимальный
+            if [ -d "/usr/share/dnscrypt-proxy" ]; then
+                cp -r /usr/share/dnscrypt-proxy/runit /etc/sv/dnscrypt-proxy 2>/dev/null || true
+            fi
+        fi
+        # Принудительно указываем наш конфиг в run-скрипте, если он там есть, или полагаемся на дефолт
+        # Самый надёжный способ для runit без изменения системных файлов - симлинк и ручной запуск через sv
+        if [ -d "/etc/sv/dnscrypt-proxy" ]; then
+            ln -sf /etc/sv/dnscrypt-proxy /etc/runit/runsvdir/default/ 2>/dev/null || true
+            sv restart dnscrypt-proxy 2>/dev/null || sv start dnscrypt-proxy
+        else
+            # Fallback: если системного сервиса нет, создаём свой минимальный
+            mkdir -p /etc/sv/dnscrypt-proxy
+            cat > /etc/sv/dnscrypt-proxy/run << 'RUNEOF'
+#!/bin/sh
+exec 2>&1
+exec dnscrypt-proxy -config /etc/dnscrypt-proxy/zapretpass.toml
+RUNEOF
+            chmod +x /etc/sv/dnscrypt-proxy/run
+            ln -sf /etc/sv/dnscrypt-proxy /etc/runit/runsvdir/default/
+            sv start dnscrypt-proxy
+        fi
+        sleep 2
+    fi
 
     if pgrep -x dnscrypt-proxy >/dev/null 2>&1; then
-        log_info "✅ dnscrypt-proxy запущен (PID: $(pgrep -x dnscrypt-proxy | head -1))"
+        log_info "✅ dnscrypt-proxy запущен и добавлен в автозапуск (PID: $(pgrep -x dnscrypt-proxy | head -1))"
         log_info "🎉 Защищённый DNS включён"
     else
         log_error "dnscrypt-proxy не запустился. Проверьте лог: $LOG_FILE"
@@ -61,6 +98,16 @@ cmd_enable() {
 cmd_disable() {
     check_root
     log_step "Выключение защищённого DNS..."
+    
+    local init_sys=$(detect_init)
+    if [ "$init_sys" = "systemd" ]; then
+        systemctl stop dnscrypt-proxy 2>/dev/null || true
+        systemctl disable dnscrypt-proxy 2>/dev/null || true
+    elif [ "$init_sys" = "runit" ]; then
+        sv stop dnscrypt-proxy 2>/dev/null || true
+        rm -f /etc/runit/runsvdir/default/dnscrypt-proxy 2>/dev/null || true
+    fi
+    
     pkill -x dnscrypt-proxy 2>/dev/null || true
     
     if [ -f "$RESOLV_HEAD" ]; then
