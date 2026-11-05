@@ -23,7 +23,7 @@ run_as_root() {
 
 # === ДЕКЛАРАТИВНЫЕ СПИСКИ ===
 declare -a PACKAGES_CORE=(base-devel git curl make gcc libcap libnetfilter_queue libmnl bind-tools iproute2)
-declare -a PACKAGES_UI=(python python-pyqt6 python-pyqt6-webengine)
+declare -a PACKAGES_UI=(python pyqt6 pyqt6_webengine)
 declare -a PACKAGES_DOT=(dnscrypt-proxy)
 
 declare -a FILES_LAUNCHER=("$APP_DIR/zapretpass.sh")
@@ -201,9 +201,6 @@ get_pkg_name() {
         python)          mapped="python:python3:python3:python3" ;;
 
         python-pyqt6)    mapped="python-pyqt6:python3-pyqt6:python3-qt6:py3-qt6" ;;
-
-        python-pyqt6-webengine) mapped="python-pyqt6-webengine:python3-pyqt6-webengine:python3-qt6-webengine:py3-qt6-webengine" ;;
-
         base-devel)      mapped="base-devel:build-essential:development-tools:build-base" ;;
 
         libnetfilter_queue) mapped="libnetfilter_queue:libnetfilter-queue1:libnetfilter_queue:libnetfilter_queue" ;;
