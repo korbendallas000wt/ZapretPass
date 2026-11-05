@@ -89,6 +89,26 @@ get_package_name() {
             esac
             ;;
         
+        libmnl)
+            case "$pkg_manager" in
+                pacman) echo "libmnl" ;;
+                apt)    echo "libmnl0" ;;
+                dnf)    echo "libmnl" ;;
+                apk)    echo "libmnl" ;;
+                *)      echo "libmnl" ;;
+            esac
+            ;;
+        
+        dnscrypt_proxy)
+            case "$pkg_manager" in
+                pacman) echo "dnscrypt-proxy" ;;
+                apt)    echo "dnscrypt-proxy" ;;
+                dnf)    echo "dnscrypt-proxy" ;;
+                apk)    echo "dnscrypt-proxy" ;;
+                *)      echo "dnscrypt-proxy" ;;
+            esac
+            ;;
+        
         *)
             # Fallback: возвращаем каноническое имя
             echo "$canonical"
