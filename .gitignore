@@ -24,7 +24,6 @@ __pycache__/
 *.log
 
 # Пользовательские данные (создаются install.sh при установке)
-data/
 
 /whitelist.txt
 
@@ -43,7 +42,6 @@ refactor_*.py
 fix_*.py
 
 # Бэкапы данных
-data_backup_*/
 
 # Временные скрипты рефакторинга
 *_v2.py
@@ -52,5 +50,4 @@ refactor_*.py
 fix_*.py
 
 # Бэкапы данных (должны быть в legacy/backup/)
-data_backup_*/
 *.backup
