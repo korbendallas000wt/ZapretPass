@@ -1,7 +1,8 @@
 #!/bin/bash
 set -e
 
-INSTALL_LOG="/var/log/zapretpass-install.log"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INSTALL_LOG="$SCRIPT_DIR/data/logs/install.log"
 FORCE_CLEAN=0
 QUIET=0
 

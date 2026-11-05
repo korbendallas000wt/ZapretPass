@@ -7,7 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Загружаем библиотеку зависимостей
 source "$SCRIPT_DIR/scripts/deps.sh"
 APP_DIR="$SCRIPT_DIR"
-INSTALL_LOG="/var/log/zapretpass-install.log"
+INSTALL_LOG="$APP_DIR/data/logs/install.log"
 
 # === МЕТАДАННЫЕ (заполняется в inventory_system) ===
 declare -A METADATA
@@ -47,14 +47,6 @@ declare -A SERVICES_STATUS
 # ПРОВЕРКА ПРАВ ROOT
 # ============================================================================
 
-check_root() {
-    if [ "$EUID" -ne 0 ]; then
-        echo "Этот скрипт требует прав root для установки."
-        echo "Пожалуйста, запустите с sudo:"
-        echo "  sudo $0 $*"
-        exit 1
-    fi
-}
 
 # ============================================================================
 # ФУНКЦИИ ДЕТЕКЦИИ
@@ -150,25 +142,214 @@ detect_init_system() {
 }
 
 detect_pkg_manager() {
-    echo "Определение пакетного менеджера..."
-    
-    if command -v pacman >/dev/null 2>&1; then
-        METADATA[pkg_manager]="pacman"
-    elif command -v apt-get >/dev/null 2>&1; then
-        METADATA[pkg_manager]="apt"
-    elif command -v dnf >/dev/null 2>&1; then
-        METADATA[pkg_manager]="dnf"
-    elif command -v zypper >/dev/null 2>&1; then
-        METADATA[pkg_manager]="zypper"
-    elif command -v apk >/dev/null 2>&1; then
-        METADATA[pkg_manager]="apk"
-    elif command -v xbps-install >/dev/null 2>&1; then
-        METADATA[pkg_manager]="xbps"
+
+# Функция выполнения команды с sudo (запрашивает пароль при необходимости)
+run_as_root() {
+    if [ "$EUID" -eq 0 ]; then
+        "$@"
     else
-        METADATA[pkg_manager]="unknown"
+        sudo "$@"
     fi
+}
+    echo "Определение пакетного менеджера..."
+
+# Функция выполнения команды с sudo (запрашивает пароль при необходимости)
+run_as_root() {
+    if [ "$EUID" -eq 0 ]; then
+        "$@"
+    else
+        sudo "$@"
+    fi
+}
     
+
+# Функция выполнения команды с sudo (запрашивает пароль при необходимости)
+run_as_root() {
+    if [ "$EUID" -eq 0 ]; then
+        "$@"
+    else
+        sudo "$@"
+    fi
+}
+    if command -v pacman >/dev/null 2>&1; then
+
+# Функция выполнения команды с sudo (запрашивает пароль при необходимости)
+run_as_root() {
+    if [ "$EUID" -eq 0 ]; then
+        "$@"
+    else
+        sudo "$@"
+    fi
+}
+        METADATA[pkg_manager]="pacman"
+
+# Функция выполнения команды с sudo (запрашивает пароль при необходимости)
+run_as_root() {
+    if [ "$EUID" -eq 0 ]; then
+        "$@"
+    else
+        sudo "$@"
+    fi
+}
+    elif command -v apt-get >/dev/null 2>&1; then
+
+# Функция выполнения команды с sudo (запрашивает пароль при необходимости)
+run_as_root() {
+    if [ "$EUID" -eq 0 ]; then
+        "$@"
+    else
+        sudo "$@"
+    fi
+}
+        METADATA[pkg_manager]="apt"
+
+# Функция выполнения команды с sudo (запрашивает пароль при необходимости)
+run_as_root() {
+    if [ "$EUID" -eq 0 ]; then
+        "$@"
+    else
+        sudo "$@"
+    fi
+}
+    elif command -v dnf >/dev/null 2>&1; then
+
+# Функция выполнения команды с sudo (запрашивает пароль при необходимости)
+run_as_root() {
+    if [ "$EUID" -eq 0 ]; then
+        "$@"
+    else
+        sudo "$@"
+    fi
+}
+        METADATA[pkg_manager]="dnf"
+
+# Функция выполнения команды с sudo (запрашивает пароль при необходимости)
+run_as_root() {
+    if [ "$EUID" -eq 0 ]; then
+        "$@"
+    else
+        sudo "$@"
+    fi
+}
+    elif command -v zypper >/dev/null 2>&1; then
+
+# Функция выполнения команды с sudo (запрашивает пароль при необходимости)
+run_as_root() {
+    if [ "$EUID" -eq 0 ]; then
+        "$@"
+    else
+        sudo "$@"
+    fi
+}
+        METADATA[pkg_manager]="zypper"
+
+# Функция выполнения команды с sudo (запрашивает пароль при необходимости)
+run_as_root() {
+    if [ "$EUID" -eq 0 ]; then
+        "$@"
+    else
+        sudo "$@"
+    fi
+}
+    elif command -v apk >/dev/null 2>&1; then
+
+# Функция выполнения команды с sudo (запрашивает пароль при необходимости)
+run_as_root() {
+    if [ "$EUID" -eq 0 ]; then
+        "$@"
+    else
+        sudo "$@"
+    fi
+}
+        METADATA[pkg_manager]="apk"
+
+# Функция выполнения команды с sudo (запрашивает пароль при необходимости)
+run_as_root() {
+    if [ "$EUID" -eq 0 ]; then
+        "$@"
+    else
+        sudo "$@"
+    fi
+}
+    elif command -v xbps-install >/dev/null 2>&1; then
+
+# Функция выполнения команды с sudo (запрашивает пароль при необходимости)
+run_as_root() {
+    if [ "$EUID" -eq 0 ]; then
+        "$@"
+    else
+        sudo "$@"
+    fi
+}
+        METADATA[pkg_manager]="xbps"
+
+# Функция выполнения команды с sudo (запрашивает пароль при необходимости)
+run_as_root() {
+    if [ "$EUID" -eq 0 ]; then
+        "$@"
+    else
+        sudo "$@"
+    fi
+}
+    else
+
+# Функция выполнения команды с sudo (запрашивает пароль при необходимости)
+run_as_root() {
+    if [ "$EUID" -eq 0 ]; then
+        "$@"
+    else
+        sudo "$@"
+    fi
+}
+        METADATA[pkg_manager]="unknown"
+
+# Функция выполнения команды с sudo (запрашивает пароль при необходимости)
+run_as_root() {
+    if [ "$EUID" -eq 0 ]; then
+        "$@"
+    else
+        sudo "$@"
+    fi
+}
+    fi
+
+# Функция выполнения команды с sudo (запрашивает пароль при необходимости)
+run_as_root() {
+    if [ "$EUID" -eq 0 ]; then
+        "$@"
+    else
+        sudo "$@"
+    fi
+}
+    
+
+# Функция выполнения команды с sudo (запрашивает пароль при необходимости)
+run_as_root() {
+    if [ "$EUID" -eq 0 ]; then
+        "$@"
+    else
+        sudo "$@"
+    fi
+}
     echo "Package Manager: ${METADATA[pkg_manager]}"
+
+# Функция выполнения команды с sudo (запрашивает пароль при необходимости)
+run_as_root() {
+    if [ "$EUID" -eq 0 ]; then
+        "$@"
+    else
+        sudo "$@"
+    fi
+}
+}
+
+# Функция выполнения команды с sudo (запрашивает пароль при необходимости)
+run_as_root() {
+    if [ "$EUID" -eq 0 ]; then
+        "$@"
+    else
+        sudo "$@"
+    fi
 }
 
 # ============================================================================
@@ -362,9 +543,9 @@ init_install_log() {
     
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     
-    sudo mkdir -p "$(dirname "$INSTALL_LOG")"
+    mkdir -p "$(dirname "$INSTALL_LOG")"
     
-    sudo tee "$INSTALL_LOG" > /dev/null <<LOGEOF
+    tee "$INSTALL_LOG" > /dev/null <<LOGEOF
 # ZapretPass Installation Log
 # date=$timestamp
 # init_system=${METADATA[init_system]}
@@ -384,7 +565,7 @@ LOGEOF
 log_component() {
     local type="$1"
     shift
-    echo "[ACTION] $type $*" | sudo tee -a "$INSTALL_LOG" > /dev/null
+    echo "[ACTION] $type $*" | tee -a "$INSTALL_LOG" > /dev/null
 }
 
 # ============================================================================
@@ -432,23 +613,23 @@ install_missing_packages() {
         
         case "$manager" in
             pacman)
-                sudo pacman -Sy --noconfirm "${packages_to_install[@]}"
+                run_as_root pacman -Sy --noconfirm "${packages_to_install[@]}"
                 ;;
             apt)
-                sudo apt-get update
-                sudo apt-get install -y "${packages_to_install[@]}"
+                run_as_root apt-get update
+                run_as_root apt-get install -y "${packages_to_install[@]}"
                 ;;
             dnf)
-                sudo dnf install -y "${packages_to_install[@]}"
+                run_as_root dnf install -y "${packages_to_install[@]}"
                 ;;
             zypper)
-                sudo zypper install -y "${packages_to_install[@]}"
+                run_as_root zypper install -y "${packages_to_install[@]}"
                 ;;
             apk)
-                sudo apk add "${packages_to_install[@]}"
+                run_as_root apk add "${packages_to_install[@]}"
                 ;;
             xbps)
-                sudo xbps-install -y "${packages_to_install[@]}"
+                run_as_root xbps-install -y "${packages_to_install[@]}"
                 ;;
             *)
                 echo "ОШИБКА: Неизвестный пакетный менеджер: $manager"
@@ -573,8 +754,8 @@ ExecStop=/opt/zapret/zapret.sh stop
 WantedBy=multi-user.target
 EOF
     
-    sudo systemctl daemon-reload
-    sudo systemctl enable "$service"
+    run_as_root systemctl daemon-reload
+    run_as_root systemctl enable "$service"
     
     log_component "file" "path=$service_file" "type=systemd_service" "status=created" "recommended_remove=true"
 }
@@ -807,7 +988,6 @@ print_inventory_summary() {
 # ============================================================================
 
 main() {
-    check_root "$@"
     
     echo "=== ZapretPass Installer ==="
     echo ""
