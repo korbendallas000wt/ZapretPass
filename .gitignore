@@ -44,3 +44,13 @@ fix_*.py
 
 # Бэкапы данных
 data_backup_*/
+
+# Временные скрипты рефакторинга
+*_v2.py
+*_functions.py
+refactor_*.py
+fix_*.py
+
+# Бэкапы данных (должны быть в legacy/backup/)
+data_backup_*/
+*.backup
