@@ -154,6 +154,7 @@ run_as_root() {
     echo "Определение пакетного менеджера..."
 
 # Функция выполнения команды с sudo (запрашивает пароль при необходимости)
+run_as_root() {
     if [ "$EUID" -eq 0 ]; then
         "$@"
     else
@@ -163,6 +164,7 @@ run_as_root() {
     
 
 # Функция выполнения команды с sudo (запрашивает пароль при необходимости)
+run_as_root() {
     if [ "$EUID" -eq 0 ]; then
         "$@"
     else
@@ -172,6 +174,7 @@ run_as_root() {
     if command -v pacman >/dev/null 2>&1; then
 
 # Функция выполнения команды с sudo (запрашивает пароль при необходимости)
+run_as_root() {
     if [ "$EUID" -eq 0 ]; then
         "$@"
     else
@@ -181,6 +184,7 @@ run_as_root() {
         METADATA[pkg_manager]="pacman"
 
 # Функция выполнения команды с sudo (запрашивает пароль при необходимости)
+run_as_root() {
     if [ "$EUID" -eq 0 ]; then
         "$@"
     else
@@ -190,6 +194,7 @@ run_as_root() {
     elif command -v apt-get >/dev/null 2>&1; then
 
 # Функция выполнения команды с sudo (запрашивает пароль при необходимости)
+run_as_root() {
     if [ "$EUID" -eq 0 ]; then
         "$@"
     else
@@ -199,6 +204,7 @@ run_as_root() {
         METADATA[pkg_manager]="apt"
 
 # Функция выполнения команды с sudo (запрашивает пароль при необходимости)
+run_as_root() {
     if [ "$EUID" -eq 0 ]; then
         "$@"
     else
@@ -208,6 +214,7 @@ run_as_root() {
     elif command -v dnf >/dev/null 2>&1; then
 
 # Функция выполнения команды с sudo (запрашивает пароль при необходимости)
+run_as_root() {
     if [ "$EUID" -eq 0 ]; then
         "$@"
     else
@@ -217,6 +224,7 @@ run_as_root() {
         METADATA[pkg_manager]="dnf"
 
 # Функция выполнения команды с sudo (запрашивает пароль при необходимости)
+run_as_root() {
     if [ "$EUID" -eq 0 ]; then
         "$@"
     else
@@ -226,6 +234,7 @@ run_as_root() {
     elif command -v zypper >/dev/null 2>&1; then
 
 # Функция выполнения команды с sudo (запрашивает пароль при необходимости)
+run_as_root() {
     if [ "$EUID" -eq 0 ]; then
         "$@"
     else
@@ -235,6 +244,7 @@ run_as_root() {
         METADATA[pkg_manager]="zypper"
 
 # Функция выполнения команды с sudo (запрашивает пароль при необходимости)
+run_as_root() {
     if [ "$EUID" -eq 0 ]; then
         "$@"
     else
@@ -244,6 +254,7 @@ run_as_root() {
     elif command -v apk >/dev/null 2>&1; then
 
 # Функция выполнения команды с sudo (запрашивает пароль при необходимости)
+run_as_root() {
     if [ "$EUID" -eq 0 ]; then
         "$@"
     else
@@ -253,6 +264,7 @@ run_as_root() {
         METADATA[pkg_manager]="apk"
 
 # Функция выполнения команды с sudo (запрашивает пароль при необходимости)
+run_as_root() {
     if [ "$EUID" -eq 0 ]; then
         "$@"
     else
@@ -262,6 +274,7 @@ run_as_root() {
     elif command -v xbps-install >/dev/null 2>&1; then
 
 # Функция выполнения команды с sudo (запрашивает пароль при необходимости)
+run_as_root() {
     if [ "$EUID" -eq 0 ]; then
         "$@"
     else
@@ -271,6 +284,7 @@ run_as_root() {
         METADATA[pkg_manager]="xbps"
 
 # Функция выполнения команды с sudo (запрашивает пароль при необходимости)
+run_as_root() {
     if [ "$EUID" -eq 0 ]; then
         "$@"
     else
@@ -280,6 +294,7 @@ run_as_root() {
     else
 
 # Функция выполнения команды с sudo (запрашивает пароль при необходимости)
+run_as_root() {
     if [ "$EUID" -eq 0 ]; then
         "$@"
     else
@@ -289,6 +304,7 @@ run_as_root() {
         METADATA[pkg_manager]="unknown"
 
 # Функция выполнения команды с sudo (запрашивает пароль при необходимости)
+run_as_root() {
     if [ "$EUID" -eq 0 ]; then
         "$@"
     else
@@ -298,6 +314,7 @@ run_as_root() {
     fi
 
 # Функция выполнения команды с sudo (запрашивает пароль при необходимости)
+run_as_root() {
     if [ "$EUID" -eq 0 ]; then
         "$@"
     else
@@ -307,6 +324,7 @@ run_as_root() {
     
 
 # Функция выполнения команды с sudo (запрашивает пароль при необходимости)
+run_as_root() {
     if [ "$EUID" -eq 0 ]; then
         "$@"
     else
@@ -316,6 +334,7 @@ run_as_root() {
     echo "Package Manager: ${METADATA[pkg_manager]}"
 
 # Функция выполнения команды с sudo (запрашивает пароль при необходимости)
+run_as_root() {
     if [ "$EUID" -eq 0 ]; then
         "$@"
     else
@@ -325,6 +344,7 @@ run_as_root() {
 }
 
 # Функция выполнения команды с sudo (запрашивает пароль при необходимости)
+run_as_root() {
     if [ "$EUID" -eq 0 ]; then
         "$@"
     else
