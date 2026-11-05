@@ -85,7 +85,8 @@ detect_os_detailed() {
         METADATA[os_id]="antix"
         METADATA[os_name]="antiX"
         METADATA[base_distro]="debian"
-        METADATA[os_version]=$(cat /etc/antix-version 2>/dev/null | grep -oP "antiX-K[0-9]+" || echo "unknown")
+        METADATA[os_version]=$(sed -n "s/^antiX-\([0-9]\+\).*/\1/p" /etc/antix-version 2>/dev/null | head -1)
+        [ -z "${METADATA[os_version]}" ] && METADATA[os_version]="unknown"
     elif [ -f /etc/devuan_version ]; then
         METADATA[os_id]="devuan"
         METADATA[os_name]="Devuan"
