@@ -35,3 +35,12 @@ Work/
 zapretpass.sh
 
 WORKLOG.md
+
+# Временные скрипты рефакторинга
+*_v2.py
+*_functions.py
+refactor_*.py
+fix_*.py
+
+# Бэкапы данных
+data_backup_*/
