@@ -3,8 +3,18 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_LOG="$SCRIPT_DIR/data/logs/install.log"
+
+# Функция выполнения команды с sudo (запрашивает пароль при необходимости)
+run_as_root() {
+    if [ "$EUID" -eq 0 ]; then
+        "$@"
+    else
+        sudo "$@"
+    fi
+}
 FORCE_CLEAN=0
 QUIET=0
+PURGE=0
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -15,6 +25,7 @@ usage() {
     echo "Использование: sudo ./uninstall.sh [--force-clean] [--quiet]"
     echo "  --force-clean  Удалять всё (включая данные) без вопросов. Если нет лога - чистит стандартные пути."
     echo "  --quiet        Не задавать вопросов (используется при --reinstall). Пакеты НЕ удаляются."
+    echo "  --purge        Полное удаление всего (включая /opt/zapret и данные)"
     exit 1
 }
 
@@ -22,15 +33,15 @@ for arg in "$@"; do
     case $arg in
         --force-clean) FORCE_CLEAN=1 ;;
         --quiet) QUIET=1 ;;
+        --purge) PURGE=1 ;;
         -h|--help) usage ;;
         *) echo "Неизвестный аргумент: $arg"; usage ;;
     esac
 done
 
-if [ "$EUID" -ne 0 ]; then
-    echo -e "${RED}Ошибка: Скрипт нужно запускать от имени root (или через sudo)${NC}"
-    exit 1
-fi
+# Проверка прав больше не требуется - скрипт запрашивает sudo точечно через run_as_root
+# Если вы хотите удалить системные файлы, скрипт запросит пароль при необходимости
+
 
 # Массивы для сбора пакетов
 declare -A PKGS_INSTALLED_BY_US
@@ -165,7 +176,27 @@ while IFS= read -r line; do
                 if [ -z "$target" ]; then continue; fi
                 
                 # Обработка user_data
-                if [[ "$comp_type" == "user_data" ]]; then
+                # Обработка системных файлов/директорий (например, /opt/zapret)
+                if [[ "$comp_type" == "system" ]]; then
+                    if [ -e "$target" ]; then
+                        if [ "$PURGE" -eq 1 ]; then
+                            run_as_root rm -rf "$target"
+                            echo "Удалено (--purge): $target"
+                        elif [ "$FORCE_CLEAN" -eq 1 ]; then
+                            ans=$(ask_user "Удалить системный файл $target? Это может повлиять на другие программы." "n")
+                            if [[ "$ans" == "y" || "$ans" == "Y" ]]; then
+                                run_as_root rm -rf "$target"
+                                echo "Удалено: $target"
+                            fi
+                        else
+                            ans=$(ask_user "Удалить системный файл $target? Это может повлиять на другие программы." "n")
+                            if [[ "$ans" == "y" || "$ans" == "Y" ]]; then
+                                run_as_root rm -rf "$target"
+                                echo "Удалено: $target"
+                            fi
+                        fi
+                    fi
+                elif [[ "$comp_type" == "user_data" ]]; then
                     USER_DATA_DIR="$target"
                 # Обработка baseline_config
                 elif [[ "$comp_type" == "baseline_config" && "$FORCE_CLEAN" -eq 0 ]]; then
@@ -174,13 +205,13 @@ while IFS= read -r line; do
                 # Обычные файлы и директории
                 elif [[ "$recommended" == "true" ]]; then
                     if [ -e "$target" ]; then
-                        rm -rf "$target"
+                        run_as_root rm -rf "$target"
                         echo "Удалено: $target"
                     fi
                 else
                     # recommended=false, но FORCE_CLEAN=1
                     if [ "$FORCE_CLEAN" -eq 1 ] && [ -e "$target" ]; then
-                        rm -rf "$target"
+                        run_as_root rm -rf "$target"
                         echo "Удалено (--force-clean): $target"
                     fi
                 fi
@@ -193,18 +224,20 @@ while IFS= read -r line; do
                     echo "Отключение сервиса: $service_name ($service_type)"
                     case "$service_type" in
                         systemd)
-                            systemctl disable "$service_name" --quiet 2>/dev/null || true
-                            systemctl stop "$service_name" --quiet 2>/dev/null || true
+                            run_as_root systemctl disable "$service_name" --quiet 2>/dev/null || true
+                            run_as_root systemctl stop "$service_name" --quiet 2>/dev/null || true
                             ;;
                         sysvinit)
-                            if command -v update-rc.d >/dev/null; then
-                                update-rc.d "$service_name" disable >/dev/null 2>&1 || true
+                            if command -v run_as_root update-rc.d >/dev/null; then
+                                run_as_root update-rc.d "$service_name" disable >/dev/null 2>&1 || true
                             fi
                             if command -v service >/dev/null; then
-                                service "$service_name" stop >/dev/null 2>&1 || true
+                                run_as_root service "$run_as_root service_name" stop >/dev/null 2>&1 || true
                             fi
                             ;;
                         runit)
+                            run_as_root rm -f "/etc/runit/runsvdir/default/$service_name" || true
+                            echo "Удалён симлинк runit: /etc/runit/runsvdir/default/$service_name"
                             # runit автоматически отключается при удалении директории
                             ;;
                     esac
@@ -227,12 +260,12 @@ done < <(tac "$INSTALL_LOG")
 # --- ОБРАБОТКА USER DATA ---
 if [ -n "$USER_DATA_DIR" ] && [ -d "$USER_DATA_DIR" ]; then
     if [ "$FORCE_CLEAN" -eq 1 ]; then
-        rm -rf "$USER_DATA_DIR"
+        run_as_root rm -rf "$USER_DATA_DIR"
         echo "Директория данных удалена (--force-clean): $USER_DATA_DIR"
     else
         ans=$(ask_user "Удалить директорию с данными $USER_DATA_DIR?" "n")
         if [[ "$ans" == "y" || "$ans" == "Y" ]]; then
-            rm -rf "$USER_DATA_DIR"
+            run_as_root rm -rf "$USER_DATA_DIR"
             echo "Директория данных удалена: $USER_DATA_DIR"
         else
             BACKUP_PATH="${USER_DATA_DIR}_backup_$(date +%Y%m%d_%H%M%S)"

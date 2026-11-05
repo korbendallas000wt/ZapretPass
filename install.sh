@@ -12,6 +12,15 @@ INSTALL_LOG="$APP_DIR/data/logs/install.log"
 # === МЕТАДАННЫЕ (заполняется в inventory_system) ===
 declare -A METADATA
 
+# Функция выполнения команды с sudo (запрашивает пароль при необходимости)
+run_as_root() {
+    if [ "$EUID" -eq 0 ]; then
+        "$@"
+    else
+        sudo "$@"
+    fi
+}
+
 # === ДЕКЛАРАТИВНЫЕ СПИСКИ ===
 declare -a PACKAGES_CORE=(base-devel git curl make gcc libcap libnetfilter_queue libmnl bind-tools iproute2)
 declare -a PACKAGES_UI=(python python-pyqt6 python-pyqt6-webengine)
@@ -47,6 +56,11 @@ declare -A SERVICES_STATUS
 # ПРОВЕРКА ПРАВ ROOT
 # ============================================================================
 
+check_root() {
+    # Функция оставлена для совместимости, но больше не требует EUID=0
+    # Скрипт теперь запрашивает sudo только для конкретных системных операций через run_as_root
+    :
+}
 
 # ============================================================================
 # ФУНКЦИИ ДЕТЕКЦИИ
@@ -142,214 +156,25 @@ detect_init_system() {
 }
 
 detect_pkg_manager() {
-
-# Функция выполнения команды с sudo (запрашивает пароль при необходимости)
-run_as_root() {
-    if [ "$EUID" -eq 0 ]; then
-        "$@"
-    else
-        sudo "$@"
-    fi
-}
     echo "Определение пакетного менеджера..."
-
-# Функция выполнения команды с sudo (запрашивает пароль при необходимости)
-run_as_root() {
-    if [ "$EUID" -eq 0 ]; then
-        "$@"
-    else
-        sudo "$@"
-    fi
-}
     
-
-# Функция выполнения команды с sudo (запрашивает пароль при необходимости)
-run_as_root() {
-    if [ "$EUID" -eq 0 ]; then
-        "$@"
-    else
-        sudo "$@"
-    fi
-}
     if command -v pacman >/dev/null 2>&1; then
-
-# Функция выполнения команды с sudo (запрашивает пароль при необходимости)
-run_as_root() {
-    if [ "$EUID" -eq 0 ]; then
-        "$@"
-    else
-        sudo "$@"
-    fi
-}
         METADATA[pkg_manager]="pacman"
-
-# Функция выполнения команды с sudo (запрашивает пароль при необходимости)
-run_as_root() {
-    if [ "$EUID" -eq 0 ]; then
-        "$@"
-    else
-        sudo "$@"
-    fi
-}
     elif command -v apt-get >/dev/null 2>&1; then
-
-# Функция выполнения команды с sudo (запрашивает пароль при необходимости)
-run_as_root() {
-    if [ "$EUID" -eq 0 ]; then
-        "$@"
-    else
-        sudo "$@"
-    fi
-}
         METADATA[pkg_manager]="apt"
-
-# Функция выполнения команды с sudo (запрашивает пароль при необходимости)
-run_as_root() {
-    if [ "$EUID" -eq 0 ]; then
-        "$@"
-    else
-        sudo "$@"
-    fi
-}
     elif command -v dnf >/dev/null 2>&1; then
-
-# Функция выполнения команды с sudo (запрашивает пароль при необходимости)
-run_as_root() {
-    if [ "$EUID" -eq 0 ]; then
-        "$@"
-    else
-        sudo "$@"
-    fi
-}
         METADATA[pkg_manager]="dnf"
-
-# Функция выполнения команды с sudo (запрашивает пароль при необходимости)
-run_as_root() {
-    if [ "$EUID" -eq 0 ]; then
-        "$@"
-    else
-        sudo "$@"
-    fi
-}
     elif command -v zypper >/dev/null 2>&1; then
-
-# Функция выполнения команды с sudo (запрашивает пароль при необходимости)
-run_as_root() {
-    if [ "$EUID" -eq 0 ]; then
-        "$@"
-    else
-        sudo "$@"
-    fi
-}
         METADATA[pkg_manager]="zypper"
-
-# Функция выполнения команды с sudo (запрашивает пароль при необходимости)
-run_as_root() {
-    if [ "$EUID" -eq 0 ]; then
-        "$@"
-    else
-        sudo "$@"
-    fi
-}
     elif command -v apk >/dev/null 2>&1; then
-
-# Функция выполнения команды с sudo (запрашивает пароль при необходимости)
-run_as_root() {
-    if [ "$EUID" -eq 0 ]; then
-        "$@"
-    else
-        sudo "$@"
-    fi
-}
         METADATA[pkg_manager]="apk"
-
-# Функция выполнения команды с sudo (запрашивает пароль при необходимости)
-run_as_root() {
-    if [ "$EUID" -eq 0 ]; then
-        "$@"
-    else
-        sudo "$@"
-    fi
-}
     elif command -v xbps-install >/dev/null 2>&1; then
-
-# Функция выполнения команды с sudo (запрашивает пароль при необходимости)
-run_as_root() {
-    if [ "$EUID" -eq 0 ]; then
-        "$@"
-    else
-        sudo "$@"
-    fi
-}
         METADATA[pkg_manager]="xbps"
-
-# Функция выполнения команды с sudo (запрашивает пароль при необходимости)
-run_as_root() {
-    if [ "$EUID" -eq 0 ]; then
-        "$@"
     else
-        sudo "$@"
-    fi
-}
-    else
-
-# Функция выполнения команды с sudo (запрашивает пароль при необходимости)
-run_as_root() {
-    if [ "$EUID" -eq 0 ]; then
-        "$@"
-    else
-        sudo "$@"
-    fi
-}
         METADATA[pkg_manager]="unknown"
-
-# Функция выполнения команды с sudo (запрашивает пароль при необходимости)
-run_as_root() {
-    if [ "$EUID" -eq 0 ]; then
-        "$@"
-    else
-        sudo "$@"
     fi
-}
-    fi
-
-# Функция выполнения команды с sudo (запрашивает пароль при необходимости)
-run_as_root() {
-    if [ "$EUID" -eq 0 ]; then
-        "$@"
-    else
-        sudo "$@"
-    fi
-}
     
-
-# Функция выполнения команды с sudo (запрашивает пароль при необходимости)
-run_as_root() {
-    if [ "$EUID" -eq 0 ]; then
-        "$@"
-    else
-        sudo "$@"
-    fi
-}
     echo "Package Manager: ${METADATA[pkg_manager]}"
-
-# Функция выполнения команды с sudo (запрашивает пароль при необходимости)
-run_as_root() {
-    if [ "$EUID" -eq 0 ]; then
-        "$@"
-    else
-        sudo "$@"
-    fi
-}
-}
-
-# Функция выполнения команды с sudo (запрашивает пароль при необходимости)
-run_as_root() {
-    if [ "$EUID" -eq 0 ]; then
-        "$@"
-    else
-        sudo "$@"
-    fi
 }
 
 # ============================================================================
@@ -543,9 +368,10 @@ init_install_log() {
     
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     
+    # Создаём директорию в user-space (без sudo)
     mkdir -p "$(dirname "$INSTALL_LOG")"
     
-    tee "$INSTALL_LOG" > /dev/null <<LOGEOF
+    cat > "$INSTALL_LOG" <<LOGEOF
 # ZapretPass Installation Log
 # date=$timestamp
 # init_system=${METADATA[init_system]}
@@ -565,7 +391,7 @@ LOGEOF
 log_component() {
     local type="$1"
     shift
-    echo "[ACTION] $type $*" | tee -a "$INSTALL_LOG" > /dev/null
+    echo "[ACTION] $type $*" | sudo tee -a "$INSTALL_LOG" > /dev/null
 }
 
 # ============================================================================
@@ -662,7 +488,7 @@ install_zapret_core() {
     
     if [ ! -d "$zapret_dir" ]; then
         echo "Клонирование zapret..."
-        git clone https://github.com/bol-van/zapret.git "$zapret_dir"
+        run_as_root git clone https://github.com/bol-van/zapret.git "$zapret_dir"
         log_component "directory" "path=$zapret_dir" "type=system" "status=installed_by_us" "recommended_remove=false"
     else
         echo "Zapret уже установлен в $zapret_dir"
@@ -719,8 +545,8 @@ EOF
     for file in "${FILES_DOT[@]}"; do
         if [[ "${FILES_STATUS[$file]}" == "needs_create" ]]; then
             echo "Создаю DOT-скрипт: $file"
-            run_as_root mkdir -p "$(dirname "$file")"
-            run_as_root touch "$file"
+            mkdir -p "$(dirname "$file")"
+            touch "$file"
             log_component "file" "path=$file" "type=dot_script" "status=created" "recommended_remove=true"
             ((count++))
         else
@@ -739,7 +565,7 @@ setup_systemd_service() {
     local service="$1"
     local service_file="/etc/systemd/system/${service}.service"
     
-    run_as_root tee "$service_file" > /dev/null <<SERVICEEOF <<EOF
+    run_as_root tee "$service_file" > /dev/null <<EOF
 [Unit]
 Description=Zapret DPI Bypass
 After=network.target
@@ -752,7 +578,7 @@ ExecStop=/opt/zapret/zapret.sh stop
 
 [Install]
 WantedBy=multi-user.target
-SERVICEEOF
+EOF
     
     run_as_root systemctl daemon-reload
     run_as_root systemctl enable "$service"
@@ -764,15 +590,15 @@ setup_runit_service() {
     local service="$1"
     local service_dir="/etc/sv/$service"
     
-    mkdir -p "$service_dir"
+    run_as_root mkdir -p "$service_dir"
     
-    cat > "$service_dir/run" <<EOF
+    run_as_root tee "$service_dir/run" > /dev/null <<EOF
 #!/bin/sh
 exec /opt/zapret/zapret.sh start
 EOF
     
-    chmod +x "$service_dir/run"
-    ln -sf "$service_dir" "/etc/runit/runsvdir/default/$service"
+    run_as_root chmod +x "$service_dir/run"
+    run_as_root ln -sf "$service_dir" "/etc/runit/runsvdir/default/$service"
     
     log_component "directory" "path=$service_dir" "type=runit_service" "status=created" "recommended_remove=true"
 }
@@ -781,7 +607,7 @@ setup_openrc_service() {
     local service="$1"
     local service_file="/etc/init.d/$service"
     
-    cat > "$service_file" <<EOF
+    run_as_root tee "$service_file" > /dev/null <<EOF
 #!/sbin/openrc-run
 depend() {
     need net
@@ -808,7 +634,7 @@ setup_sysvinit_service() {
     local service="$1"
     local service_file="/etc/init.d/$service"
     
-    cat > "$service_file" <<EOF
+    run_as_root tee "$service_file" > /dev/null <<EOF
 #!/bin/sh
 ### BEGIN INIT INFO
 # Provides:          $service
@@ -833,8 +659,8 @@ case "\$1" in
 esac
 EOF
     
-    chmod +x "$service_file"
-    update-rc.d "$service" defaults
+    run_as_root chmod +x "$service_file"
+    run_as_root update-rc.d "$service" defaults
     
     log_component "file" "path=$service_file" "type=sysvinit_service" "status=created" "recommended_remove=true"
 }
@@ -987,16 +813,47 @@ print_inventory_summary() {
 # ГЛАВНАЯ ФУНКЦИЯ
 # ============================================================================
 
+DRY_RUN=0
+REINSTALL=0
+
+# Парсинг аргументов
+for arg in "$@"; do
+    case $arg in
+        --dry-run)
+            DRY_RUN=1
+            ;;
+        --reinstall)
+            REINSTALL=1
+            ;;
+    esac
+done
+
 main() {
+    check_root "$@"
     
     echo "=== ZapretPass Installer ==="
     echo ""
     
+    if [ "$REINSTALL" -eq 1 ]; then
+        echo "=== Режим переустановки: запуск uninstall.sh ==="
+        if [ -f "$SCRIPT_DIR/uninstall.sh" ]; then
+            bash "$SCRIPT_DIR/uninstall.sh" --quiet || echo "Предупреждение: uninstall.sh завершился с ошибкой"
+        else
+            echo "Ошибка: uninstall.sh не найден"
+            exit 1
+        fi
+        echo ""
+    fi
+    
     inventory_system
     print_inventory_summary
-    execute_installation_plan
     
-    echo "=== Установка завершена ==="
+    if [ "$DRY_RUN" -eq 1 ]; then
+        echo "=== Режим --dry-run: Фаза 2 пропущена ==="
+    else
+        execute_installation_plan
+        echo "=== Установка завершена ==="
+    fi
 }
 
 main "$@"
