@@ -719,8 +719,8 @@ EOF
     for file in "${FILES_DOT[@]}"; do
         if [[ "${FILES_STATUS[$file]}" == "needs_create" ]]; then
             echo "Создаю DOT-скрипт: $file"
-            mkdir -p "$(dirname "$file")"
-            touch "$file"
+            run_as_root mkdir -p "$(dirname "$file")"
+            run_as_root touch "$file"
             log_component "file" "path=$file" "type=dot_script" "status=created" "recommended_remove=true"
             ((count++))
         else
@@ -739,7 +739,7 @@ setup_systemd_service() {
     local service="$1"
     local service_file="/etc/systemd/system/${service}.service"
     
-    cat > "$service_file" <<EOF
+    run_as_root tee "$service_file" > /dev/null <<SERVICEEOF <<EOF
 [Unit]
 Description=Zapret DPI Bypass
 After=network.target
@@ -752,7 +752,7 @@ ExecStop=/opt/zapret/zapret.sh stop
 
 [Install]
 WantedBy=multi-user.target
-EOF
+SERVICEEOF
     
     run_as_root systemctl daemon-reload
     run_as_root systemctl enable "$service"
