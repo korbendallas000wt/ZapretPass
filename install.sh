@@ -3,6 +3,9 @@ set -e
 
 # === КОНСТАНТЫ И КОНФИГУРАЦИЯ ===
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Загружаем библиотеку зависимостей
+source "$SCRIPT_DIR/scripts/deps.sh"
 APP_DIR="$SCRIPT_DIR"
 INSTALL_LOG="/var/log/zapretpass-install.log"
 
@@ -219,32 +222,18 @@ get_pkg_name() {
 }
 
 check_package_installed() {
-    local real_pkg=$(get_pkg_name "$pkg")
-    local pkg="$1"
+    local canonical="$1"
     local manager="${METADATA[pkg_manager]}"
+    local real_pkg=$(get_package_name "$canonical" "$manager")
     
     case "$manager" in
-        pacman)
-            pacman -Q "$real_pkg" >/dev/null 2>&1
-            ;;
-        apt)
-            dpkg -l "$real_pkg" 2>/dev/null | grep -q "^ii"
-            ;;
-        dnf)
-            dnf list installed "$real_pkg" >/dev/null 2>&1
-            ;;
-        zypper)
-            zypper search --installed-only "$real_pkg" >/dev/null 2>&1 | grep -q "i+"
-            ;;
-        apk)
-            apk info -e "$real_pkg" >/dev/null 2>&1
-            ;;
-        xbps)
-            xbps-query "$real_pkg" >/dev/null 2>&1
-            ;;
-        *)
-            return 1
-            ;;
+        pacman) pacman -Q "$real_pkg" >/dev/null 2>&1 ;;
+        apt)    dpkg -l "$real_pkg" 2>/dev/null | grep -q "^ii" ;;
+        dnf)    dnf list installed "$real_pkg" >/dev/null 2>&1 ;;
+        zypper) zypper search --installed-only "$real_pkg" >/dev/null 2>&1 | grep -q "i+" ;;
+        apk)    apk info -e "$real_pkg" >/dev/null 2>&1 ;;
+        xbps)   xbps-query "$real_pkg" >/dev/null 2>&1 ;;
+        *)      return 1 ;;
     esac
 }
 
