@@ -22,9 +22,9 @@ run_as_root() {
 }
 
 # === ДЕКЛАРАТИВНЫЕ СПИСКИ ===
-declare -a PACKAGES_CORE=(base-devel git curl make gcc libcap libnetfilter_queue libmnl bind-tools iproute2)
+declare -a PACKAGES_CORE=(build_tools git curl make gcc libcap libnetfilter_queue libmnl dns_utils iproute2)
 declare -a PACKAGES_UI=(python pyqt6 pyqt6_webengine)
-declare -a PACKAGES_DOT=(dnscrypt-proxy)
+declare -a PACKAGES_DOT=(dnscrypt_proxy)
 
 declare -a FILES_LAUNCHER=("$APP_DIR/zapretpass.sh")
 declare -a FILES_DOT=(
