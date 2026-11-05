@@ -1,0 +1,43 @@
+{
+  "domain": "fitgirl-repacks.site",
+  "created": "2026-10-04T17:41:10.825565",
+  "updated": "2026-10-05T01:53:58.402765",
+  "status": "working",
+  "diagnosis": {
+    "accessible": false,
+    "http_code": 0,
+    "size": 0,
+    "time_first_byte": 8.00112,
+    "url": "https://fitgirl-repacks.site",
+    "error": "Timeout (превышено время ожидания)",
+    "checked_at": "2026-10-04T17:41:10.826158"
+  },
+  "primary_strategy": {
+    "found_at": "2026-10-04T17:55:09.031243",
+    "mode": "1",
+    "checks_count": 410,
+    "duration": 0,
+    "command": "nfqws --dpi-desync=fake,multisplit --dpi-desync-ttl=4 --orig-ttl=1 --orig-mod-start=s1 --orig-mod-cutoff=d1 --dpi-desync-split-pos=1 --dpi-desync-fake-tls=0x00000000 --dpi-desync-fake-tls=! --dpi-desync-fake-tls-mod=rnd,rndsni,dupsid",
+    "id": "fake,multisplit/ttl=4/404f",
+    "alias": "fake,multisplit/ttl=4"
+  },
+  "auxiliary_domains": [],
+  "screenshots": {},
+  "history": [
+    {
+      "timestamp": "2026-10-04T17:41:10.825597",
+      "action": "created",
+      "details": "Создан новый паспорт"
+    },
+    {
+      "timestamp": "2026-10-04T17:41:10.826184",
+      "action": "diagnosis",
+      "details": "HTTP 0, 0 байт"
+    },
+    {
+      "timestamp": "2026-10-04T17:55:09.031286",
+      "action": "primary_strategy",
+      "details": "Назначена основная стратегия: nfqws --dpi-desync=fake,multisplit --dpi-desync-ttl=4 --orig-ttl=1 --orig-mod-st"
+    }
+  ]
+}

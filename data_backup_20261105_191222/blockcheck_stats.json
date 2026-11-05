@@ -1,0 +1,22 @@
+{
+  "4-Y-Y-N-N-1": {
+    "avg_checks": 138.75,
+    "sample_count": 12
+  },
+  "4-Y-Y-N-N-3": {
+    "avg_checks": 6878.0,
+    "sample_count": 1
+  },
+  "4-Y-N-Y-N-1": {
+    "avg_checks": 426.90909090909093,
+    "sample_count": 11
+  },
+  "4-Y-N-Y-N-3": {
+    "avg_checks": 3791.0,
+    "sample_count": 1
+  },
+  "4-Y-Y-Y-Y-1": {
+    "avg_checks": 249.0,
+    "sample_count": 3
+  }
+}

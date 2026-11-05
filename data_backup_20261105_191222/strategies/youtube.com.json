@@ -1,0 +1,10 @@
+{
+  "domain": "youtube.com",
+  "strategies": [
+    [
+      "nfqws --dpi-desync=fake",
+      "tpws --hostcase"
+    ]
+  ],
+  "updated": "2026-09-17T23:08:03.997695"
+}

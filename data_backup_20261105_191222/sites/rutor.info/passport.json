@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "provider": "",
+  "domain": "rutor.info",
+  "created": "2026-10-04T19:43:05.793143",
+  "updated": "2026-10-05T01:56:06.987901",
+  "status": "working",
+  "diagnosis": {
+    "accessible": false,
+    "http_code": 0,
+    "size": 0,
+    "time_first_byte": 8.001611,
+    "url": "https://rutor.info",
+    "error": "Timeout (превышено время ожидания)",
+    "checked_at": "2026-10-04T22:38:27.060157"
+  },
+  "primary_strategy": {},
+  "auxiliary_domains": [],
+  "screenshots": {},
+  "history": [
+    {
+      "timestamp": "2026-10-04T19:43:05.793167",
+      "action": "created",
+      "details": "Создан новый паспорт"
+    },
+    {
+      "timestamp": "2026-10-04T19:43:05.793804",
+      "action": "diagnosis",
+      "details": "HTTP 0, 0 байт"
+    },
+    {
+      "timestamp": "2026-10-04T21:56:31.886243",
+      "action": "diagnosis",
+      "details": "HTTP 0, 0 байт"
+    },
+    {
+      "timestamp": "2026-10-04T22:38:27.060185",
+      "action": "diagnosis",
+      "details": "HTTP 0, 0 байт"
+    }
+  ]
+}
