@@ -76,7 +76,7 @@ detect_os_detailed() {
         METADATA[os_id]="antix"
         METADATA[os_name]="antiX"
         METADATA[base_distro]="debian"
-        METADATA[os_version]=$(cat /etc/antix-version 2>/dev/null | awk '{print $2}' || echo "unknown")
+        METADATA[os_version]=$(cat /etc/antix-version 2>/dev/null | grep -oP "antiX-K[0-9]+" || echo "unknown")
     elif [ -f /etc/devuan_version ]; then
         METADATA[os_id]="devuan"
         METADATA[os_name]="Devuan"
@@ -172,28 +172,75 @@ detect_pkg_manager() {
 # ФУНКЦИИ ПРОВЕРКИ
 # ============================================================================
 
+# Маппинг канонических имен пакетов к дистрибутивам
+
+get_pkg_name() {
+
+    local canonical="$1"
+
+    local manager="${METADATA[pkg_manager]}"
+
+    local mapped=""
+
+    case "$canonical" in
+
+        libcap)          mapped="libcap:libcap2:libcap:libcap" ;;
+
+        bind-tools)      mapped="bind-tools:bind9-dnsutils:bind-utils:bind" ;;
+
+        python)          mapped="python:python3:python3:python3" ;;
+
+        python-pyqt6)    mapped="python-pyqt6:python3-pyqt6:python3-qt6:py3-qt6" ;;
+
+        python-pyqt6-webengine) mapped="python-pyqt6-webengine:python3-pyqt6-webengine:python3-qt6-webengine:py3-qt6-webengine" ;;
+
+        base-devel)      mapped="base-devel:build-essential:development-tools:build-base" ;;
+
+        libnetfilter_queue) mapped="libnetfilter_queue:libnetfilter-queue1:libnetfilter_queue:libnetfilter_queue" ;;
+
+        *)               mapped="$canonical:$canonical:$canonical:$canonical" ;;
+
+    esac
+
+    case "$manager" in
+
+        pacman) echo "$mapped" | cut -d: -f1 ;;
+
+        apt)    echo "$mapped" | cut -d: -f2 ;;
+
+        dnf)    echo "$mapped" | cut -d: -f3 ;;
+
+        apk)    echo "$mapped" | cut -d: -f4 ;;
+
+        *)      echo "$canonical" ;;
+
+    esac
+
+}
+
 check_package_installed() {
+    local real_pkg=$(get_pkg_name "$pkg")
     local pkg="$1"
     local manager="${METADATA[pkg_manager]}"
     
     case "$manager" in
         pacman)
-            pacman -Q "$pkg" >/dev/null 2>&1
+            pacman -Q "$real_pkg" >/dev/null 2>&1
             ;;
         apt)
-            dpkg -l "$pkg" 2>/dev/null | grep -q "^ii"
+            dpkg -l "$real_pkg" 2>/dev/null | grep -q "^ii"
             ;;
         dnf)
-            dnf list installed "$pkg" >/dev/null 2>&1
+            dnf list installed "$real_pkg" >/dev/null 2>&1
             ;;
         zypper)
-            zypper search --installed-only "$pkg" >/dev/null 2>&1 | grep -q "i+"
+            zypper search --installed-only "$real_pkg" >/dev/null 2>&1 | grep -q "i+"
             ;;
         apk)
-            apk info -e "$pkg" >/dev/null 2>&1
+            apk info -e "$real_pkg" >/dev/null 2>&1
             ;;
         xbps)
-            xbps-query "$pkg" >/dev/null 2>&1
+            xbps-query "$real_pkg" >/dev/null 2>&1
             ;;
         *)
             return 1
