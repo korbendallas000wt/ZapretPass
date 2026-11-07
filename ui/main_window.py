@@ -15,6 +15,8 @@ from PyQt6.QtGui import QAction
 from .update_indicator import UpdateIndicator
 from .about_dialog import AboutDialog, UpdateCheckerWorker
 from .settings_dialog import SettingsDialog
+from .system_info_dialog import SystemInfoDialog
+from .install_manager_dialog import InstallManagerDialog
 from core.updater import check_for_updates, UpdateInfo
 
 # Импорты ядра
@@ -518,6 +520,20 @@ class MainWindow(QMainWindow):
         self.settings_action.triggered.connect(self.show_settings_dialog)
         settings_menu.addAction(self.settings_action)
         
+        # Меню "Система"
+        system_menu = menubar.addMenu("Система")
+        self.system_info_action = QAction("ℹ️ Системная информация", self)
+        self.system_info_action.triggered.connect(self.show_system_info_dialog)
+        system_menu.addAction(self.system_info_action)
+        
+        self.update_action = QAction("🔄 Обновить ZapretPass", self)
+        self.update_action.triggered.connect(self.manual_check_updates)
+        system_menu.addAction(self.update_action)
+        
+        self.install_manager_action = QAction("⚙️ Управление установкой", self)
+        self.install_manager_action.triggered.connect(self.show_install_manager_dialog)
+        system_menu.addAction(self.install_manager_action)
+        
         # Меню "Справка"
         help_menu = menubar.addMenu("Справка")
         
@@ -710,6 +726,17 @@ class MainWindow(QMainWindow):
             self._start_update_check(dialog=dialog)
 
         dialog.exec()
+
+    def show_system_info_dialog(self):
+        """Открывает диалог системной информации."""
+        dialog = SystemInfoDialog(self)
+        dialog.exec()
+
+    def show_install_manager_dialog(self):
+        """Открывает диалог управления установкой."""
+        dialog = InstallManagerDialog(self)
+        dialog.exec()
+
 
     def show_settings_dialog(self):
         """Открывает диалог настроек."""
