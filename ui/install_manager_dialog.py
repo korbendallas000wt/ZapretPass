@@ -18,42 +18,32 @@ from PyQt6.QtCore import Qt, pyqtSignal, QThread
 from PyQt6.QtGui import QFont
 
 
-class UninstallWorker(QThread):
-    """Фоновый воркер для выполнения деинсталляции."""
+class SudoWorker(QThread):
+    """Универсальный воркер для привилегированных операций через core.sudo."""
     
     finished = pyqtSignal(bool, str)  # (success, message)
     
-    def __init__(self, backup_dir: str, password: str, parent=None):
+    def __init__(self, command: list[str], description: str = "операция", parent=None):
         super().__init__(parent)
-        self.backup_dir = backup_dir
-        self.password = password
+        self.command = command
+        self.description = description
     
     def run(self):
         try:
-            script_dir = Path(__file__).parent.parent
-            uninstall_script = script_dir / "uninstall.sh"
+            from core.sudo import manager as sudo_manager
             
-            cmd = ["sudo", "-S", str(uninstall_script), "--quiet"]
-            if self.backup_dir:
-                cmd.append(f"--backup-dir={self.backup_dir}")
-            
-            process = subprocess.Popen(
-                cmd,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True
+            success, stdout, stderr = sudo_manager.run_with_sudo(
+                self.command, timeout=120
             )
             
-            stdout, stderr = process.communicate(input=self.password + "\n")
-            
-            if process.returncode == 0:
-                self.finished.emit(True, "Деинсталляция завершена успешно.")
+            if success:
+                self.finished.emit(True, f"{self.description} завершена успешно.")
             else:
-                self.finished.emit(False, f"Ошибка деинсталляции:\n{stderr}")
+                error_msg = stderr.strip() if stderr.strip() else "Неизвестная ошибка"
+                self.finished.emit(False, f"Ошибка {self.description}:\n{error_msg}")
                 
         except Exception as e:
-            self.finished.emit(False, f"Исключение при деинсталляции:\n{str(e)}")
+            self.finished.emit(False, f"Исключение при {self.description}:\n{str(e)}")
 
 
 class InstallManagerDialog(QDialog):
@@ -350,13 +340,41 @@ class InstallManagerDialog(QDialog):
             self._do_uninstall()
 
     def _do_reinstall(self):
-        """Выполняет переустановку."""
-        QMessageBox.information(
+        """Выполняет переустановку через install.sh --reinstall."""
+        reply = QMessageBox.question(
             self,
-            "Переустановка",
-            "Функция переустановки будет реализована в следующей фазе.\n"
-            "Используйте install.sh --reinstall из терминала."
+            "Подтверждение переустановки",
+            "Будет выполнена безопасная очистка компонентов и повторная установка.\n"
+            "Пользовательские данные (паспорта, стратегии) будут сохранены.\n\n"
+            "Продолжить?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
         )
+        
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        
+        # Проверяем, что пароль доступен (кэширован или будет запрошен)
+        from core.sudo import manager as sudo_manager
+        password = sudo_manager.get_password()
+        if password is None:
+            QMessageBox.warning(self, "Ошибка", "Не удалось получить пароль sudo.")
+            return
+        
+        script_dir = Path(__file__).parent.parent
+        install_script = script_dir / "install.sh"
+        
+        self.progress_bar.setVisible(True)
+        self.btn_action.setEnabled(False)
+        self.btn_cancel.setEnabled(False)
+        
+        self._worker = SudoWorker(
+            [str(install_script), "--reinstall"],
+            description="переустановка",
+            parent=self
+        )
+        self._worker.finished.connect(self._on_operation_finished)
+        self._worker.start()
 
     def _do_uninstall(self):
         """Выполняет деинсталляцию с бэкапом."""
@@ -395,35 +413,43 @@ class InstallManagerDialog(QDialog):
         if reply != QMessageBox.StandardButton.Yes:
             return
         
-        # Запрашиваем пароль
-        from .password_dialog import get_password_from_user, PasswordDialogCancelled
-        try:
-            password = get_password_from_user("Введите пароль для деинсталляции:")
-        except PasswordDialogCancelled:
-            QMessageBox.information(self, "Отмена", "Операция отменена.")
-            return
-        
+        # Проверяем, что пароль доступен через core.sudo
+        from core.sudo import manager as sudo_manager
+        password = sudo_manager.get_password()
         if password is None:
-            QMessageBox.information(self, "Отмена", "Операция отменена.")
+            QMessageBox.warning(self, "Ошибка", "Не удалось получить пароль sudo.")
             return
         
-        # Запускаем воркер
+        script_dir = Path(__file__).parent.parent
+        uninstall_script = script_dir / "uninstall.sh"
+        
+        cmd = [str(uninstall_script), "--quiet", f"--backup-dir={backup_path}"]
+        
         self.progress_bar.setVisible(True)
         self.btn_action.setEnabled(False)
         self.btn_cancel.setEnabled(False)
         
-        self._worker = UninstallWorker(str(backup_path), password, self)
-        self._worker.finished.connect(self._on_uninstall_finished)
+        self._worker = SudoWorker(cmd, description="деинсталляция", parent=self)
+        self._worker.finished.connect(self._on_operation_finished)
         self._worker.start()
 
-    def _on_uninstall_finished(self, success: bool, message: str):
-        """Обработчик завершения деинсталляции."""
+    def _on_operation_finished(self, success: bool, message: str):
+        """Обработчик завершения привилегированной операции."""
         self.progress_bar.setVisible(False)
         self.btn_action.setEnabled(True)
         self.btn_cancel.setEnabled(True)
         
         if success:
             QMessageBox.information(self, "Успех", message)
-            self.accept()
+            # Перечитываем лог и обновляем UI
+            self._package_recipients.clear()
+            # Очищаем старые чекбоксы
+            while self.uninstall_layout.count():
+                item = self.uninstall_layout.takeAt(0)
+                widget = item.widget()
+                if widget:
+                    widget.deleteLater()
+            self._load_recipients()
+            self._update_ui_state()
         else:
             QMessageBox.critical(self, "Ошибка", message)
