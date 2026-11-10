@@ -178,10 +178,19 @@ class InstallManagerDialog(QDialog):
             )
 
     def _load_recipients(self):
-        """Загружает список пакетов и их реципиентов из install.log."""
+        """Загружает список пакетов и их реципиентов.
+        
+        Приоритет:
+        1. install.log через uninstall.sh --list-recipients
+        2. Fallback: перечисление через пакетный менеджер + маппинг из deps.sh
+        """
         script_dir = Path(__file__).parent.parent
         uninstall_script = script_dir / "uninstall.sh"
+        deps_script = script_dir / "scripts" / "deps.sh"
         
+        loaded_from_log = False
+        
+        # Попытка 1: загрузить из install.log
         try:
             result = subprocess.run(
                 ["bash", str(uninstall_script), "--list-recipients"],
@@ -192,35 +201,142 @@ class InstallManagerDialog(QDialog):
             
             if result.returncode == 0:
                 data = json.loads(result.stdout)
-                for pkg_info in data.get("packages", []):
-                    pkg_name = pkg_info["package"]
-                    deps = pkg_info.get("deps", "")
-                    if deps:
-                        self._package_recipients[pkg_name] = deps.split(",")
-                    else:
-                        self._package_recipients[pkg_name] = []
-                
-                # Создаём чекбоксы для пакетов
-                for pkg_name, recipients in self._package_recipients.items():
-                    chk = QCheckBox(pkg_name)
-                    chk.setChecked(True)
-                    
-                    if recipients:
-                        # Пакет используется другими программами — блокируем
-                        chk.setEnabled(False)
-                        chk.setText(f"🔒 {pkg_name}")
-                        chk.setToolTip(f"Используется: {', '.join(recipients)}")
-                    
-                    self.uninstall_layout.addWidget(chk)
-                    
-        except Exception as e:
-            # Если не удалось загрузить реципиентов, показываем предупреждение
-            QMessageBox.warning(
-                self,
-                "Внимание",
-                f"Не удалось загрузить список пакетов:\n{str(e)}\n\n"
-                "Проверьте наличие файла data/logs/install.log"
-            )
+                packages = data.get("packages", [])
+                if packages and not data.get("error"):
+                    for pkg_info in packages:
+                        pkg_name = pkg_info["package"]
+                        deps = pkg_info.get("deps", "")
+                        if deps:
+                            self._package_recipients[pkg_name] = deps.split(",")
+                        else:
+                            self._package_recipients[pkg_name] = []
+                    loaded_from_log = True
+        except Exception:
+            pass
+        
+        # Попытка 2: Fallback через пакетный менеджер
+        if not loaded_from_log:
+            self._load_recipients_fallback(deps_script)
+        
+        # Создаём чекбоксы для пакетов
+        for pkg_name, recipients in self._package_recipients.items():
+            chk = QCheckBox(pkg_name)
+            chk.setChecked(True)
+            
+            if recipients:
+                chk.setEnabled(False)
+                chk.setText(f"🔒 {pkg_name}")
+                chk.setToolTip(f"Используется: {', '.join(recipients)}")
+            
+            self.uninstall_layout.addWidget(chk)
+        
+        if not self._package_recipients:
+            lbl = QLabel("⚠ Пакеты не найдены. Запустите install.sh для создания лога.")
+            lbl.setWordWrap(True)
+            self.uninstall_layout.addWidget(lbl)
+
+    def _load_recipients_fallback(self, deps_script: Path):
+        """Fallback: перечисление пакетов через пакетный менеджер."""
+        import shutil
+        
+        # Определяем пакетный менеджер
+        pkg_manager = None
+        if shutil.which("pacman"):
+            pkg_manager = "pacman"
+        elif shutil.which("apt-get"):
+            pkg_manager = "apt"
+        
+        if not pkg_manager:
+            return
+        
+        # Канонические имена из deps.sh
+        canonical_names = [
+            "build_tools", "git", "curl", "make", "gcc", "libcap",
+            "libnetfilter_queue", "libmnl", "dns_utils", "iproute2",
+            "python", "pyqt6", "pyqt6_webengine", "dnscrypt_proxy"
+        ]
+        
+        # Маппинг канонических имён в реальные имена пакетов
+        pkg_mapping = {
+            "pacman": {
+                "build_tools": "base-devel", "git": "git", "curl": "curl",
+                "make": "make", "gcc": "gcc", "libcap": "libcap",
+                "libnetfilter_queue": "libnetfilter_queue", "libmnl": "libmnl",
+                "dns_utils": "bind-tools", "iproute2": "iproute2",
+                "python": "python", "pyqt6": "python-pyqt6",
+                "pyqt6_webengine": "python-pyqt6-webengine",
+                "dnscrypt_proxy": "dnscrypt-proxy"
+            },
+            "apt": {
+                "build_tools": "build-essential", "git": "git", "curl": "curl",
+                "make": "make", "gcc": "gcc", "libcap": "libcap2",
+                "libnetfilter_queue": "libnetfilter-queue1", "libmnl": "libmnl0",
+                "dns_utils": "bind9-dnsutils", "iproute2": "iproute2",
+                "python": "python3", "pyqt6": "python3-pyqt6",
+                "pyqt6_webengine": "python3-pyqt6.qtwebengine",
+                "dnscrypt_proxy": "dnscrypt-proxy"
+            }
+        }
+        
+        mapping = pkg_mapping.get(pkg_manager, {})
+        
+        for canonical in canonical_names:
+            real_name = mapping.get(canonical, canonical)
+            
+            # Проверяем, установлен ли пакет
+            installed = False
+            if pkg_manager == "pacman":
+                try:
+                    subprocess.check_call(
+                        ["pacman", "-Q", real_name],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                    )
+                    installed = True
+                except subprocess.CalledProcessError:
+                    pass
+            elif pkg_manager == "apt":
+                try:
+                    result = subprocess.run(
+                        ["dpkg", "-s", real_name],
+                        capture_output=True, text=True
+                    )
+                    installed = result.returncode == 0
+                except Exception:
+                    pass
+            
+            if not installed:
+                continue
+            
+            # Проверяем реципиентов
+            recipients = []
+            if pkg_manager == "pacman":
+                try:
+                    result = subprocess.run(
+                        ["pacman", "-Qi", real_name],
+                        capture_output=True, text=True
+                    )
+                    for line in result.stdout.splitlines():
+                        if line.startswith("Required By"):
+                            deps = line.split(":")[1].strip()
+                            if deps and deps != "None":
+                                recipients = [d.strip() for d in deps.split()]
+                except Exception:
+                    pass
+            elif pkg_manager == "apt":
+                try:
+                    result = subprocess.run(
+                        ["apt-cache", "rdepends", "--installed", real_name],
+                        capture_output=True, text=True
+                    )
+                    for line in result.stdout.splitlines():
+                        line = line.strip()
+                        if line and not line.startswith(real_name) and not line.startswith("Reverse Depends"):
+                            recipients.append(line)
+                except Exception:
+                    pass
+            
+            self._package_recipients[real_name] = recipients
+
 
     def _update_ui_state(self):
         """Обновляет состояние UI (пустой метод для будущего расширения)."""
