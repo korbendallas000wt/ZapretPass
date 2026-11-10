@@ -4,7 +4,7 @@ set -e
 # === КОНСТАНТЫ И КОНФИГУРАЦИЯ ===
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Загружаем библиотеку зависимостей
+# Загружаем библиотеку зависимостей (единый источник истины для маппинга пакетов)
 source "$SCRIPT_DIR/scripts/deps.sh"
 APP_DIR="$SCRIPT_DIR"
 INSTALL_LOG="$APP_DIR/data/logs/install.log"
@@ -21,7 +21,7 @@ run_as_root() {
     fi
 }
 
-# === ДЕКЛАРАТИВНЫЕ СПИСКИ ===
+# === ДЕКЛАРАТИВНЫЕ СПИСКИ (канонические имена из deps.sh) ===
 declare -a PACKAGES_CORE=(build_tools git curl make gcc libcap libnetfilter_queue libmnl dns_utils iproute2)
 declare -a PACKAGES_UI=(python pyqt6 pyqt6_webengine)
 declare -a PACKAGES_DOT=(dnscrypt_proxy)
@@ -51,16 +51,6 @@ declare -A PACKAGES_STATUS
 declare -A FILES_STATUS
 declare -A DIRECTORIES_STATUS
 declare -A SERVICES_STATUS
-
-# ============================================================================
-# ПРОВЕРКА ПРАВ ROOT
-# ============================================================================
-
-check_root() {
-    # Функция оставлена для совместимости, но больше не требует EUID=0
-    # Скрипт теперь запрашивает sudo только для конкретных системных операций через run_as_root
-    :
-}
 
 # ============================================================================
 # ФУНКЦИИ ДЕТЕКЦИИ
@@ -182,53 +172,11 @@ detect_pkg_manager() {
 # ФУНКЦИИ ПРОВЕРКИ
 # ============================================================================
 
-# Маппинг канонических имен пакетов к дистрибутивам
-
-get_pkg_name() {
-
-    local canonical="$1"
-
-    local manager="${METADATA[pkg_manager]}"
-
-    local mapped=""
-
-    case "$canonical" in
-
-        libcap)          mapped="libcap:libcap2:libcap:libcap" ;;
-
-        bind-tools)      mapped="bind-tools:bind9-dnsutils:bind-utils:bind" ;;
-
-        python)          mapped="python:python3:python3:python3" ;;
-
-        python-pyqt6)    mapped="python-pyqt6:python3-pyqt6:python3-qt6:py3-qt6" ;;
-        base-devel)      mapped="base-devel:build-essential:development-tools:build-base" ;;
-
-        libnetfilter_queue) mapped="libnetfilter_queue:libnetfilter-queue1:libnetfilter_queue:libnetfilter_queue" ;;
-
-        *)               mapped="$canonical:$canonical:$canonical:$canonical" ;;
-
-    esac
-
-    case "$manager" in
-
-        pacman) echo "$mapped" | cut -d: -f1 ;;
-
-        apt)    echo "$mapped" | cut -d: -f2 ;;
-
-        dnf)    echo "$mapped" | cut -d: -f3 ;;
-
-        apk)    echo "$mapped" | cut -d: -f4 ;;
-
-        *)      echo "$canonical" ;;
-
-    esac
-
-}
-
 check_package_installed() {
     local canonical="$1"
     local manager="${METADATA[pkg_manager]}"
-    local real_pkg=$(get_package_name "$canonical" "$manager")
+    local real_pkg
+    real_pkg=$(get_package_name "$canonical" "$manager")
     
     case "$manager" in
         pacman) pacman -Q "$real_pkg" >/dev/null 2>&1 ;;
@@ -315,14 +263,14 @@ check_services() {
                 fi
                 ;;
             openrc)
-                if rc-status --list | grep -q "^$service$"; then
+                if rc-status --list 2>/dev/null | grep -q "^$service$"; then
                     SERVICES_STATUS["$service"]="enabled"
                 else
                     SERVICES_STATUS["$service"]="needs_setup"
                 fi
                 ;;
             sysvinit)
-                if [ -f "/etc/init.d/$service" ] && [ -L "/etc/rc2.d/S*$service" ]; then
+                if [ -f "/etc/init.d/$service" ] && [ -L "/etc/rc2.d/S"*"$service" ] 2>/dev/null; then
                     SERVICES_STATUS["$service"]="enabled"
                 else
                     SERVICES_STATUS["$service"]="needs_setup"
@@ -358,15 +306,14 @@ inventory_system() {
 }
 
 # ============================================================================
-# ИНИЦИАЛИЗАЦИЯ ЛОГА
+# ЗАПИСЬ ПОЛНОГО ИНВЕНТАРЯ В ЛОГ
 # ============================================================================
 
-init_install_log() {
-    echo "Инициализация лога установки..."
+write_full_inventory_log() {
+    echo "Запись полного инвентаря системы в лог..."
     
-    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    
-    # Создаём директорию в user-space (без sudo)
+    local timestamp
+    timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     mkdir -p "$(dirname "$INSTALL_LOG")"
     
     cat > "$INSTALL_LOG" <<LOGEOF
@@ -380,16 +327,123 @@ init_install_log() {
 # install_path=$APP_DIR
 # real_user=${METADATA[real_user]}
 # real_home=${METADATA[real_home]}
-
 LOGEOF
     
-    echo "Лог создан: $INSTALL_LOG"
+    # Пакеты
+    for pkg in "${!PACKAGES_STATUS[@]}"; do
+        local status="${PACKAGES_STATUS[$pkg]}"
+        local real_name
+        real_name=$(get_package_name "$pkg" "${METADATA[pkg_manager]}")
+        local manager="${METADATA[pkg_manager]}"
+        if [[ "$status" == "already_installed" ]]; then
+            echo "[ACTION] package name=$real_name canonical=$pkg manager=$manager status=installed_by_us recommended_remove=true" >> "$INSTALL_LOG"
+        else
+            echo "[ACTION] package name=$real_name canonical=$pkg manager=$manager status=needs_install recommended_remove=true" >> "$INSTALL_LOG"
+        fi
+    done
+    
+    # Директории
+    for dir in "${!DIRECTORIES_STATUS[@]}"; do
+        local status="${DIRECTORIES_STATUS[$dir]}"
+        local comp_type="user_data"
+        [[ "$dir" == /opt/* || "$dir" == /etc/* ]] && comp_type="system"
+        if [[ "$status" == "exists" ]]; then
+            echo "[ACTION] directory path=$dir type=$comp_type status=already_installed recommended_remove=false" >> "$INSTALL_LOG"
+        else
+            echo "[ACTION] directory path=$dir type=$comp_type status=needs_create recommended_remove=false" >> "$INSTALL_LOG"
+        fi
+    done
+    
+    # Файлы
+    for file in "${!FILES_STATUS[@]}"; do
+        local status="${FILES_STATUS[$file]}"
+        local comp_type="launcher"
+        [[ "$file" == */baseline/* ]] && comp_type="baseline_config"
+        [[ "$file" == */dot* || "$file" == *dnscrypt* ]] && comp_type="dot_script"
+        [[ "$file" == *.desktop ]] && comp_type="desktop_file"
+        if [[ "$status" == "exists" ]]; then
+            echo "[ACTION] file path=$file type=$comp_type status=already_installed recommended_remove=true" >> "$INSTALL_LOG"
+        else
+            echo "[ACTION] file path=$file type=$comp_type status=needs_create recommended_remove=true" >> "$INSTALL_LOG"
+        fi
+    done
+    
+    # Сервисы
+    for service in "${!SERVICES_STATUS[@]}"; do
+        local status="${SERVICES_STATUS[$service]}"
+        local init="${METADATA[init_system]}"
+        if [[ "$status" == "enabled" ]]; then
+            echo "[ACTION] service name=$service type=$init status=installed_by_us recommended_remove=true" >> "$INSTALL_LOG"
+        else
+            echo "[ACTION] service name=$service type=$init status=needs_setup recommended_remove=true" >> "$INSTALL_LOG"
+        fi
+    done
+    
+    local total_lines
+    total_lines=$(grep -c "^\[ACTION\]" "$INSTALL_LOG" 2>/dev/null || echo 0)
+    echo "Лог создан: $INSTALL_LOG ($total_lines записей)"
 }
 
-log_component() {
-    local type="$1"
-    shift
-    echo "[ACTION] $type $*" | sudo tee -a "$INSTALL_LOG" > /dev/null
+# ============================================================================
+# СВОДКА ИНВЕНТАРИЗАЦИИ
+# ============================================================================
+
+print_inventory_summary() {
+    echo ""
+    echo "=== СВОДКА ИНВЕНТАРИЗАЦИИ ==="
+    echo ""
+    echo "Метаданные:"
+    for key in "${!METADATA[@]}"; do
+        echo "  $key = ${METADATA[$key]}"
+    done | sort
+    
+    echo ""
+    echo "Пакеты требующие установки:"
+    local count=0
+    for pkg in "${!PACKAGES_STATUS[@]}"; do
+        if [[ "${PACKAGES_STATUS[$pkg]}" == "needs_install" ]]; then
+            echo "  - $pkg"
+            count=$((count + 1))
+        fi
+    done
+    [ $count -eq 0 ] && echo "  (все пакеты уже установлены)"
+    
+    echo ""
+    echo "Файлы требующие создания:"
+    count=0
+    for file in "${!FILES_STATUS[@]}"; do
+        if [[ "${FILES_STATUS[$file]}" == "needs_create" ]]; then
+            echo "  - $file"
+            count=$((count + 1))
+        fi
+    done
+    [ $count -eq 0 ] && echo "  (все файлы существуют)"
+    
+    echo ""
+    echo "Директории требующие создания:"
+    count=0
+    for dir in "${!DIRECTORIES_STATUS[@]}"; do
+        if [[ "${DIRECTORIES_STATUS[$dir]}" == "needs_create" ]]; then
+            echo "  - $dir"
+            count=$((count + 1))
+        fi
+    done
+    [ $count -eq 0 ] && echo "  (все директории существуют)"
+    
+    echo ""
+    echo "Сервисы требующие настройки:"
+    count=0
+    for service in "${!SERVICES_STATUS[@]}"; do
+        if [[ "${SERVICES_STATUS[$service]}" == "needs_setup" ]]; then
+            echo "  - $service"
+            count=$((count + 1))
+        fi
+    done
+    [ $count -eq 0 ] && echo "  (все сервисы настроены)"
+    
+    echo ""
+    echo "=== КОНЕЦ СВОДКИ ==="
+    echo ""
 }
 
 # ============================================================================
@@ -404,10 +458,7 @@ create_missing_directories() {
         if [[ "${DIRECTORIES_STATUS[$dir]}" == "needs_create" ]]; then
             echo "Создаю: $dir"
             mkdir -p "$dir"
-            log_component "directory" "path=$dir" "type=user_data" "status=created" "recommended_remove=false"
-            ((count++))
-        else
-            log_component "directory" "path=$dir" "type=user_data" "status=already_installed" "recommended_remove=false"
+            count=$((count + 1))
         fi
     done
     
@@ -427,8 +478,10 @@ install_missing_packages() {
     
     for pkg in "${!PACKAGES_STATUS[@]}"; do
         if [[ "${PACKAGES_STATUS[$pkg]}" == "needs_install" ]]; then
-            packages_to_install+=("$pkg")
-            ((count++))
+            local real_name
+            real_name=$(get_package_name "$pkg" "$manager")
+            packages_to_install+=("$real_name")
+            count=$((count + 1))
         fi
     done
     
@@ -460,17 +513,7 @@ install_missing_packages() {
                 return 1
                 ;;
         esac
-        
-        for pkg in "${packages_to_install[@]}"; do
-            log_component "package" "name=$pkg" "manager=$manager" "status=installed_by_us" "recommended_remove=true"
-        done
     fi
-    
-    for pkg in "${!PACKAGES_STATUS[@]}"; do
-        if [[ "${PACKAGES_STATUS[$pkg]}" == "already_installed" ]]; then
-            log_component "package" "name=$pkg" "manager=$manager" "status=already_installed" "recommended_remove=false"
-        fi
-    done
     
     echo "Установлено пакетов: $count"
 }
@@ -487,10 +530,8 @@ install_zapret_core() {
     if [ ! -d "$zapret_dir" ]; then
         echo "Клонирование zapret..."
         run_as_root git clone https://github.com/bol-van/zapret.git "$zapret_dir"
-        log_component "directory" "path=$zapret_dir" "type=system" "status=installed_by_us" "recommended_remove=false"
     else
         echo "Zapret уже установлен в $zapret_dir"
-        log_component "directory" "path=$zapret_dir" "type=system" "status=already_installed" "recommended_remove=false"
     fi
 }
 
@@ -512,10 +553,7 @@ cd "$(dirname "$0")"
 python3 main.py "$@"
 EOF
             chmod +x "$file"
-            log_component "file" "path=$file" "type=launcher" "status=created" "recommended_remove=true"
-            ((count++))
-        else
-            log_component "file" "path=$file" "type=launcher" "status=already_installed" "recommended_remove=true"
+            count=$((count + 1))
         fi
     done
     
@@ -534,21 +572,15 @@ Type=Application
 Categories=Network;
 EOF
         chmod +x "$desktop_file"
-        log_component "file" "path=$desktop_file" "type=desktop_file" "status=created" "recommended_remove=true"
-        ((count++))
-    else
-        log_component "file" "path=$desktop_file" "type=desktop_file" "status=already_installed" "recommended_remove=true"
+        count=$((count + 1))
     fi
     
     for file in "${FILES_DOT[@]}"; do
         if [[ "${FILES_STATUS[$file]}" == "needs_create" ]]; then
-            echo "Создаю DOT-скрипт: $file"
-            mkdir -p "$(dirname "$file")"
-            touch "$file"
-            log_component "file" "path=$file" "type=dot_script" "status=created" "recommended_remove=true"
-            ((count++))
-        else
-            log_component "file" "path=$file" "type=dot_script" "status=already_installed" "recommended_remove=true"
+            echo "Создаю DOT-файл: $file"
+            run_as_root mkdir -p "$(dirname "$file")"
+            run_as_root touch "$file"
+            count=$((count + 1))
         fi
     done
     
@@ -580,8 +612,6 @@ EOF
     
     run_as_root systemctl daemon-reload
     run_as_root systemctl enable "$service"
-    
-    log_component "file" "path=$service_file" "type=systemd_service" "status=created" "recommended_remove=true"
 }
 
 setup_runit_service() {
@@ -597,8 +627,6 @@ EOF
     
     run_as_root chmod +x "$service_dir/run"
     run_as_root ln -sf "$service_dir" "/etc/runit/runsvdir/default/$service"
-    
-    log_component "directory" "path=$service_dir" "type=runit_service" "status=created" "recommended_remove=true"
 }
 
 setup_openrc_service() {
@@ -622,10 +650,8 @@ stop() {
 }
 EOF
     
-    chmod +x "$service_file"
-    rc-update add "$service" default
-    
-    log_component "file" "path=$service_file" "type=openrc_service" "status=created" "recommended_remove=true"
+    run_as_root chmod +x "$service_file"
+    run_as_root rc-update add "$service" default
 }
 
 setup_sysvinit_service() {
@@ -659,8 +685,6 @@ EOF
     
     run_as_root chmod +x "$service_file"
     run_as_root update-rc.d "$service" defaults
-    
-    log_component "file" "path=$service_file" "type=sysvinit_service" "status=created" "recommended_remove=true"
 }
 
 setup_services() {
@@ -674,27 +698,14 @@ setup_services() {
             echo "Настраиваю сервис: $service"
             
             case "$init" in
-                systemd)
-                    setup_systemd_service "$service"
-                    ;;
-                runit)
-                    setup_runit_service "$service"
-                    ;;
-                openrc)
-                    setup_openrc_service "$service"
-                    ;;
-                sysvinit)
-                    setup_sysvinit_service "$service"
-                    ;;
-                *)
-                    echo "ПРЕДУПРЕЖДЕНИЕ: Неизвестная init-система: $init"
-                    ;;
+                systemd)  setup_systemd_service "$service" ;;
+                runit)    setup_runit_service "$service" ;;
+                openrc)   setup_openrc_service "$service" ;;
+                sysvinit) setup_sysvinit_service "$service" ;;
+                *)        echo "ПРЕДУПРЕЖДЕНИЕ: Неизвестная init-система: $init" ;;
             esac
             
-            log_component "service" "name=$service" "type=$init" "status=installed_by_us" "recommended_remove=true"
-            ((count++))
-        else
-            log_component "service" "name=$service" "type=$init" "status=already_installed" "recommended_remove=false"
+            count=$((count + 1))
         fi
     done
     
@@ -714,11 +725,15 @@ init_baseline_configs() {
         if [[ "${FILES_STATUS[$file]}" == "needs_create" ]]; then
             echo "Создаю baseline: $file"
             mkdir -p "$(dirname "$file")"
-            touch "$file"
-            log_component "file" "path=$file" "type=baseline_config" "status=created" "recommended_remove=false"
-            ((count++))
-        else
-            log_component "file" "path=$file" "type=baseline_config" "status=already_installed" "recommended_remove=false"
+            # Копируем из assets/defaults если есть, иначе создаём пустой
+            local asset_name
+            asset_name=$(basename "$file")
+            if [ -f "$APP_DIR/assets/defaults/$asset_name" ]; then
+                cp "$APP_DIR/assets/defaults/$asset_name" "$file"
+            else
+                touch "$file"
+            fi
+            count=$((count + 1))
         fi
     done
     
@@ -733,7 +748,6 @@ execute_installation_plan() {
     echo ""
     echo "=== ФАЗА 2: Выполнение плана установки ==="
     
-    init_install_log
     create_missing_directories
     install_missing_packages
     install_zapret_core
@@ -742,68 +756,6 @@ execute_installation_plan() {
     init_baseline_configs
     
     echo "=== Фаза 2 завершена ==="
-    echo ""
-}
-
-# ============================================================================
-# ВРЕМЕННАЯ ФУНКЦИЯ ДЛЯ ТЕСТИРОВАНИЯ
-# ============================================================================
-
-print_inventory_summary() {
-    echo ""
-    echo "=== СВОДКА ИНВЕНТАРИЗАЦИИ ==="
-    echo ""
-    echo "Метаданные:"
-    for key in "${!METADATA[@]}"; do
-        echo "  $key = ${METADATA[$key]}"
-    done | sort
-    
-    echo ""
-    echo "Пакеты требующие установки:"
-    local count=0
-    for pkg in "${!PACKAGES_STATUS[@]}"; do
-        if [[ "${PACKAGES_STATUS[$pkg]}" == "needs_install" ]]; then
-            echo "  - $pkg"
-            ((count++))
-        fi
-    done
-    [ $count -eq 0 ] && echo "  (все пакеты уже установлены)"
-    
-    echo ""
-    echo "Файлы требующие создания:"
-    count=0
-    for file in "${!FILES_STATUS[@]}"; do
-        if [[ "${FILES_STATUS[$file]}" == "needs_create" ]]; then
-            echo "  - $file"
-            ((count++))
-        fi
-    done
-    [ $count -eq 0 ] && echo "  (все файлы существуют)"
-    
-    echo ""
-    echo "Директории требующие создания:"
-    count=0
-    for dir in "${!DIRECTORIES_STATUS[@]}"; do
-        if [[ "${DIRECTORIES_STATUS[$dir]}" == "needs_create" ]]; then
-            echo "  - $dir"
-            ((count++))
-        fi
-    done
-    [ $count -eq 0 ] && echo "  (все директории существуют)"
-    
-    echo ""
-    echo "Сервисы требующие настройки:"
-    count=0
-    for service in "${!SERVICES_STATUS[@]}"; do
-        if [[ "${SERVICES_STATUS[$service]}" == "needs_setup" ]]; then
-            echo "  - $service"
-            ((count++))
-        fi
-    done
-    [ $count -eq 0 ] && echo "  (все сервисы настроены)"
-    
-    echo ""
-    echo "=== КОНЕЦ СВОДКИ ==="
     echo ""
 }
 
@@ -817,23 +769,17 @@ REINSTALL=0
 # Парсинг аргументов
 for arg in "$@"; do
     case $arg in
-        --dry-run)
-            DRY_RUN=1
-            ;;
-        --reinstall)
-            REINSTALL=1
-            ;;
+        --dry-run)   DRY_RUN=1 ;;
+        --reinstall) REINSTALL=1 ;;
     esac
 done
 
 main() {
-    check_root "$@"
-    
     echo "=== ZapretPass Installer ==="
     echo ""
     
     if [ "$REINSTALL" -eq 1 ]; then
-        echo "=== Режим переустановки: запуск uninstall.sh ==="
+        echo "=== Режим переустановки: запуск uninstall.sh --quiet ==="
         if [ -f "$SCRIPT_DIR/uninstall.sh" ]; then
             bash "$SCRIPT_DIR/uninstall.sh" --quiet || echo "Предупреждение: uninstall.sh завершился с ошибкой"
         else
@@ -843,15 +789,26 @@ main() {
         echo ""
     fi
     
+    # ФАЗА 1: Инвентаризация (user-space, без sudo)
     inventory_system
     print_inventory_summary
     
+    # Записываем полный инвентарь ВСЕГДА (до проверки DRY_RUN)
+    write_full_inventory_log
+    
     if [ "$DRY_RUN" -eq 1 ]; then
         echo "=== Режим --dry-run: Фаза 2 пропущена ==="
-    else
-        execute_installation_plan
-        echo "=== Установка завершена ==="
+        exit 0
     fi
+    
+    # ФАЗА 2: Установка (точечный sudo через run_as_root)
+    execute_installation_plan
+    
+    # Обновляем лог после установки (статусы изменились)
+    inventory_system
+    write_full_inventory_log
+    
+    echo "=== Установка завершена ==="
 }
 
 main "$@"

@@ -169,10 +169,10 @@ parse_log_line() {
 echo -e "${GREEN}=== Деинсталлятор ZapretPass ===${NC}"
 
 # --- РЕЖИМ --list-recipients (для UI) ---
-if [ "$LIST_RECIPIENTS" -eq 1 ]; then
+list_recipients() {
     if [ ! -f "$INSTALL_LOG" ]; then
-        echo "{\"error\":\"install.log не найден\"}"
-        exit 1
+        echo "{\"error\":\"install.log not found\"}"
+        return 1
     fi
     
     echo "{\"packages\":["
@@ -180,9 +180,10 @@ if [ "$LIST_RECIPIENTS" -eq 1 ]; then
     while IFS= read -r line; do
         if parse_log_line "$line"; then
             if [[ "$line" != "# "* ]] && [[ "$CATEGORY" == "package" ]]; then
-                pkg_name="${FIELDS[name]}"
-                pkg_status="${FIELDS[status]}"
+                local pkg_name="${FIELDS[name]}"
+                local pkg_status="${FIELDS[status]}"
                 if [[ "$pkg_status" == "installed_by_us" ]]; then
+                    local json_output
                     json_output=$(check_package_recipients "$pkg_name")
                     if [ "$first" -eq 0 ]; then
                         echo ","
@@ -195,7 +196,11 @@ if [ "$LIST_RECIPIENTS" -eq 1 ]; then
     done < <(tac "$INSTALL_LOG")
     echo ""
     echo "]}"
-    exit 0
+}
+
+if [ "$LIST_RECIPIENTS" -eq 1 ]; then
+    list_recipients
+    exit $?
 fi
 
 # --- ЛОГИКА --force-clean БЕЗ ЛОГА ---
@@ -282,9 +287,14 @@ while IFS= read -r line; do
                     ans=$(ask_user "Удалить пользовательский конфиг $target?" "n")
                     [[ "$ans" == "y" || "$ans" == "Y" ]] && rm -rf "$target" && echo "Удалено: $target"
                 elif [[ "$recommended" == "true" ]]; then
+                    # При --quiet удаляем только системные файлы, user-space пропускаем
                     if [ -e "$target" ]; then
-                        run_as_root rm -rf "$target"
-                        echo "Удалено: $target"
+                        if [ "$QUIET" -eq 1 ] && [[ "$target" != /opt/* && "$target" != /etc/* && "$target" != /usr/* ]]; then
+                            echo "Пропущено (--quiet, user-space): $target"
+                        else
+                            run_as_root rm -rf "$target"
+                            echo "Удалено: $target"
+                        fi
                     fi
                 else
                     if [ "$FORCE_CLEAN" -eq 1 ] && [ -e "$target" ]; then
@@ -372,7 +382,8 @@ if [ -n "$BACKUP_DIR" ]; then
 fi
 
 # --- ОБРАБОТКА USER DATA ---
-if [ -n "$USER_DATA_DIR" ] && [ -d "$USER_DATA_DIR" ]; then
+# При --quiet (reinstall) user_data НЕ трогаем
+if [ -n "$USER_DATA_DIR" ] && [ -d "$USER_DATA_DIR" ] && [ "$QUIET" -eq 0 ]; then
     if [ "$FORCE_CLEAN" -eq 1 ]; then
         run_as_root rm -rf "$USER_DATA_DIR"
         echo "Директория данных удалена (--force-clean): $USER_DATA_DIR"
@@ -433,8 +444,12 @@ if [ -x "$ZAPRET_DIR/scripts/zapretpass-dot.sh" ]; then
     "$ZAPRET_DIR/scripts/zapretpass-dot.sh" disable 2>/dev/null || true
 fi
 
-# --- УДАЛЕНИЕ ЛОГА ---
-rm -f "$INSTALL_LOG"
-echo "Лог установки удалён: $INSTALL_LOG"
+# --- УДАЛЕНИЕ ЛОГА (только при --purge) ---
+if [ "$PURGE" -eq 1 ]; then
+    rm -f "$INSTALL_LOG"
+    echo "Лог установки удалён (--purge): $INSTALL_LOG"
+else
+    echo "Лог установки сохранён: $INSTALL_LOG"
+fi
 
 echo -e "\n${GREEN}✅ Деинсталляция ZapretPass завершена.${NC}"
