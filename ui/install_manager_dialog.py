@@ -127,7 +127,7 @@ class RecipientsWorker(QThread):
             recipients = []
             if pkg_manager == "pacman":
                 try:
-                    r = subprocess.run(["pacman", "-Qi", real_name], capture_output=True, text=True)
+                    r = subprocess.run(["env", "LC_ALL=C", "pacman", "-Qi", real_name], capture_output=True, text=True)
                     for line in r.stdout.splitlines():
                         if line.startswith("Required By"):
                             deps = line.split(":")[1].strip()

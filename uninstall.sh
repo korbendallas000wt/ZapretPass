@@ -81,7 +81,7 @@ check_recipients() {
             has_deps=1
         fi
     elif command -v pacman >/dev/null; then
-        local req_by=$(pacman -Qi "$pkg" 2>/dev/null | grep "Required By" | awk -F: '{print $2}' | xargs)
+        local req_by=$(LC_ALL=C pacman -Qi "$pkg" 2>/dev/null | grep "Required By" | awk -F: '{print $2}' | xargs)
         if [ -n "$req_by" ] && [ "$req_by" != "None" ]; then
             echo -e "${YELLOW}⚠ Пакет $pkg используется другими программами: $req_by${NC}"
             has_deps=1
@@ -102,7 +102,7 @@ check_package_recipients() {
             has_deps=1
         fi
     elif command -v pacman >/dev/null; then
-        local req_by=$(pacman -Qi "$pkg" 2>/dev/null | grep "Required By" | awk -F: '{print $2}' | xargs)
+        local req_by=$(LC_ALL=C pacman -Qi "$pkg" 2>/dev/null | grep "Required By" | awk -F: '{print $2}' | xargs)
         if [ -n "$req_by" ] && [ "$req_by" != "None" ]; then
             deps="$req_by"
             has_deps=1
