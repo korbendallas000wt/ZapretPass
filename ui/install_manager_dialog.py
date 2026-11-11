@@ -396,7 +396,7 @@ class InstallManagerDialog(QDialog):
             return
         script_dir = Path(__file__).parent.parent
         uninstall_script = script_dir / "uninstall.sh"
-        cmd = [str(uninstall_script), "--quiet", f"--backup-dir={backup_path}"]
+        cmd = [str(uninstall_script), "--uninstall", "--yes", f"--backup-dir={backup_path}"]
         self.progress_bar.setVisible(True)
         self.btn_action.setEnabled(False)
         self.btn_cancel.setEnabled(False)

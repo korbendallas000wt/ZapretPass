@@ -529,10 +529,36 @@ install_zapret_core() {
     
     if [ ! -d "$zapret_dir" ]; then
         echo "Клонирование zapret..."
-        run_as_root git clone https://github.com/bol-van/zapret.git "$zapret_dir"
+        run_as_root git clone https://github.com/bol-van/zapret.git "$zapret_dir" || {
+            echo "❌ Ошибка клонирования zapret"
+            return 1
+        }
     else
         echo "Zapret уже установлен в $zapret_dir"
     fi
+    
+    # Компиляция бинарников
+    echo "Компиляция бинарников zapret..."
+    if [ "$INIT_SYSTEM" = "systemd" ]; then
+        run_as_root bash -c "cd '$zapret_dir' && make systemd" || {
+            echo "❌ Ошибка компиляции zapret (make systemd)"
+            return 1
+        }
+    else
+        run_as_root bash -c "cd '$zapret_dir' && make" || {
+            echo "❌ Ошибка компиляции zapret (make)"
+            return 1
+        }
+    fi
+    
+    # Линковка бинарников
+    echo "Линковка бинарников zapret..."
+    run_as_root bash -c "cd '$zapret_dir' && ./install_bin.sh" || {
+        echo "❌ Ошибка линковки бинарников zapret"
+        return 1
+    }
+    
+    # Лаунчер zapret.sh не нужен - штатный unit вызывает init.d/sysv/zapret напрямую
 }
 
 # ============================================================================
@@ -606,21 +632,32 @@ EOF
 setup_systemd_service() {
     local service="$1"
     local service_file="/etc/systemd/system/${service}.service"
+    local zapret_unit="/opt/zapret/init.d/systemd/zapret.service"
     
-    run_as_root tee "$service_file" > /dev/null <<EOF
+    if [ -f "$zapret_unit" ]; then
+        echo "Копирование штатного unit-файла zapret..."
+        run_as_root cp "$zapret_unit" "$service_file" || {
+            echo "❌ Ошибка копирования unit-файла"
+            return 1
+        }
+    else
+        echo "⚠ Штатный unit-файл не найден: $zapret_unit"
+        echo "Создание минимального unit-файла..."
+        run_as_root tee "$service_file" > /dev/null <<EOF
 [Unit]
 Description=Zapret DPI Bypass
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/opt/zapret/zapret.sh start
-ExecStop=/opt/zapret/zapret.sh stop
+Type=forking
+ExecStart=/opt/zapret/init.d/sysv/zapret start
+ExecStop=/opt/zapret/init.d/sysv/zapret stop
 
 [Install]
 WantedBy=multi-user.target
 EOF
+    fi
     
     run_as_root systemctl daemon-reload
     run_as_root systemctl enable "$service"

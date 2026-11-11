@@ -6,6 +6,10 @@ INSTALL_LOG="$SCRIPT_DIR/data/logs/install.log"
 
 # Функция выполнения команды с sudo (запрашивает пароль при необходимости)
 run_as_root() {
+    if [ "$DRY_RUN" -eq 1 ]; then
+        echo "[DRY-RUN] sudo $*"
+        return 0
+    fi
     if [ "$EUID" -eq 0 ]; then
         "$@"
     else
@@ -14,6 +18,9 @@ run_as_root() {
 }
 FORCE_CLEAN=0
 QUIET=0
+UNINSTALL_MODE=0
+YES_MODE=0
+DRY_RUN=0
 PURGE=0
 BACKUP_DIR=""
 LIST_RECIPIENTS=0
@@ -40,6 +47,9 @@ for arg in "$@"; do
     case $arg in
         --force-clean) FORCE_CLEAN=1 ;;
         --quiet) QUIET=1 ;;
+        --uninstall) UNINSTALL_MODE=1 ;;
+        --yes|-y) YES_MODE=1 ;;
+        --dry-run) DRY_RUN=1 ;;
         --purge) PURGE=1 ;;
         --backup-dir=*) BACKUP_DIR="${arg#*=}" ;;
         --list-recipients) LIST_RECIPIENTS=1 ;;
@@ -63,7 +73,9 @@ INIT_SYSTEM=""
 ask_user() {
     local prompt="$1"
     local default="$2"
-    if [ "$QUIET" -eq 1 ] || [ "$FORCE_CLEAN" -eq 1 ]; then
+    if [ "$YES_MODE" -eq 1 ]; then
+        echo "y"
+    elif [ "$QUIET" -eq 1 ] || [ "$FORCE_CLEAN" -eq 1 ]; then
         echo "$default"
     else
         read -p "$prompt [$default]: " answer
@@ -234,7 +246,11 @@ if [ ! -f "$INSTALL_LOG" ]; then
         )
         for path in "${FORCE_CLEAN_PATHS[@]}"; do
             if [ -e "$path" ]; then
-                rm -rf "$path"
+                if [ "$DRY_RUN" -eq 1 ]; then
+                    echo "[DRY-RUN] rm -rf $path"
+                else
+                    rm -rf "$path"
+                fi
                 echo "Удалено: $path"
             fi
         done
@@ -247,6 +263,45 @@ if [ ! -f "$INSTALL_LOG" ]; then
         exit 1
     fi
 fi
+
+# --- БЭКАП ПЕРЕД УДАЛЕНИЕМ (если указан --backup-dir) ---
+if [ -n "$BACKUP_DIR" ]; then
+    echo -e "\n${YELLOW}Создание бэкапа в: $BACKUP_DIR${NC}"
+    
+    BACKUP_TIMESTAMP=$(date +%Y-%m-%d)
+    BACKUP_PATH="$BACKUP_DIR/ZapretPass_backup_${BACKUP_TIMESTAMP}"
+    
+    run_as_root mkdir -p "$BACKUP_PATH"
+    
+    # Бэкап конфигов приложения (data/baseline/)
+    if [ -d "$SCRIPT_DIR/data/baseline" ]; then
+        backup_component "$SCRIPT_DIR/data/baseline" "$BACKUP_PATH/configs" "Конфиги приложения"
+    fi
+    
+    # Бэкап паспортов (data/sites/)
+    if [ -d "$SCRIPT_DIR/data/sites" ]; then
+        backup_component "$SCRIPT_DIR/data/sites" "$BACKUP_PATH/passports" "Паспорта сайтов"
+    fi
+    
+    # Бэкап стратегий (data/strategies/, data/strategies.json, data/selected_strategy.json)
+    if [ -d "$SCRIPT_DIR/data/strategies" ]; then
+        backup_component "$SCRIPT_DIR/data/strategies" "$BACKUP_PATH/strategies" "Стратегии"
+    fi
+    if [ -f "$SCRIPT_DIR/data/strategies.json" ]; then
+        backup_component "$SCRIPT_DIR/data/strategies.json" "$BACKUP_PATH/strategies.json" "Пресеты стратегий"
+    fi
+    if [ -f "$SCRIPT_DIR/data/selected_strategy.json" ]; then
+        backup_component "$SCRIPT_DIR/data/selected_strategy.json" "$BACKUP_PATH/selected_strategy.json" "Выбранная стратегия"
+    fi
+    
+    # Бэкап конфига zapret (/opt/zapret/config)
+    if [ -f "/opt/zapret/config" ]; then
+        backup_component "/opt/zapret/config" "$BACKUP_PATH/zapret_config" "Конфиг zapret"
+    fi
+    
+    echo -e "${GREEN}✓ Бэкап завершён: $BACKUP_PATH${NC}"
+fi
+
 
 echo "Чтение лога: $INSTALL_LOG"
 
@@ -300,9 +355,11 @@ while IFS= read -r line; do
                     ans=$(ask_user "Удалить пользовательский конфиг $target?" "n")
                     [[ "$ans" == "y" || "$ans" == "Y" ]] && rm -rf "$target" && echo "Удалено: $target"
                 elif [[ "$recommended" == "true" ]]; then
-                    # При --quiet удаляем только системные файлы, user-space пропускаем
                     if [ -e "$target" ]; then
-                        if [ "$QUIET" -eq 1 ] && [[ "$target" != /opt/* && "$target" != /etc/* && "$target" != /usr/* ]]; then
+                        if [ "$UNINSTALL_MODE" -eq 1 ]; then
+                            run_as_root rm -rf "$target"
+                            echo "Удалено: $target"
+                        elif [ "$QUIET" -eq 1 ] && [[ "$target" != /opt/* && "$target" != /etc/* && "$target" != /usr/* ]]; then
                             echo "Пропущено (--quiet, user-space): $target"
                         else
                             run_as_root rm -rf "$target"
@@ -356,47 +413,9 @@ while IFS= read -r line; do
     fi
 done < <(tac "$INSTALL_LOG")
 
-# --- БЭКАП ПЕРЕД УДАЛЕНИЕМ (если указан --backup-dir) ---
-if [ -n "$BACKUP_DIR" ]; then
-    echo -e "\n${YELLOW}Создание бэкапа в: $BACKUP_DIR${NC}"
-    
-    BACKUP_TIMESTAMP=$(date +%Y-%m-%d)
-    BACKUP_PATH="$BACKUP_DIR/ZapretPass_backup_${BACKUP_TIMESTAMP}"
-    
-    run_as_root mkdir -p "$BACKUP_PATH"
-    
-    # Бэкап конфигов приложения (data/baseline/)
-    if [ -d "$SCRIPT_DIR/data/baseline" ]; then
-        backup_component "$SCRIPT_DIR/data/baseline" "$BACKUP_PATH/configs" "Конфиги приложения"
-    fi
-    
-    # Бэкап паспортов (data/sites/)
-    if [ -d "$SCRIPT_DIR/data/sites" ]; then
-        backup_component "$SCRIPT_DIR/data/sites" "$BACKUP_PATH/passports" "Паспорта сайтов"
-    fi
-    
-    # Бэкап стратегий (data/strategies/, data/strategies.json, data/selected_strategy.json)
-    if [ -d "$SCRIPT_DIR/data/strategies" ]; then
-        backup_component "$SCRIPT_DIR/data/strategies" "$BACKUP_PATH/strategies" "Стратегии"
-    fi
-    if [ -f "$SCRIPT_DIR/data/strategies.json" ]; then
-        backup_component "$SCRIPT_DIR/data/strategies.json" "$BACKUP_PATH/strategies.json" "Пресеты стратегий"
-    fi
-    if [ -f "$SCRIPT_DIR/data/selected_strategy.json" ]; then
-        backup_component "$SCRIPT_DIR/data/selected_strategy.json" "$BACKUP_PATH/selected_strategy.json" "Выбранная стратегия"
-    fi
-    
-    # Бэкап конфига zapret (/opt/zapret/config)
-    if [ -f "/opt/zapret/config" ]; then
-        backup_component "/opt/zapret/config" "$BACKUP_PATH/zapret_config" "Конфиг zapret"
-    fi
-    
-    echo -e "${GREEN}✓ Бэкап завершён: $BACKUP_PATH${NC}"
-fi
-
 # --- ОБРАБОТКА USER DATA ---
 # При --quiet (reinstall) user_data НЕ трогаем
-if [ -n "$USER_DATA_DIR" ] && [ -d "$USER_DATA_DIR" ] && [ "$QUIET" -eq 0 ]; then
+if [ -n "$USER_DATA_DIR" ] && [ -d "$USER_DATA_DIR" ] && { [ "$QUIET" -eq 0 ] || [ "$UNINSTALL_MODE" -eq 1 ]; }; then
     if [ "$FORCE_CLEAN" -eq 1 ]; then
         run_as_root rm -rf "$USER_DATA_DIR"
         echo "Директория данных удалена (--force-clean): $USER_DATA_DIR"
@@ -420,7 +439,7 @@ if [ ${#PKGS_INSTALLED_BY_US[@]} -gt 0 ]; then
         echo " - $pkg"
     done
 
-    if [ "$QUIET" -eq 1 ]; then
+    if [ "$QUIET" -eq 1 ] && [ "$UNINSTALL_MODE" -eq 0 ]; then
         echo "Режим --quiet: пакеты оставлены в системе (безопасность)."
     else
         for pkg in "${!PKGS_INSTALLED_BY_US[@]}"; do
@@ -430,13 +449,13 @@ if [ ${#PKGS_INSTALLED_BY_US[@]} -gt 0 ]; then
                 ans=$(ask_user "Удалить пакет $pkg?" "n")
                 if [[ "$ans" == "y" || "$ans" == "Y" ]]; then
                     if command -v apt-get >/dev/null; then
-                        DEBIAN_FRONTEND=noninteractive apt-get remove -y "$pkg" 2>/dev/null || true
+                        DEBIAN_FRONTEND=noninteractive run_as_root apt-get remove -y "$pkg" 2>/dev/null || true
                     elif command -v pacman >/dev/null; then
-                        pacman -Rns --noconfirm "$pkg" 2>/dev/null || true
+                        run_as_root pacman -Rns --noconfirm "$pkg" 2>/dev/null || true
                     elif command -v dnf >/dev/null; then
-                        dnf remove -y "$pkg" 2>/dev/null || true
+                        run_as_root dnf remove -y "$pkg" 2>/dev/null || true
                     elif command -v zypper >/dev/null; then
-                        zypper remove -y "$pkg" 2>/dev/null || true
+                        run_as_root zypper remove -y "$pkg" 2>/dev/null || true
                     fi
                     echo "Пакет $pkg удалён."
                 else
@@ -457,9 +476,32 @@ if [ -x "$ZAPRET_DIR/scripts/zapretpass-dot.sh" ]; then
     "$ZAPRET_DIR/scripts/zapretpass-dot.sh" disable 2>/dev/null || true
 fi
 
+# --- УДАЛЕНИЕ ДИРЕКТОРИИ /opt/zapret (движок) ---
+ZAPRET_DIR="/opt/zapret"
+if [ -d "$ZAPRET_DIR" ]; then
+    if [ "$UNINSTALL_MODE" -eq 1 ]; then
+        run_as_root rm -rf "$ZAPRET_DIR"
+        echo "Удалена директория движка: $ZAPRET_DIR"
+    elif [ "$FORCE_CLEAN" -eq 1 ]; then
+        run_as_root rm -rf "$ZAPRET_DIR"
+        echo "Удалена директория движка (--force-clean): $ZAPRET_DIR"
+    elif [ "$PURGE" -eq 1 ]; then
+        run_as_root rm -rf "$ZAPRET_DIR"
+        echo "Удалена директория движка (--purge): $ZAPRET_DIR"
+    else
+        ans=$(ask_user "Удалить директорию движка $ZAPRET_DIR?" "y")
+        if [[ "$ans" == "y" || "$ans" == "Y" ]]; then
+            run_as_root rm -rf "$ZAPRET_DIR"
+            echo "Удалена директория движка: $ZAPRET_DIR"
+        else
+            echo "Директория движка оставлена: $ZAPRET_DIR"
+        fi
+    fi
+fi
+
 # --- УДАЛЕНИЕ ЛОГА (только при --purge) ---
 if [ "$PURGE" -eq 1 ]; then
-    rm -f "$INSTALL_LOG"
+    if [ "$DRY_RUN" -eq 1 ]; then echo "[DRY-RUN] rm -f $INSTALL_LOG"; else rm -f "$INSTALL_LOG"; fi
     echo "Лог установки удалён (--purge): $INSTALL_LOG"
 else
     echo "Лог установки сохранён: $INSTALL_LOG"
