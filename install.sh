@@ -550,7 +550,7 @@ create_missing_files() {
             cat > "$file" <<'EOF'
 #!/bin/bash
 cd "$(dirname "$0")"
-python3 main.py "$@"
+exec python3 zapretpass.py "$@"
 EOF
             chmod +x "$file"
             count=$((count + 1))
@@ -579,7 +579,19 @@ EOF
         if [[ "${FILES_STATUS[$file]}" == "needs_create" ]]; then
             echo "Создаю DOT-файл: $file"
             run_as_root mkdir -p "$(dirname "$file")"
-            run_as_root touch "$file"
+            local asset_src=""
+            case "$(basename "$file")" in
+                zapretpass-dot.sh)   asset_src="$APP_DIR/scripts/zapretpass-dot.sh" ;;
+                dnscrypt-proxy.toml) asset_src="$APP_DIR/assets/defaults/dnscrypt-proxy.toml" ;;
+            esac
+            if [ -n "$asset_src" ] && [ -f "$asset_src" ]; then
+                run_as_root cp "$asset_src" "$file"
+                [[ "$file" == *.sh ]] && run_as_root chmod +x "$file"
+                echo "  скопирован ассет: $asset_src"
+            else
+                echo "  ПРЕДУПРЕЖДЕНИЕ: ассет не найден, создаю пустой: $file"
+                run_as_root touch "$file"
+            fi
             count=$((count + 1))
         fi
     done
