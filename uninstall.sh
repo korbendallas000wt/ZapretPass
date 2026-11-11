@@ -166,7 +166,9 @@ parse_log_line() {
     return 1
 }
 
-echo -e "${GREEN}=== Деинсталлятор ZapretPass ===${NC}"
+if [ "$LIST_RECIPIENTS" -eq 0 ]; then
+    echo -e "${GREEN}=== Деинсталлятор ZapretPass ===${NC}"
+fi
 
 # --- РЕЖИМ --list-recipients (для UI) ---
 list_recipients() {
@@ -174,28 +176,39 @@ list_recipients() {
         echo "{\"error\":\"install.log not found\"}"
         return 1
     fi
-    
-    echo "{\"packages\":["
-    local first=1
+
+    local packages_json=""
+    local services_json=""
+    local pkg_first=1
+    local svc_first=1
+
     while IFS= read -r line; do
         if parse_log_line "$line"; then
-            if [[ "$line" != "# "* ]] && [[ "$CATEGORY" == "package" ]]; then
+            if [[ "$line" == "# "* ]]; then
+                continue
+            fi
+            if [[ "$CATEGORY" == "package" ]]; then
                 local pkg_name="${FIELDS[name]}"
                 local pkg_status="${FIELDS[status]}"
                 if [[ "$pkg_status" == "installed_by_us" ]]; then
                     local json_output
                     json_output=$(check_package_recipients "$pkg_name")
-                    if [ "$first" -eq 0 ]; then
-                        echo ","
-                    fi
-                    echo -n "  $json_output"
-                    first=0
+                    if [ "$pkg_first" -eq 0 ]; then packages_json+=","; fi
+                    packages_json+="$json_output"
+                    pkg_first=0
                 fi
+            elif [[ "$CATEGORY" == "service" ]]; then
+                local svc_name="${FIELDS[name]}"
+                local svc_type="${FIELDS[type]}"
+                local svc_status="${FIELDS[status]}"
+                if [ "$svc_first" -eq 0 ]; then services_json+=","; fi
+                services_json+="{\"name\":\"$svc_name\",\"type\":\"$svc_type\",\"status\":\"$svc_status\"}"
+                svc_first=0
             fi
         fi
     done < <(tac "$INSTALL_LOG")
-    echo ""
-    echo "]}"
+
+    echo "{\"packages\":[$packages_json],\"services\":[$services_json]}"
 }
 
 if [ "$LIST_RECIPIENTS" -eq 1 ]; then
