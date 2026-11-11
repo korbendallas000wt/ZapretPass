@@ -562,6 +562,56 @@ install_zapret_core() {
 }
 
 # ============================================================================
+# КОНФИГИ И IPSET-ФАЙЛЫ ZAPRET
+# ============================================================================
+
+install_zapret_configs() {
+    echo "Установка конфигов и ipset-файлов zapret..."
+    
+    local zapret_dir="/opt/zapret"
+    
+    # --- 1. Основной config (/opt/zapret/config) ---
+    # Без него сервис падает на строке 6 init.d/sysv/functions: . "$ZAPRET_CONFIG"
+    if [ ! -f "$zapret_dir/config" ]; then
+        if [ -f "$APP_DIR/assets/defaults/config" ]; then
+            echo "Создание /opt/zapret/config из assets/defaults/config..."
+            run_as_root cp "$APP_DIR/assets/defaults/config" "$zapret_dir/config" || {
+                echo "❌ Ошибка копирования config"
+                return 1
+            }
+        elif [ -f "$zapret_dir/config.default" ]; then
+            echo "Создание /opt/zapret/config из штатного config.default..."
+            run_as_root cp "$zapret_dir/config.default" "$zapret_dir/config" || {
+                echo "❌ Ошибка копирования config.default"
+                return 1
+            }
+        else
+            echo "⚠ Не удалось создать /opt/zapret/config: ни assets/defaults/config, ни config.default не найдены"
+        fi
+    else
+        echo "/opt/zapret/config уже существует, пропуск."
+    fi
+    
+    # --- 2. IPset-файлы (/opt/zapret/ipset/) ---
+    # Без них демоны (tpws/nfqws) выдают "cannot access hostlist file"
+    if [ -d "$APP_DIR/assets/defaults/ipset" ]; then
+        run_as_root mkdir -p "$zapret_dir/ipset"
+        
+        if [ ! -f "$zapret_dir/ipset/zapret-hosts-user.txt" ] && [ -f "$APP_DIR/assets/defaults/ipset/zapret-hosts-user.txt" ]; then
+            echo "Копирование zapret-hosts-user.txt в /opt/zapret/ipset/..."
+            run_as_root cp "$APP_DIR/assets/defaults/ipset/zapret-hosts-user.txt" "$zapret_dir/ipset/"
+        fi
+        
+        if [ ! -f "$zapret_dir/ipset/zapret-hosts-user-exclude.txt" ] && [ -f "$APP_DIR/assets/defaults/ipset/zapret-hosts-user-exclude.txt" ]; then
+            echo "Копирование zapret-hosts-user-exclude.txt в /opt/zapret/ipset/..."
+            run_as_root cp "$APP_DIR/assets/defaults/ipset/zapret-hosts-user-exclude.txt" "$zapret_dir/ipset/"
+        fi
+    else
+        echo "⚠ Директория assets/defaults/ipset/ не найдена, ipset-файлы не копируются."
+    fi
+}
+
+# ============================================================================
 # СОЗДАНИЕ ФАЙЛОВ
 # ============================================================================
 
@@ -800,6 +850,7 @@ execute_installation_plan() {
     create_missing_directories
     install_missing_packages
     install_zapret_core
+    install_zapret_configs
     create_missing_files
     setup_services
     init_baseline_configs
