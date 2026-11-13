@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QThread, QTimer
 from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QIcon
 from PyQt6.QtGui import QAction
 from .update_indicator import UpdateIndicator
 from .about_dialog import AboutDialog, UpdateCheckerWorker
@@ -126,6 +127,12 @@ class MainWindow(QMainWindow):
         super().__init__()
         
         self.setWindowTitle("ZapretPass")
+        
+        # Устанавливаем иконку окна
+        import os as _os
+        _icon_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "assets", "icons", "png", "zapretpass-icon-64.png")
+        if _os.path.exists(_icon_path):
+            self.setWindowIcon(QIcon(_icon_path))
         self.resize(900, 700)
         
         central = QWidget()

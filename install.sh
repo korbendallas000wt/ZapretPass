@@ -642,7 +642,7 @@ EOF
 Name=ZapretPass
 Comment=DPI Bypass Manager
 Exec=$APP_DIR/zapretpass.sh
-Icon=utilities-terminal
+Icon=$APP_DIR/assets/icons/png/zapretpass-icon-64.png
 Terminal=false
 Type=Application
 Categories=Network;
