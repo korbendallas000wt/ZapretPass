@@ -507,6 +507,7 @@ class SitePassportWidget(QWidget):
         self.set_domain_entered()
         
         self._scenario_box = QGroupBox("🎯 Выбор действия")
+        self._apply_accent_style(self._scenario_box)
         layout = QVBoxLayout(self._scenario_box)
         
         # Readonly контекст домена
@@ -528,6 +529,7 @@ class SitePassportWidget(QWidget):
         
         # --- ЛЕВАЯ КОЛОНКА: СЦЕНАРИИ ---
         left_box = QGroupBox("Сценарии")
+        self._apply_accent_style(left_box)
         left_box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         v_layout_left = QVBoxLayout(left_box)
         v_layout_left.setSpacing(12)
@@ -565,6 +567,7 @@ class SitePassportWidget(QWidget):
         
         # --- ПРАВАЯ КОЛОНКА: ИНСТРУМЕНТЫ ---
         right_box = QGroupBox("Инструменты")
+        self._apply_accent_style(right_box)
         right_box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         v_layout_right = QVBoxLayout(right_box)
         v_layout_right.setSpacing(12)
@@ -710,6 +713,14 @@ class SitePassportWidget(QWidget):
         self.status_message_requested.emit("🔄 Введите новый домен", False)
     
 
+
+    def _apply_accent_style(self, box):
+        """Применяет системный акцентный стиль к QGroupBox (без запоминания активного блока)."""
+        accent = self.palette().color(QPalette.ColorRole.Highlight).name()
+        box.setStyleSheet(
+            f"QGroupBox {{ border: 1px solid {accent}; border-radius: 6px; margin-top: 12px; }}"
+            f"QGroupBox::title {{ font-weight: bold; color: {accent}; subcontrol-origin: margin; left: 10px; padding: 0 4px; }}"
+        )
 
     def _set_active_block(self, box):
         """Выделяет активный блок, снимает выделение с предыдущего."""

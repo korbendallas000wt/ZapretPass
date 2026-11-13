@@ -6,6 +6,8 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from .browser_widget import BrowserWidget
 from .geo_worker import GeoWorker
 from .dns_worker import DnsWorker
+from .dot_detector_worker import DotDetectorWorker
+from core.dot_detector import DotDetectionResult
 from .html_worker import HtmlWorker
 from .diagnosis_block import DiagnosisBlock, BrowserBlock
 from core.scenarios import ScenarioBlock
@@ -31,10 +33,14 @@ class DiagnosisWidget(QWidget):
         self._step_indices = {"geo": 0, "dns": 1, "html": 2}
         self._last_dns_ip = None
         self._last_dns_is_ipv6 = False
+        self._dot_result = None
         
         self._setup_ui()
         self._setup_progress_indicator()
         self._update_ui_from_state()
+        
+        # Асинхронная проверка статуса DoT при инициализации
+        self._start_dot_detection()
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -130,13 +136,19 @@ class DiagnosisWidget(QWidget):
         self.domain_val = QLabel(self.domain)
         self.domain_val.setStyleSheet("font-size: 16pt; font-weight: bold; color: palette(link);")
         self.domain_val.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.verdict_block.grid.addWidget(self.domain_val, 1, 0, 1, 2, Qt.AlignmentFlag.AlignCenter)
+        self.verdict_block.grid.addWidget(self.domain_val, 2, 0, 1, 2, Qt.AlignmentFlag.AlignCenter)
+        
+        # Защищённый DNS (индикатор статуса)
+        self.verdict_block.grid.addWidget(QLabel("Защищённый DNS:"), 1, 0, Qt.AlignmentFlag.AlignRight)
+        self.dot_status_val = QLabel("—")
+        self.dot_status_val.setStyleSheet("font-size: 11pt; font-weight: bold;")
+        self.verdict_block.grid.addWidget(self.dot_status_val, 1, 1)
         
         # Вердикт (крупно, центрирован, на всю ширину)
         self.final_verdict_val = QLabel("—")
         self.final_verdict_val.setStyleSheet("font-size: 14pt; font-weight: bold;")
         self.final_verdict_val.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.verdict_block.grid.addWidget(self.final_verdict_val, 2, 0, 1, 2, Qt.AlignmentFlag.AlignCenter)
+        self.verdict_block.grid.addWidget(self.final_verdict_val, 3, 0, 1, 2, Qt.AlignmentFlag.AlignCenter)
 
     def _setup_progress_indicator(self):
         if self.progress_indicator is None: return
@@ -382,8 +394,45 @@ class DiagnosisWidget(QWidget):
         self.html_block.set_details(f"Ошибка HTTP: {error_msg}")
         self._update_ui_from_state()
 
+    def _start_dot_detection(self):
+        """Запускает фоновую детекцию статуса DoT."""
+        self.dot_status_val.setText("проверка...")
+        self.dot_detector_worker = DotDetectorWorker()
+        self.dot_detector_worker.dot_detected.connect(self._on_dot_detected)
+        self.dot_detector_worker.dot_error.connect(self._on_dot_error)
+        self.dot_detector_worker.start()
+
+    def _on_dot_detected(self, result: DotDetectionResult):
+        """Обработчик успешной детекции DoT."""
+        self._dot_result = result
+        
+        if result.status == "ours":
+            self.dot_status_val.setText(result.label)
+            self.dot_status_val.setStyleSheet("font-size: 11pt; font-weight: bold; color: #2ecc71;")
+        elif result.status == "system":
+            self.dot_status_val.setText(result.label)
+            self.dot_status_val.setStyleSheet("font-size: 11pt; font-weight: bold; color: #3498db;")
+        elif result.status == "plain":
+            self.dot_status_val.setText(result.label)
+            self.dot_status_val.setStyleSheet("font-size: 11pt; font-weight: bold; color: #f39c12;")
+        else:
+            self.dot_status_val.setText(result.label)
+            self.dot_status_val.setStyleSheet("font-size: 11pt; font-weight: bold; color: #95a5a6;")
+        
+        details = f"Статус: {result.label}\nПроцесс: {result.process or '—'}\nАдрес: {result.listen_addr or '—'}"
+        if result.version:
+            details += f"\nВерсия: {result.version}"
+        self.verdict_block.set_details(details)
+
+    def _on_dot_error(self, error_msg: str):
+        """Обработчик ошибки детекции DoT."""
+        self._dot_result = None
+        self.dot_status_val.setText("⚠ Ошибка")
+        self.dot_status_val.setStyleSheet("font-size: 11pt; font-weight: bold; color: #e74c3c;")
+        self.verdict_block.set_details(f"Ошибка детекции DoT: {error_msg}")
+
     def stop_all_workers(self):
-        for w in ['geo_worker', 'dns_worker', 'html_worker']:
+        for w in ['geo_worker', 'dns_worker', 'html_worker', 'dot_detector_worker']:
             if hasattr(self, w) and getattr(self, w).isRunning():
                 getattr(self, w).terminate()
                 getattr(self, w).wait()

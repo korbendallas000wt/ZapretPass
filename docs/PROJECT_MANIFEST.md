@@ -577,6 +577,11 @@ ui/aux_worker.py — фоновый поток вспомогательных д
 - Парсит HTML, извлекает hostname-кандидаты и Alt-Svc подсказки.
 
 ui/assembly_worker.py — фоновый поток сборки target hosts
+ui/system_info_dialog.py — Виджет системной информации и проверки обновлений
+ui/install_manager_dialog.py — Диалог управления установкой (переустановка/удаление)
+ui/settings_dialog.py — Диалог настроек (вкл/выкл DoT/DoH)
+core/dot_detector.py — Логика детекции статуса системного DNS
+ui/dot_detector_worker.py — Фоновый воркер управления DoT/DoH
 - AssemblyWorker агрегирует данные ECH и AUX.
 - Формирует список target hosts и protocol hints с приоритетом источников.
 

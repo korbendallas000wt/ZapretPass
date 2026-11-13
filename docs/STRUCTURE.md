@@ -13,6 +13,7 @@
 ZapretPass/
 ├── zapretpass.py               Точка входа приложения
 ├── install.sh                  Установщик зависимостей, движка zapret и проверок GUI/CLI
+├── uninstall.sh                Умный деинсталлятор с поддержкой бэкапов и --purge
 ├── VERSION                     Текущая версия приложения
 ├── core/                       Ядро: бизнес-логика, независимая от UI
 │   ├── __init__.py
@@ -57,14 +58,17 @@ ZapretPass/
 │   ├── about_dialog.py         Диалог «О программе» и обновлений
 │   └── update_indicator.py     Индикатор доступного обновления
 ├── assets/                     Эталонные конфиги и списки (в git)
-│   └── defaults/               Baseline config/ipset для установки и restore
+│   ├── defaults/               Baseline config/ipset для установки и restore
+│   └── icons/                  Иконки и эмблема приложения
 ├── data/                       Данные приложения (runtime, вне git)
 │   ├── strategies/             Результаты blockcheck: {domain}.json
 │   ├── sites/                  Паспорта сайтов: {domain}/passport.json, strategies.json, screenshots/
 │   ├── sniffer_results/        Результаты сниффинга: {domain}.txt
 │   └── logs/                   Логи приложения
 ├── scripts/                    Вспомогательные скрипты установки/запуска
-│   └── zapretpass-daemon.sh    Fallback daemon-обёртка для систем без init
+│   ├── deps.sh                 Единый источник маппинга пакетов
+│   ├── zapretpass-daemon.sh    Fallback daemon-обёртка для систем без init
+│   └── zapretpass-dot.sh       Скрипт управления защищённым DNS (DoT/DoH)
 ├── resources/                  Ресурсы приложения (пока .gitkeep)
 ├── docs/                       Документация проекта
 │   ├── STRUCTURE.md            Этот файл — карта проекта
@@ -220,7 +224,7 @@ domain
 
 Формат: одна строка — `<путь> <raw-url>`. Ветка: `dev`. Модель может взять URL целиком.
 
-Примечание: ссылки привязаны к текущей ветке документации. При переносе документа в `main` необходимо заменить `/dev/` на `/main/`.
+Примечание: ссылки привязаны к текущей ветке документации. При переносе документа в `main` необходимо заменить `/main/` на `/main/`.
 
 ```text
 .gitignore https://raw.githubusercontent.com/korbendallas000wt/ZapretPass/main/.gitignore

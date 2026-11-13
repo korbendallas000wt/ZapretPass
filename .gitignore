@@ -24,7 +24,6 @@ __pycache__/
 *.log
 
 # Пользовательские данные (создаются install.sh при установке)
-data/
 
 /whitelist.txt
 
@@ -35,3 +34,23 @@ Work/
 zapretpass.sh
 
 WORKLOG.md
+
+# Временные скрипты рефакторинга
+*_v2.py
+*_functions.py
+refactor_*.py
+fix_*.py
+
+# Бэкапы данных
+
+# Временные скрипты рефакторинга
+*_v2.py
+*_functions.py
+refactor_*.py
+fix_*.py
+
+# Бэкапы данных (должны быть в legacy/backup/)
+*.backup
+
+# Данные приложения (создаются при установке)
+data/

@@ -24,10 +24,71 @@ def _read_proc_cgroup(pid: int) -> str:
     except OSError:
         return ""
 
+def _detect_init() -> str:
+    """Init-система через service.py (ленивый импорт во избежание циклов)."""
+    try:
+        from . import service
+        return service._detect_init_system()
+    except Exception:
+        return "none"
+
+
+def _service_active_init(init: str) -> bool:
+    """Активен ли сервис zapret на уровне init (без эвристики по nfqws, без sudo)."""
+    if init in ("none", ""):
+        return False
+    try:
+        from . import service
+        if init == "systemd":
+            r = subprocess.run(["systemctl", "is-active", "zapret"],
+                               capture_output=True, text=True, timeout=5)
+            return r.stdout.strip() == "active"
+        cmd = service._get_service_command("status")
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        out = (r.stdout + r.stderr).lower()
+        return r.returncode == 0 or "run:" in out or "started" in out or "running" in out
+    except Exception as e:
+        log.debug(f"Не удалось определить статус сервиса ({init}): {e}")
+        return False
+
+
+def _is_blockcheck_descendant(pid: int) -> bool:
+    """True, если в цепочке предков есть blockcheck.sh (cmdline+PPid, без sudo)."""
+    seen = set()
+    cur = pid
+    for _ in range(64):
+        if cur in seen or cur <= 1:
+            return False
+        seen.add(cur)
+        try:
+            cmdline = Path(f"/proc/{cur}/cmdline").read_bytes().replace(b"\x00", b" ").decode(errors="ignore")
+        except OSError:
+            return False
+        if "blockcheck.sh" in cmdline:
+            return True
+        try:
+            status = Path(f"/proc/{cur}/status").read_text(errors="ignore")
+        except OSError:
+            return False
+        ppid = None
+        for line in status.splitlines():
+            if line.startswith("PPid:"):
+                ppid = int(line.split()[1])
+                break
+        if ppid is None:
+            return False
+        cur = ppid
+    return False
+
+
 def _find_foreign_dpi_processes(include_service: bool = False) -> List[int]:
     """Находит PID процессов DPI-bypass, НЕ принадлежащих zapret.service."""
     foreign_pids = []
     self_pid = os.getpid()
+
+    # Init-agnostic защита: systemd — cgroup; остальные — активный сервис + не потомок blockcheck
+    init = _detect_init()
+    service_active = _service_active_init(init) if init != "systemd" else False
     
     # Используем pgrep для надежного поиска по полной командной строке
     try:
@@ -53,6 +114,10 @@ def _find_foreign_dpi_processes(include_service: bool = False) -> List[int]:
         cgroup = _read_proc_cgroup(pid)
         if ZAPRET_CGROUP_MARKER in cgroup:
             log.debug(f"PID {pid} пропущен (принадлежит zapret.service)")
+            continue
+        # Универсальная защита для non-systemd (runit/openrc/sysvinit/daemon)
+        if service_active and not _is_blockcheck_descendant(pid):
+            log.debug(f"PID {pid} пропущен (сервис активен, init={init})")
             continue
         
         foreign_pids.append(pid)

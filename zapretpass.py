@@ -8,6 +8,7 @@ import sys
 
 from PyQt6.QtCore import QDir, QLockFile, QStandardPaths
 from PyQt6.QtWidgets import QApplication, QMessageBox
+from PyQt6.QtGui import QIcon
 from ui.main_window import MainWindow
 from ui.password_dialog import get_password_from_user
 from core import preflight, sudo
@@ -44,6 +45,11 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("ZapretPass")
     app.setApplicationDisplayName("ZapretPass")
+    
+    # Устанавливаем иконку приложения
+    icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "icons", "png", "zapretpass-icon-64.png")
+    if os.path.exists(icon_path):
+        app.setWindowIcon(QIcon(icon_path))
 
     lock = _acquire_single_instance_lock()
     if lock is None:

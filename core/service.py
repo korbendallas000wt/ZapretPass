@@ -116,18 +116,43 @@ def _check_installed() -> bool:
     init = _detect_init_system()
     return init != 'none'
 
-def _get_pid_fallback() -> Optional[int]:
-    """Универсальный поиск PID процессов nfqws или tpws."""
+def _is_actively_working() -> tuple[bool, Optional[int]]:
+    """
+    Проверяет реальную работу сервиса: наличие рабочих процессов (nfqws/tpws) 
+    и базовых правил фаервола. Игнорирует процесс-обёртку 'zapret infinity'.
+    Возвращает (is_active, pid).
+    """
+    pid = None
+    # 1. Строгая проверка рабочих процессов (точное совпадение имени)
+    for proc in ['nfqws', 'tpws']:
+        try:
+            r = subprocess.run(['pgrep', '-x', proc], capture_output=True, text=True, timeout=3)
+            if r.returncode == 0 and r.stdout.strip():
+                pid = int(r.stdout.strip().split()[0])
+                break
+        except Exception:
+            pass
+    
+    if not pid:
+        return False, None
+
+    # 2. Дополнительная проверка: наличие правил iptables/nftables (читается без sudo)
     try:
-        result = subprocess.run(
-            ['pgrep', '-f', 'zapret|nfqws|tpws'],
-            capture_output=True, text=True, timeout=5
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return int(result.stdout.strip().split()[0])
+        r_ipt = subprocess.run(['iptables', '-t', 'mangle', '-L', '-n'], capture_output=True, text=True, timeout=3)
+        if 'NFQUEUE' in r_ipt.stdout:
+            return True, pid
+            
+        r_ipt_nat = subprocess.run(['iptables', '-t', 'nat', '-L', '-n'], capture_output=True, text=True, timeout=3)
+        if 'REDIRECT' in r_ipt_nat.stdout and ('8080' in r_ipt_nat.stdout or '8443' in r_ipt_nat.stdout):
+            return True, pid
+            
+        r_nft = subprocess.run(['nft', 'list', 'ruleset'], capture_output=True, text=True, timeout=3)
+        if 'zapret' in r_nft.stdout.lower() or 'NFQUEUE' in r_nft.stdout:
+            return True, pid
     except Exception:
-        pass
-    return None
+        pass # Если проверка фаервола не удалась, доверяем наличию процессов
+        
+    return True, pid
 
 def get_status() -> ServiceStatus:
     """Возвращает текущее состояние сервиса zapret."""
@@ -155,8 +180,10 @@ def get_status() -> ServiceStatus:
             lines = r.stdout.strip().split('\n')
             active = lines[0] == 'active' if len(lines) > 0 else False
             uptime = lines[1] if len(lines) > 1 and lines[0] == 'active' else None
-            if active:
-                pid = _get_pid_fallback() # Более надёжно, чем парсинг cgroup
+            actual_active, pid = _is_actively_working()
+            if not actual_active:
+                active = False
+                error = "Процесс запущен, но рабочие компоненты (nfqws/tpws) или правила фаервола отсутствуют"
         except Exception as e:
             error = str(e)
     else:
@@ -165,12 +192,19 @@ def get_status() -> ServiceStatus:
             cmd = _get_service_command('status')
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
             output = (r.stdout + r.stderr).lower()
-            active = r.returncode == 0 or 'run' in output or 'started' in output or 'running' in output
+            init_says_active = r.returncode == 0 or 'run' in output or 'started' in output or 'running' in output
             
-            if active:
-                pid = _get_pid_fallback()
-                uptime = "N/A" # Точное время аптайма сложно получить универсально без systemd
+            # Инициатор говорит "активен", но мы проверяем реальную работу
+            actual_active, pid = _is_actively_working()
+            
+            if init_says_active and actual_active:
+                active = True
+                uptime = "N/A"
+            elif init_says_active and not actual_active:
+                active = False
+                error = "Демон запущен, но правила DPI не применены или рабочие процессы отсутствуют"
             else:
+                active = False
                 error = "Сервис не активен"
         except Exception as e:
             error = str(e)

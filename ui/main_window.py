@@ -11,9 +11,13 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QThread, QTimer
 from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QIcon
 from PyQt6.QtGui import QAction
 from .update_indicator import UpdateIndicator
 from .about_dialog import AboutDialog, UpdateCheckerWorker
+from .settings_dialog import SettingsDialog
+from .system_info_dialog import SystemInfoDialog
+from .install_manager_dialog import InstallManagerDialog
 from core.updater import check_for_updates, UpdateInfo
 
 # Импорты ядра
@@ -75,6 +79,37 @@ class ServiceWorker(QThread):
             self.operation_finished.emit(False, f"Ошибка: {str(e)}")
 
 
+class DotToggleWorker(QThread):
+    """Фоновый поток для включения/выключения DoT через sudo."""
+    finished_signal = pyqtSignal(bool, str)
+    
+    def __init__(self, action: str, password: str, parent=None):
+        super().__init__(parent)
+        self.action = action
+        self.password = password
+
+    def run(self):
+        import subprocess
+        script_path = "/opt/zapret/scripts/zapretpass-dot.sh"
+        try:
+            if not Path(script_path).exists():
+                self.finished_signal.emit(False, f"Скрипт не найден: {script_path}\nЗапустите install.sh")
+                return
+            process = subprocess.Popen(
+                ['sudo', '-S', script_path, self.action],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+            )
+            stdout, stderr = process.communicate(input=self.password + "\n", timeout=30)
+            if process.returncode == 0:
+                self.finished_signal.emit(True, "Успешно")
+            else:
+                err_lines = [l for l in (stderr or "").splitlines() if "[sudo]" not in l and "password" not in l.lower()]
+                self.finished_signal.emit(False, "\n".join(err_lines).strip() or "Ошибка")
+        except subprocess.TimeoutExpired:
+            self.finished_signal.emit(False, "Таймаут выполнения")
+        except Exception as e:
+            self.finished_signal.emit(False, str(e))
+
 class MainWindow(QMainWindow):
     """Главное окно приложения ZapretPass."""
     
@@ -92,6 +127,12 @@ class MainWindow(QMainWindow):
         super().__init__()
         
         self.setWindowTitle("ZapretPass")
+        
+        # Устанавливаем иконку окна
+        import os as _os
+        _icon_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "assets", "icons", "png", "zapretpass-icon-64.png")
+        if _os.path.exists(_icon_path):
+            self.setWindowIcon(QIcon(_icon_path))
         self.resize(900, 700)
         
         central = QWidget()
@@ -480,6 +521,26 @@ class MainWindow(QMainWindow):
         """Создаёт меню приложения с пунктом 'Справка'"""
         menubar = self.menuBar()
         
+        # Меню "Настройки"
+        settings_menu = menubar.addMenu("Настройки")
+        self.settings_action = QAction("⚙️ Защищённый DNS", self)
+        self.settings_action.triggered.connect(self.show_settings_dialog)
+        settings_menu.addAction(self.settings_action)
+        
+        # Меню "Система"
+        system_menu = menubar.addMenu("Система")
+        self.system_info_action = QAction("ℹ️ Системная информация", self)
+        self.system_info_action.triggered.connect(self.show_system_info_dialog)
+        system_menu.addAction(self.system_info_action)
+        
+        self.update_action = QAction("🔄 Обновить ZapretPass", self)
+        self.update_action.triggered.connect(self.manual_check_updates)
+        system_menu.addAction(self.update_action)
+        
+        self.install_manager_action = QAction("⚙️ Управление установкой", self)
+        self.install_manager_action.triggered.connect(self.show_install_manager_dialog)
+        system_menu.addAction(self.install_manager_action)
+        
         # Меню "Справка"
         help_menu = menubar.addMenu("Справка")
         
@@ -672,6 +733,43 @@ class MainWindow(QMainWindow):
             self._start_update_check(dialog=dialog)
 
         dialog.exec()
+
+    def show_system_info_dialog(self):
+        """Открывает диалог системной информации."""
+        dialog = SystemInfoDialog(self)
+        dialog.exec()
+
+    def show_install_manager_dialog(self):
+        """Открывает диалог управления установкой."""
+        dialog = InstallManagerDialog(self)
+        dialog.exec()
+
+
+    def show_settings_dialog(self):
+        """Открывает диалог настроек."""
+        self._settings_dialog = SettingsDialog(self)
+        self._settings_dialog.execute_sudo.connect(self._on_settings_sudo_requested)
+        self._settings_dialog.exec()
+
+    def _on_settings_sudo_requested(self, cmd_list: list, prompt_msg: str):
+        """Обработка запроса sudo из диалога настроек."""
+        from .password_dialog import get_password_from_user, PasswordDialogCancelled
+        try:
+            password = get_password_from_user(prompt_msg)
+            if password is not None:
+                self._dot_worker = DotToggleWorker(cmd_list[1], password, self)
+                self._dot_worker.finished_signal.connect(self._on_dot_toggle_finished)
+                self._dot_worker.start()
+            else:
+                if hasattr(self, '_settings_dialog'):
+                    self._settings_dialog.on_sudo_result(False, "Отменено")
+        except PasswordDialogCancelled:
+            if hasattr(self, '_settings_dialog'):
+                self._settings_dialog.on_sudo_result(False, "Отменено")
+
+    def _on_dot_toggle_finished(self, success: bool, message: str):
+        if hasattr(self, '_settings_dialog'):
+            self._settings_dialog.on_sudo_result(success, message)
 
     def closeEvent(self, event):
         """Запрещает закрывать главное окно во время операций обновления."""
