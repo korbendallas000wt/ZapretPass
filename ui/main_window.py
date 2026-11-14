@@ -17,7 +17,7 @@ from .update_indicator import UpdateIndicator
 from .about_dialog import AboutDialog, UpdateCheckerWorker
 from .settings_dialog import SettingsDialog
 from .system_info_dialog import SystemInfoDialog
-from .install_manager_dialog import InstallManagerDialog
+from .install_manager_dialog import LifecycleManagerDialog
 from core.updater import check_for_updates, UpdateInfo
 
 # Импорты ядра
@@ -741,7 +741,7 @@ class MainWindow(QMainWindow):
 
     def show_install_manager_dialog(self):
         """Открывает диалог управления установкой."""
-        dialog = InstallManagerDialog(self)
+        dialog = LifecycleManagerDialog(self)
         dialog.exec()
 
 

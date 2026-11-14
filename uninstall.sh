@@ -1,10 +1,41 @@
 #!/bin/bash
+# ZapretPass — деинсталлятор: селективное удаление компонентов и выборочный бэкап.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_LOG="$SCRIPT_DIR/data/logs/install.log"
+ZAPRET_DIR="/opt/zapret"
 
-# Функция выполнения команды с sudo (запрашивает пароль при необходимости)
+FORCE_CLEAN=0
+QUIET=0
+UNINSTALL_MODE=0
+YES_MODE=0
+DRY_RUN=0
+PURGE=0
+BACKUP_DIR=""
+LIST_RECIPIENTS=0
+
+SKIP_ZAPRET=0
+SKIP_DOT=0
+SKIP_PACKAGES=0
+REMOVE_PACKAGES=""
+
+BACKUP_CONFIGS=0
+BACKUP_PASSPORTS=0
+BACKUP_STRATEGIES=0
+BACKUP_ZAPRET_CONFIG=0
+BACKUP_FLAGS_GIVEN=0
+
+SELF_DESTRUCT=0
+SELF_DESTRUCT_RELOCATED=0
+APP_DIR_ARG=""
+DOT_HANDLED=0
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
 run_as_root() {
     if [ "$DRY_RUN" -eq 1 ]; then
         echo "[DRY-RUN] sudo $*"
@@ -16,30 +47,37 @@ run_as_root() {
         sudo "$@"
     fi
 }
-FORCE_CLEAN=0
-QUIET=0
-UNINSTALL_MODE=0
-YES_MODE=0
-DRY_RUN=0
-PURGE=0
-BACKUP_DIR=""
-LIST_RECIPIENTS=0
-
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
 
 usage() {
     echo "Использование: ./uninstall.sh [ОПЦИИ]"
     echo ""
-    echo "Опции:"
+    echo "Режимы:"
+    echo "  --uninstall            Полное удаление компонентов"
     echo "  --force-clean          Удалять всё без вопросов"
     echo "  --quiet                Не задавать вопросов (пакеты НЕ удаляются)"
-    echo "  --purge                Полное удаление всего"
-    echo "  --backup-dir=<path>    Сохранить данные перед удалением в указанную папку"
-    echo "  --list-recipients      Вывести JSON-список пакетов с зависимостями (для UI)"
-    echo "  -h, --help             Показать эту справку"
+    echo "  --purge                Полное удаление всего, включая данные и лог"
+    echo "  --yes, -y              Отвечать «да» на все вопросы"
+    echo "  --dry-run              Только показывать действия"
+    echo ""
+    echo "Селективное удаление:"
+    echo "  --skip-zapret          Не трогать движок zapret и его сервис"
+    echo "  --skip-dot             Не трогать DNS-over-TLS и dnscrypt-proxy"
+    echo "  --skip-packages        Не удалять пакеты"
+    echo "  --remove-packages=CSV  Удалять только перечисленные пакеты"
+    echo ""
+    echo "Бэкап:"
+    echo "  --backup-dir=<path>    Родительская папка (внутри создаётся ZapretPass_backup_<дата>)"
+    echo "  --backup-configs       Сохранить конфиги приложения"
+    echo "  --backup-passports     Сохранить паспорта сайтов"
+    echo "  --backup-strategies    Сохранить стратегии"
+    echo "  --backup-zapret-config Сохранить конфиг zapret"
+    echo "  (без --backup-* флаг --backup-dir сохраняет всё — совместимость)"
+    echo ""
+    echo "Самоуничтожение:"
+    echo "  --self-destruct        Полное удаление + удаление каталога приложения"
+    echo ""
+    echo "  --list-recipients      JSON-список пакетов и сервисов (для UI)"
+    echo "  -h, --help             Эта справка"
     exit 1
 }
 
@@ -52,23 +90,123 @@ for arg in "$@"; do
         --dry-run) DRY_RUN=1 ;;
         --purge) PURGE=1 ;;
         --backup-dir=*) BACKUP_DIR="${arg#*=}" ;;
+        --backup-configs) BACKUP_CONFIGS=1; BACKUP_FLAGS_GIVEN=1 ;;
+        --backup-passports) BACKUP_PASSPORTS=1; BACKUP_FLAGS_GIVEN=1 ;;
+        --backup-strategies) BACKUP_STRATEGIES=1; BACKUP_FLAGS_GIVEN=1 ;;
+        --backup-zapret-config) BACKUP_ZAPRET_CONFIG=1; BACKUP_FLAGS_GIVEN=1 ;;
+        --skip-zapret) SKIP_ZAPRET=1 ;;
+        --skip-dot) SKIP_DOT=1 ;;
+        --skip-packages) SKIP_PACKAGES=1 ;;
+        --remove-packages=*) REMOVE_PACKAGES="${arg#*=}" ;;
+        --self-destruct) SELF_DESTRUCT=1 ;;
+        --app-dir=*) APP_DIR_ARG="${arg#*=}" ;;
+        --relocated) SELF_DESTRUCT_RELOCATED=1 ;;
         --list-recipients) LIST_RECIPIENTS=1 ;;
         -h|--help) usage ;;
         *) echo "Неизвестный аргумент: $arg"; usage ;;
     esac
 done
 
-# Проверка прав больше не требуется - скрипт запрашивает sudo точечно через run_as_root
-# Если вы хотите удалить системные файлы, скрипт запросит пароль при необходимости
+if [ -n "$APP_DIR_ARG" ]; then
+    SCRIPT_DIR="$APP_DIR_ARG"
+fi
+INSTALL_LOG="$SCRIPT_DIR/data/logs/install.log"
 
-# Массивы для сбора пакетов
+if [ "$SELF_DESTRUCT" -eq 1 ]; then
+    UNINSTALL_MODE=1
+    YES_MODE=1
+fi
+
+# Самоуничтожение: исполняемся из копии вне удаляемого каталога
+if [ "$SELF_DESTRUCT" -eq 1 ] && [ "$SELF_DESTRUCT_RELOCATED" -eq 0 ]; then
+    TMP_SCRIPT="$(mktemp "${TMPDIR:-/tmp}/zapretpass-uninstall-XXXXXX.sh")"
+    cp "${BASH_SOURCE[0]}" "$TMP_SCRIPT"
+    chmod +x "$TMP_SCRIPT"
+    export ZAPRETPASS_TMP_SCRIPT="$TMP_SCRIPT"
+    exec bash "$TMP_SCRIPT" "$@" --app-dir="$SCRIPT_DIR" --relocated
+fi
+if [ "$SELF_DESTRUCT_RELOCATED" -eq 1 ] && [ -n "${ZAPRETPASS_TMP_SCRIPT:-}" ]; then
+    trap 'rm -f "$ZAPRETPASS_TMP_SCRIPT"' EXIT
+fi
+
+if [ -n "$BACKUP_DIR" ] && [ "$BACKUP_FLAGS_GIVEN" -eq 0 ]; then
+    BACKUP_CONFIGS=1
+    BACKUP_PASSPORTS=1
+    BACKUP_STRATEGIES=1
+    BACKUP_ZAPRET_CONFIG=1
+fi
+BACKUP_ANY=$(( BACKUP_CONFIGS || BACKUP_PASSPORTS || BACKUP_STRATEGIES || BACKUP_ZAPRET_CONFIG ))
+
 declare -A PKGS_INSTALLED_BY_US
 declare -A PKG_MANAGER_USED
 declare -A PKG_RECIPIENTS
 USER_DATA_DIR=""
 REAL_USER=""
+REAL_HOME=""
 PKG_MANAGER=""
 INIT_SYSTEM=""
+
+read_meta() {
+    if [ -f "$INSTALL_LOG" ]; then
+        REAL_USER="$(sed -n 's/^# real_user=//p' "$INSTALL_LOG" | tail -1)"
+        REAL_HOME="$(sed -n 's/^# real_home=//p' "$INSTALL_LOG" | tail -1)"
+        PKG_MANAGER="$(sed -n 's/^# package_manager=//p' "$INSTALL_LOG" | tail -1)"
+        INIT_SYSTEM="$(sed -n 's/^# init_system=//p' "$INSTALL_LOG" | tail -1)"
+    fi
+    if [ -z "$REAL_USER" ]; then
+        REAL_USER="${SUDO_USER:-$(id -un)}"
+    fi
+    if [ -z "$REAL_HOME" ]; then
+        REAL_HOME="$(getent passwd "$REAL_USER" | cut -d: -f6)"
+    fi
+    if [ -z "$REAL_HOME" ]; then
+        REAL_HOME="$HOME"
+    fi
+}
+read_meta
+
+in_csv() {
+    local needle="$1" csv="$2" item
+    local items
+    IFS=',' read -ra items <<< "$csv"
+    for item in "${items[@]}"; do
+        if [ "$item" = "$needle" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Файлы внутри каталога приложения трогаем только при purge/force-clean/self-destruct
+app_path_protected() {
+    local target="$1"
+    case "$target" in
+        "$SCRIPT_DIR"|"$SCRIPT_DIR"/*)
+            if [ "$PURGE" -eq 0 ] && [ "$FORCE_CLEAN" -eq 0 ] && [ "$SELF_DESTRUCT" -eq 0 ]; then
+                return 0
+            fi
+            ;;
+    esac
+    return 1
+}
+
+# Разрешено ли удалять путь согласно --skip-zapret / --skip-dot
+path_component_allowed() {
+    local target="$1"
+    case "$target" in
+        "$ZAPRET_DIR"|"$ZAPRET_DIR"/*)
+            if [ "$SKIP_ZAPRET" -eq 1 ]; then
+                return 1
+            fi
+            if [ "$SKIP_DOT" -eq 1 ]; then
+                case "$target" in
+                    *zapretpass-dot.sh|*dnscrypt-proxy*) return 1 ;;
+                esac
+            fi
+            ;;
+    esac
+    return 0
+}
 
 ask_user() {
     local prompt="$1"
@@ -93,7 +231,8 @@ check_recipients() {
             has_deps=1
         fi
     elif command -v pacman >/dev/null; then
-        local req_by=$(LC_ALL=C pacman -Qi "$pkg" 2>/dev/null | grep "Required By" | awk -F: '{print $2}' | xargs)
+        local req_by
+        req_by=$(LC_ALL=C pacman -Qi "$pkg" 2>/dev/null | grep "Required By" | awk -F: '{print $2}' | xargs)
         if [ -n "$req_by" ] && [ "$req_by" != "None" ]; then
             echo -e "${YELLOW}⚠ Пакет $pkg используется другими программами: $req_by${NC}"
             has_deps=1
@@ -103,24 +242,24 @@ check_recipients() {
 }
 
 check_package_recipients() {
-    # Возвращает JSON-список пакетов с зависимостями для UI
     local pkg="$1"
     local deps=""
     local has_deps=0
-    
+
     if command -v apt-get >/dev/null; then
         deps=$(apt-cache rdepends --installed "$pkg" 2>/dev/null | grep "  [a-z]" | sed 's/^  //' | tr '\n' ',' | sed 's/,$//')
         if [ -n "$deps" ]; then
             has_deps=1
         fi
     elif command -v pacman >/dev/null; then
-        local req_by=$(LC_ALL=C pacman -Qi "$pkg" 2>/dev/null | grep "Required By" | awk -F: '{print $2}' | xargs)
+        local req_by
+        req_by=$(LC_ALL=C pacman -Qi "$pkg" 2>/dev/null | grep "Required By" | awk -F: '{print $2}' | xargs)
         if [ -n "$req_by" ] && [ "$req_by" != "None" ]; then
             deps="$req_by"
             has_deps=1
         fi
     fi
-    
+
     echo "{\"package\":\"$pkg\",\"has_deps\":$has_deps,\"deps\":\"$deps\"}"
 }
 
@@ -128,45 +267,180 @@ backup_component() {
     local source="$1"
     local dest="$2"
     local component_name="$3"
-    
+
     if [ ! -e "$source" ]; then
         echo "⚠ Источник не найден: $source"
         return 1
     fi
-    
+
     if [ -d "$source" ]; then
-        # Директория
         run_as_root mkdir -p "$dest"
         run_as_root cp -a "$source/." "$dest/"
         echo "✓ Скопирована директория: $component_name"
     else
-        # Файл
         run_as_root mkdir -p "$(dirname "$dest")"
         run_as_root cp -a "$source" "$dest"
         echo "✓ Скопирован файл: $component_name"
     fi
+    return 0
+}
+
+remove_service_completely() {
+    local name="$1"
+    local scope="${2:-ours}"
+    [ -n "$name" ] || return 0
+
+    if command -v systemctl >/dev/null 2>&1; then
+        run_as_root systemctl stop "$name" 2>/dev/null || true
+        run_as_root systemctl disable "$name" 2>/dev/null || true
+        if [ "$scope" = "ours" ]; then
+            local unit
+            for unit in "/etc/systemd/system/$name.service" \
+                        "/etc/systemd/system/$name.timer" \
+                        "/etc/systemd/system/multi-user.target.wants/$name.service" \
+                        "/etc/systemd/system/timers.target.wants/$name.timer"; do
+                if [ -e "$unit" ] || [ -L "$unit" ]; then
+                    run_as_root rm -f "$unit"
+                    echo "Удалён юнит: $unit"
+                fi
+            done
+        fi
+    fi
+
+    if command -v sv >/dev/null 2>&1; then
+        run_as_root sv stop "$name" >/dev/null 2>&1 || true
+        run_as_root sv force-stop "$name" >/dev/null 2>&1 || true
+    fi
+    local p
+    for p in "/etc/runit/runsvdir/default/$name" "/var/service/$name" "/service/$name"; do
+        if [ -e "$p" ] || [ -L "$p" ]; then
+            run_as_root rm -rf "$p"
+            echo "Удалён runit-сервис: $p"
+        fi
+    done
+    if [ "$scope" = "ours" ] && [ -d "/etc/sv/$name" ]; then
+        run_as_root rm -rf "/etc/sv/$name"
+        echo "Удалён каталог runit: /etc/sv/$name"
+    fi
+
+    if [ -e "/etc/init.d/$name" ]; then
+        if command -v service >/dev/null 2>&1; then
+            run_as_root service "$name" stop >/dev/null 2>&1 || true
+        fi
+        if command -v rc-update >/dev/null 2>&1; then
+            run_as_root rc-update del "$name" default >/dev/null 2>&1 || true
+        fi
+        if command -v update-rc.d >/dev/null 2>&1; then
+            if [ "$scope" = "ours" ]; then
+                run_as_root update-rc.d -f "$name" remove >/dev/null 2>&1 || true
+            else
+                run_as_root update-rc.d "$name" disable >/dev/null 2>&1 || true
+            fi
+        fi
+        if [ "$scope" = "ours" ]; then
+            run_as_root rm -f "/etc/init.d/$name"
+            echo "Удалён init-скрипт: /etc/init.d/$name"
+        fi
+    fi
+
+    if command -v rc-service >/dev/null 2>&1; then
+        run_as_root rc-service "$name" stop >/dev/null 2>&1 || true
+    fi
+    return 0
+}
+
+selfdestruct_services() {
+    echo -e "\n${YELLOW}=== Полная зачистка сервисов ===${NC}"
+
+    if [ "$SKIP_DOT" -eq 0 ] && [ -x "$ZAPRET_DIR/scripts/zapretpass-dot.sh" ]; then
+        echo "Отключение DNS-over-TLS..."
+        if [ "$DRY_RUN" -eq 1 ]; then
+            echo "[DRY-RUN] $ZAPRET_DIR/scripts/zapretpass-dot.sh disable"
+        else
+            "$ZAPRET_DIR/scripts/zapretpass-dot.sh" disable 2>/dev/null || true
+        fi
+        DOT_HANDLED=1
+    fi
+
+    if [ "$SKIP_ZAPRET" -eq 0 ]; then
+        remove_service_completely "zapret" "ours"
+        remove_service_completely "zapret-list-update" "ours"
+        if [ -x "$ZAPRET_DIR/zapretpass-daemon.sh" ]; then
+            if [ "$DRY_RUN" -eq 1 ]; then
+                echo "[DRY-RUN] $ZAPRET_DIR/zapretpass-daemon.sh stop"
+            else
+                run_as_root "$ZAPRET_DIR/zapretpass-daemon.sh" stop >/dev/null 2>&1 || true
+            fi
+        fi
+        run_as_root pkill -f 'nfqws|tpws' 2>/dev/null || true
+    fi
+
+    if [ "$SKIP_DOT" -eq 0 ]; then
+        remove_service_completely "dnscrypt-proxy" "package"
+        run_as_root pkill -x dnscrypt-proxy 2>/dev/null || true
+    fi
+
+    if command -v systemctl >/dev/null 2>&1; then
+        run_as_root systemctl daemon-reload 2>/dev/null || true
+        run_as_root systemctl reset-failed 2>/dev/null || true
+    fi
+    return 0
+}
+
+selfdestruct_finalize() {
+    echo -e "\n${YELLOW}=== Самоуничтожение ===${NC}"
+
+    local p
+    for p in "$REAL_HOME/.local/share/applications/zapretpass.desktop" \
+             "$REAL_HOME/.local/bin/zapretpass"; do
+        if [ -e "$p" ] || [ -L "$p" ]; then
+            run_as_root rm -f "$p"
+            echo "Удалено: $p"
+        fi
+    done
+
+    if command -v update-desktop-database >/dev/null 2>&1 && [ "$DRY_RUN" -eq 0 ]; then
+        if [ "$EUID" -eq 0 ] && id "$REAL_USER" >/dev/null 2>&1; then
+            su "$REAL_USER" -c "update-desktop-database '$REAL_HOME/.local/share/applications'" >/dev/null 2>&1 || true
+        else
+            update-desktop-database "$REAL_HOME/.local/share/applications" >/dev/null 2>&1 || true
+        fi
+    fi
+
+    case "$SCRIPT_DIR" in
+        ""|"/"|"/home"|"/usr"|"/opt"|"/etc"|"/var"|"$REAL_HOME")
+            echo -e "${RED}✗ Отказ: подозрительный путь каталога приложения: '$SCRIPT_DIR'${NC}"
+            return 1
+            ;;
+    esac
+
+    if [ ! -f "$SCRIPT_DIR/zapretpass.py" ] && [ ! -f "$SCRIPT_DIR/VERSION" ]; then
+        echo -e "${YELLOW}⚠ Каталог не опознан как приложение (нет zapretpass.py/VERSION) — удаление пропущено: $SCRIPT_DIR${NC}"
+        return 0
+    fi
+
+    cd /tmp 2>/dev/null || cd /
+    run_as_root rm -rf "$SCRIPT_DIR"
+    echo "Удалён каталог приложения: $SCRIPT_DIR"
+    return 0
 }
 
 parse_log_line() {
     local line="$1"
-    
-    # Парсим метаданные (# key=value)
+
     if [[ "$line" =~ ^#\ ([^=]+)=(.+)$ ]]; then
         META_KEY="${BASH_REMATCH[1]}"
         META_VALUE="${BASH_REMATCH[2]}"
         return 0
     fi
-    
-    # Парсим компоненты ([ACTION] category key=value ...)
+
     if [[ "$line" =~ ^\[ACTION\]\ ([^\ ]+)(.*)$ ]]; then
         CATEGORY="${BASH_REMATCH[1]}"
         REST="${BASH_REMATCH[2]}"
-        
-        # Парсим key=value пары
+
         declare -gA FIELDS
         FIELDS=()
-        
-        # Разбиваем REST на key=value
+
         for part in $REST; do
             if [[ "$part" =~ ^([^=]+)=(.+)$ ]]; then
                 FIELDS["${BASH_REMATCH[1]}"]="${BASH_REMATCH[2]}"
@@ -174,7 +448,7 @@ parse_log_line() {
         done
         return 0
     fi
-    
+
     return 1
 }
 
@@ -228,30 +502,30 @@ if [ "$LIST_RECIPIENTS" -eq 1 ]; then
     exit $?
 fi
 
-# --- ЛОГИКА --force-clean БЕЗ ЛОГА ---
+# --- ЛОГИКА БЕЗ ЛОГА ---
 if [ ! -f "$INSTALL_LOG" ]; then
     echo -e "${YELLOW}Лог установки $INSTALL_LOG не найден.${NC}"
     if [ "$FORCE_CLEAN" -eq 1 ]; then
         echo "Режим --force-clean активен. Очистка стандартных путей..."
         FORCE_CLEAN_PATHS=(
-            "/opt/zapret"
+            "$ZAPRET_DIR"
             "/etc/systemd/system/zapret.service"
             "/etc/systemd/system/zapret-list-update.service"
             "/etc/systemd/system/zapret-list-update.timer"
             "/etc/init.d/zapret"
             "/etc/runit/runsvdir/default/zapret"
             "/var/service/zapret"
-            "$HOME/.local/bin/zapretpass"
-            "$HOME/.local/share/applications/zapretpass.desktop"
+            "$REAL_HOME/.local/bin/zapretpass"
+            "$REAL_HOME/.local/share/applications/zapretpass.desktop"
         )
         for path in "${FORCE_CLEAN_PATHS[@]}"; do
             if [ -e "$path" ]; then
-                if [ "$DRY_RUN" -eq 1 ]; then
-                    echo "[DRY-RUN] rm -rf $path"
+                if path_component_allowed "$path"; then
+                    run_as_root rm -rf "$path"
+                    echo "Удалено: $path"
                 else
-                    rm -rf "$path"
+                    echo "Пропущено (--skip-*): $path"
                 fi
-                echo "Удалено: $path"
             fi
         done
         echo -e "${GREEN}✅ Принудительная очистка завершена.${NC}"
@@ -264,83 +538,88 @@ if [ ! -f "$INSTALL_LOG" ]; then
     fi
 fi
 
-# --- БЭКАП ПЕРЕД УДАЛЕНИЕМ (если указан --backup-dir) ---
-if [ -n "$BACKUP_DIR" ]; then
-    echo -e "\n${YELLOW}Создание бэкапа в: $BACKUP_DIR${NC}"
-    
-    BACKUP_TIMESTAMP=$(date +%Y-%m-%d)
-    BACKUP_PATH="$BACKUP_DIR/ZapretPass_backup_${BACKUP_TIMESTAMP}"
-    
+# --- БЭКАП ПЕРЕД УДАЛЕНИЕМ ---
+if [ -n "$BACKUP_DIR" ] && [ "$BACKUP_ANY" -eq 1 ]; then
+    BACKUP_PATH="$BACKUP_DIR/ZapretPass_backup_$(date +%Y-%m-%d)"
+    echo -e "\n${YELLOW}Создание бэкапа в: $BACKUP_PATH${NC}"
     run_as_root mkdir -p "$BACKUP_PATH"
-    
-    # Бэкап конфигов приложения (data/baseline/)
-    if [ -d "$SCRIPT_DIR/data/baseline" ]; then
-        backup_component "$SCRIPT_DIR/data/baseline" "$BACKUP_PATH/configs" "Конфиги приложения"
-    fi
-    
-    # Бэкап паспортов (data/sites/)
-    if [ -d "$SCRIPT_DIR/data/sites" ]; then
-        backup_component "$SCRIPT_DIR/data/sites" "$BACKUP_PATH/passports" "Паспорта сайтов"
-    fi
-    
-    # Бэкап стратегий (data/strategies/, data/strategies.json, data/selected_strategy.json)
-    if [ -d "$SCRIPT_DIR/data/strategies" ]; then
-        backup_component "$SCRIPT_DIR/data/strategies" "$BACKUP_PATH/strategies" "Стратегии"
-    fi
-    if [ -f "$SCRIPT_DIR/data/strategies.json" ]; then
-        backup_component "$SCRIPT_DIR/data/strategies.json" "$BACKUP_PATH/strategies.json" "Пресеты стратегий"
-    fi
-    if [ -f "$SCRIPT_DIR/data/selected_strategy.json" ]; then
-        backup_component "$SCRIPT_DIR/data/selected_strategy.json" "$BACKUP_PATH/selected_strategy.json" "Выбранная стратегия"
-    fi
-    
-    # Бэкап конфига zapret (/opt/zapret/config)
-    if [ -f "/opt/zapret/config" ]; then
-        backup_component "/opt/zapret/config" "$BACKUP_PATH/zapret_config" "Конфиг zapret"
-    fi
-    
-    echo -e "${GREEN}✓ Бэкап завершён: $BACKUP_PATH${NC}"
-fi
 
+    if [ "$BACKUP_CONFIGS" -eq 1 ] && [ -d "$SCRIPT_DIR/data/baseline" ]; then
+        backup_component "$SCRIPT_DIR/data/baseline" "$BACKUP_PATH/configs" "Конфиги приложения" || true
+    fi
+
+    if [ "$BACKUP_PASSPORTS" -eq 1 ] && [ -d "$SCRIPT_DIR/data/sites" ]; then
+        backup_component "$SCRIPT_DIR/data/sites" "$BACKUP_PATH/passports" "Паспорта сайтов" || true
+    fi
+
+    if [ "$BACKUP_STRATEGIES" -eq 1 ]; then
+        if [ -d "$SCRIPT_DIR/data/strategies" ]; then
+            backup_component "$SCRIPT_DIR/data/strategies" "$BACKUP_PATH/strategies" "Стратегии" || true
+        fi
+        if [ -f "$SCRIPT_DIR/data/strategies.json" ]; then
+            backup_component "$SCRIPT_DIR/data/strategies.json" "$BACKUP_PATH/strategies.json" "Пресеты стратегий" || true
+        fi
+        if [ -f "$SCRIPT_DIR/data/selected_strategy.json" ]; then
+            backup_component "$SCRIPT_DIR/data/selected_strategy.json" "$BACKUP_PATH/selected_strategy.json" "Выбранная стратегия" || true
+        fi
+    fi
+
+    if [ "$BACKUP_ZAPRET_CONFIG" -eq 1 ] && [ -f "$ZAPRET_DIR/config" ]; then
+        backup_component "$ZAPRET_DIR/config" "$BACKUP_PATH/zapret_config" "Конфиг zapret" || true
+    fi
+
+    if [ "$DRY_RUN" -eq 0 ] && id "$REAL_USER" >/dev/null 2>&1; then
+        run_as_root chown -R "$REAL_USER:$(id -gn "$REAL_USER")" "$BACKUP_PATH" || true
+    fi
+
+    echo -e "${GREEN}✓ Бэкап завершён: $BACKUP_PATH${NC}"
+elif [ -n "$BACKUP_DIR" ]; then
+    echo "Бэкап пропущен: не выбрано ни одного компонента."
+fi
 
 echo "Чтение лога: $INSTALL_LOG"
 
 # --- ЧТЕНИЕ ЛОГА (ОБРАТНЫЙ ПОРЯДОК) ---
 while IFS= read -r line; do
-    # Пробуем распарсить строку
     if parse_log_line "$line"; then
-        # Это метаданные
         if [[ "$line" == "# "* ]]; then
-            # Сохраняем метаданные
             case "$META_KEY" in
                 real_user) REAL_USER="$META_VALUE" ;;
+                real_home) REAL_HOME="$META_VALUE" ;;
                 package_manager) PKG_MANAGER="$META_VALUE" ;;
                 init_system) INIT_SYSTEM="$META_VALUE" ;;
             esac
             continue
         fi
-        
-        # Это компонент
+
         case "$CATEGORY" in
             file|directory)
                 target="${FIELDS[path]}"
                 comp_type="${FIELDS[type]}"
                 recommended="${FIELDS[recommended_remove]}"
-                
+
                 if [ -z "$target" ]; then continue; fi
-                
-                # Обработка user_data
+
+                if ! path_component_allowed "$target"; then
+                    echo "Пропущено (--skip-*): $target"
+                    continue
+                fi
+
+                if [[ "$comp_type" == "user_data" ]]; then
+                    USER_DATA_DIR="$target"
+                    continue
+                fi
+
+                if app_path_protected "$target"; then
+                    echo "Сохранено (файл приложения): $target"
+                    continue
+                fi
+
                 if [[ "$comp_type" == "system" ]]; then
                     if [ -e "$target" ]; then
-                        if [ "$PURGE" -eq 1 ]; then
+                        if [ "$PURGE" -eq 1 ] || [ "$UNINSTALL_MODE" -eq 1 ]; then
                             run_as_root rm -rf "$target"
-                            echo "Удалено (--purge): $target"
-                        elif [ "$FORCE_CLEAN" -eq 1 ]; then
-                            ans=$(ask_user "Удалить системный файл $target? Это может повлиять на другие программы." "n")
-                            if [[ "$ans" == "y" || "$ans" == "Y" ]]; then
-                                run_as_root rm -rf "$target"
-                                echo "Удалено: $target"
-                            fi
+                            echo "Удалено: $target"
                         else
                             ans=$(ask_user "Удалить системный файл $target? Это может повлиять на другие программы." "n")
                             if [[ "$ans" == "y" || "$ans" == "Y" ]]; then
@@ -349,11 +628,19 @@ while IFS= read -r line; do
                             fi
                         fi
                     fi
-                elif [[ "$comp_type" == "user_data" ]]; then
-                    USER_DATA_DIR="$target"
-                elif [[ "$comp_type" == "baseline_config" && "$FORCE_CLEAN" -eq 0 ]]; then
-                    ans=$(ask_user "Удалить пользовательский конфиг $target?" "n")
-                    [[ "$ans" == "y" || "$ans" == "Y" ]] && rm -rf "$target" && echo "Удалено: $target"
+                elif [[ "$comp_type" == "baseline_config" ]]; then
+                    if [ -e "$target" ]; then
+                        if [ "$PURGE" -eq 1 ] || [ "$FORCE_CLEAN" -eq 1 ]; then
+                            run_as_root rm -rf "$target"
+                            echo "Удалено: $target"
+                        else
+                            ans=$(ask_user "Удалить пользовательский конфиг $target?" "n")
+                            if [[ "$ans" == "y" || "$ans" == "Y" ]]; then
+                                run_as_root rm -rf "$target"
+                                echo "Удалено: $target"
+                            fi
+                        fi
+                    fi
                 elif [[ "$recommended" == "true" ]]; then
                     if [ -e "$target" ]; then
                         if [ "$UNINSTALL_MODE" -eq 1 ]; then
@@ -376,34 +663,55 @@ while IFS= read -r line; do
             service)
                 service_name="${FIELDS[name]}"
                 service_type="${FIELDS[type]}"
-                
-                if [ -n "$service_name" ]; then
-                    echo "Отключение сервиса: $service_name ($service_type)"
-                    case "$service_type" in
-                        systemd)
-                            run_as_root systemctl disable "$service_name" --quiet 2>/dev/null || true
-                            run_as_root systemctl stop "$service_name" --quiet 2>/dev/null || true
-                            ;;
-                        sysvinit)
-                            if command -v update-rc.d >/dev/null; then
-                                run_as_root update-rc.d "$service_name" disable >/dev/null 2>&1 || true
-                            fi
-                            if command -v service >/dev/null; then
-                                run_as_root service "$service_name" stop >/dev/null 2>&1 || true
-                            fi
-                            ;;
-                        runit)
-                            run_as_root rm -f "/etc/runit/runsvdir/default/$service_name" || true
-                            echo "Удалён симлинк runit: /etc/runit/runsvdir/default/$service_name"
-                            ;;
-                    esac
+
+                if [ -z "$service_name" ]; then continue; fi
+
+                if [ "$service_name" = "zapret" ] && [ "$SKIP_ZAPRET" -eq 1 ]; then
+                    echo "Пропущено (--skip-zapret): сервис $service_name"
+                    continue
                 fi
+                if [ "$service_name" = "dnscrypt-proxy" ] && [ "$SKIP_DOT" -eq 1 ]; then
+                    echo "Пропущено (--skip-dot): сервис $service_name"
+                    continue
+                fi
+
+                echo "Отключение сервиса: $service_name ($service_type)"
+                case "$service_type" in
+                    systemd)
+                        run_as_root systemctl stop "$service_name" 2>/dev/null || true
+                        run_as_root systemctl disable "$service_name" 2>/dev/null || true
+                        ;;
+                    sysvinit)
+                        if command -v update-rc.d >/dev/null; then
+                            run_as_root update-rc.d "$service_name" disable >/dev/null 2>&1 || true
+                        fi
+                        if command -v service >/dev/null; then
+                            run_as_root service "$service_name" stop >/dev/null 2>&1 || true
+                        fi
+                        ;;
+                    runit)
+                        if command -v sv >/dev/null; then
+                            run_as_root sv stop "$service_name" >/dev/null 2>&1 || true
+                        fi
+                        run_as_root rm -f "/etc/runit/runsvdir/default/$service_name" || true
+                        run_as_root rm -f "/var/service/$service_name" || true
+                        echo "Удалён симлинк runit: $service_name"
+                        ;;
+                    openrc)
+                        if command -v rc-service >/dev/null; then
+                            run_as_root rc-service "$service_name" stop >/dev/null 2>&1 || true
+                        fi
+                        if command -v rc-update >/dev/null; then
+                            run_as_root rc-update del "$service_name" default >/dev/null 2>&1 || true
+                        fi
+                        ;;
+                esac
                 ;;
             package)
                 pkg_name="${FIELDS[name]}"
                 pkg_status="${FIELDS[status]}"
                 pkg_manager="${FIELDS[manager]}"
-                
+
                 if [[ "$pkg_status" == "installed_by_us" ]]; then
                     PKGS_INSTALLED_BY_US["$pkg_name"]=1
                     PKG_MANAGER_USED["$pkg_name"]="$pkg_manager"
@@ -413,40 +721,49 @@ while IFS= read -r line; do
     fi
 done < <(tac "$INSTALL_LOG")
 
-# --- ОБРАБОТКА USER DATA ---
-# При --quiet (reinstall) user_data НЕ трогаем
-if [ -n "$USER_DATA_DIR" ] && [ -d "$USER_DATA_DIR" ] && { [ "$QUIET" -eq 0 ] || [ "$UNINSTALL_MODE" -eq 1 ]; }; then
-    if [ "$FORCE_CLEAN" -eq 1 ]; then
+# --- ПОЛНАЯ ЗАЧИСТКА СЕРВИСОВ (self-destruct) ---
+if [ "$SELF_DESTRUCT" -eq 1 ]; then
+    selfdestruct_services
+fi
+
+# --- ДАННЫЕ ПРИЛОЖЕНИЯ ---
+if [ -n "$USER_DATA_DIR" ] && [ -d "$USER_DATA_DIR" ]; then
+    if [ "$PURGE" -eq 1 ] || [ "$FORCE_CLEAN" -eq 1 ] || [ "$SELF_DESTRUCT" -eq 1 ]; then
         run_as_root rm -rf "$USER_DATA_DIR"
-        echo "Директория данных удалена (--force-clean): $USER_DATA_DIR"
+        echo "Директория данных удалена: $USER_DATA_DIR"
     else
-        ans=$(ask_user "Удалить директорию с данными $USER_DATA_DIR?" "n")
-        if [[ "$ans" == "y" || "$ans" == "Y" ]]; then
-            run_as_root rm -rf "$USER_DATA_DIR"
-            echo "Директория данных удалена: $USER_DATA_DIR"
-        else
-            BACKUP_PATH="${USER_DATA_DIR}_backup_$(date +%Y%m%d_%H%M%S)"
-            mv "$USER_DATA_DIR" "$BACKUP_PATH"
-            echo -e "${GREEN}Данные сохранены в бэкап: $BACKUP_PATH${NC}"
-        fi
+        echo "Данные приложения сохранены: $USER_DATA_DIR"
     fi
 fi
 
-# --- ОБРАБОТКА ПАКЕТОВ (С АВТОПРОПУСКОМ ЗАВИСИМОСТЕЙ) ---
-if [ ${#PKGS_INSTALLED_BY_US[@]} -gt 0 ]; then
-    echo -e "\n${YELLOW}Список пакетов, установленных ZapretPass:${NC}"
+# --- ПАКЕТЫ ---
+if [ "$SKIP_PACKAGES" -eq 1 ]; then
+    echo -e "\n${YELLOW}Пакеты оставлены в системе (--skip-packages).${NC}"
+elif [ ${#PKGS_INSTALLED_BY_US[@]} -gt 0 ]; then
+    echo -e "\n${YELLOW}Пакеты, установленные ZapretPass:${NC}"
     for pkg in "${!PKGS_INSTALLED_BY_US[@]}"; do
         echo " - $pkg"
     done
 
-    if [ "$QUIET" -eq 1 ] && [ "$UNINSTALL_MODE" -eq 0 ]; then
+    if [ "$QUIET" -eq 1 ] && [ "$UNINSTALL_MODE" -eq 0 ] && [ -z "$REMOVE_PACKAGES" ]; then
         echo "Режим --quiet: пакеты оставлены в системе (безопасность)."
     else
         for pkg in "${!PKGS_INSTALLED_BY_US[@]}"; do
-            # Проверяем зависимости (оборачиваем в if чтобы set -e не уронил скрипт)
+            if [ -n "$REMOVE_PACKAGES" ] && ! in_csv "$pkg" "$REMOVE_PACKAGES"; then
+                echo "Пакет $pkg оставлен (не выбран)."
+                continue
+            fi
+            if [ "$SKIP_DOT" -eq 1 ] && [ "$pkg" = "dnscrypt-proxy" ]; then
+                echo "Пакет $pkg оставлен (--skip-dot)."
+                continue
+            fi
+
             if check_recipients "$pkg"; then
-                # Нет зависимостей - спрашиваем
-                ans=$(ask_user "Удалить пакет $pkg?" "n")
+                if [ "$UNINSTALL_MODE" -eq 1 ] || [ -n "$REMOVE_PACKAGES" ]; then
+                    ans="y"
+                else
+                    ans=$(ask_user "Удалить пакет $pkg?" "n")
+                fi
                 if [[ "$ans" == "y" || "$ans" == "Y" ]]; then
                     if command -v apt-get >/dev/null; then
                         DEBIAN_FRONTEND=noninteractive run_as_root apt-get remove -y "$pkg" 2>/dev/null || true
@@ -462,7 +779,6 @@ if [ ${#PKGS_INSTALLED_BY_US[@]} -gt 0 ]; then
                     echo "Пакет $pkg оставлен."
                 fi
             else
-                # Есть зависимости - автоматический пропуск с предупреждением
                 echo -e "${YELLOW}⚠ Пакет $pkg пропущен (используется другими программами)${NC}"
             fi
         done
@@ -470,24 +786,29 @@ if [ ${#PKGS_INSTALLED_BY_US[@]} -gt 0 ]; then
 fi
 
 # --- ОТКЛЮЧЕНИЕ DoT ---
-ZAPRET_DIR="/opt/zapret"
-if [ -x "$ZAPRET_DIR/scripts/zapretpass-dot.sh" ]; then
-    echo "Попытка отключить DNS-over-TLS..."
-    "$ZAPRET_DIR/scripts/zapretpass-dot.sh" disable 2>/dev/null || true
+if [ "$SKIP_DOT" -eq 1 ]; then
+    echo "DNS-over-TLS сохранён (--skip-dot)."
+elif [ "$DOT_HANDLED" -eq 1 ]; then
+    echo "DNS-over-TLS уже отключён."
+elif [ -x "$ZAPRET_DIR/scripts/zapretpass-dot.sh" ]; then
+    echo "Отключение DNS-over-TLS..."
+    if [ "$DRY_RUN" -eq 1 ]; then
+        echo "[DRY-RUN] $ZAPRET_DIR/scripts/zapretpass-dot.sh disable"
+    else
+        "$ZAPRET_DIR/scripts/zapretpass-dot.sh" disable 2>/dev/null || true
+    fi
 fi
 
-# --- УДАЛЕНИЕ ДИРЕКТОРИИ /opt/zapret (движок) ---
-ZAPRET_DIR="/opt/zapret"
-if [ -d "$ZAPRET_DIR" ]; then
-    if [ "$UNINSTALL_MODE" -eq 1 ]; then
+# --- ДВИЖОК /opt/zapret ---
+if [ "$SKIP_ZAPRET" -eq 1 ]; then
+    echo "Движок zapret сохранён (--skip-zapret): $ZAPRET_DIR"
+elif [ -d "$ZAPRET_DIR" ]; then
+    if [ "$SKIP_DOT" -eq 1 ]; then
+        echo -e "${YELLOW}⚠ DoT сохраняется, но управляющий скрипт лежит внутри $ZAPRET_DIR и будет удалён вместе с движком.${NC}"
+    fi
+    if [ "$UNINSTALL_MODE" -eq 1 ] || [ "$FORCE_CLEAN" -eq 1 ] || [ "$PURGE" -eq 1 ] || [ "$QUIET" -eq 1 ]; then
         run_as_root rm -rf "$ZAPRET_DIR"
         echo "Удалена директория движка: $ZAPRET_DIR"
-    elif [ "$FORCE_CLEAN" -eq 1 ]; then
-        run_as_root rm -rf "$ZAPRET_DIR"
-        echo "Удалена директория движка (--force-clean): $ZAPRET_DIR"
-    elif [ "$PURGE" -eq 1 ]; then
-        run_as_root rm -rf "$ZAPRET_DIR"
-        echo "Удалена директория движка (--purge): $ZAPRET_DIR"
     else
         ans=$(ask_user "Удалить директорию движка $ZAPRET_DIR?" "y")
         if [[ "$ans" == "y" || "$ans" == "Y" ]]; then
@@ -499,12 +820,19 @@ if [ -d "$ZAPRET_DIR" ]; then
     fi
 fi
 
-# --- УДАЛЕНИЕ ЛОГА (только при --purge) ---
+# --- ЛОГ УСТАНОВКИ ---
 if [ "$PURGE" -eq 1 ]; then
-    if [ "$DRY_RUN" -eq 1 ]; then echo "[DRY-RUN] rm -f $INSTALL_LOG"; else rm -f "$INSTALL_LOG"; fi
+    run_as_root rm -f "$INSTALL_LOG"
     echo "Лог установки удалён (--purge): $INSTALL_LOG"
+elif [ "$SELF_DESTRUCT" -eq 1 ]; then
+    echo "Лог установки будет удалён вместе с каталогом приложения."
 else
     echo "Лог установки сохранён: $INSTALL_LOG"
 fi
 
+if [ "$SELF_DESTRUCT" -eq 1 ]; then
+    selfdestruct_finalize
+fi
+
 echo -e "\n${GREEN}✅ Деинсталляция ZapretPass завершена.${NC}"
+exit 0
