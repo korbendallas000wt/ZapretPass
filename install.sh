@@ -865,14 +865,22 @@ execute_installation_plan() {
 
 DRY_RUN=0
 REINSTALL=0
+UNINSTALL_ARGS=()
 
 # Парсинг аргументов
 for arg in "$@"; do
     case $arg in
         --dry-run)   DRY_RUN=1 ;;
         --reinstall) REINSTALL=1 ;;
+        --skip-zapret|--skip-dot|--skip-packages|--remove-packages=*)
+            UNINSTALL_ARGS+=("$arg") ;;
     esac
 done
+
+# --dry-run обязан доходить до деинсталлятора, иначе reinstall чистит систему вхолостую
+if [ "$DRY_RUN" -eq 1 ]; then
+    UNINSTALL_ARGS+=("--dry-run")
+fi
 
 main() {
     echo "=== ZapretPass Installer ==="
@@ -881,7 +889,7 @@ main() {
     if [ "$REINSTALL" -eq 1 ]; then
         echo "=== Режим переустановки: запуск uninstall.sh --quiet ==="
         if [ -f "$SCRIPT_DIR/uninstall.sh" ]; then
-            bash "$SCRIPT_DIR/uninstall.sh" --quiet || echo "Предупреждение: uninstall.sh завершился с ошибкой"
+            bash "$SCRIPT_DIR/uninstall.sh" --quiet "${UNINSTALL_ARGS[@]}" || echo "Предупреждение: uninstall.sh завершился с ошибкой"
         else
             echo "Ошибка: uninstall.sh не найден"
             exit 1
