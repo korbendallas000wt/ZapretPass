@@ -30,6 +30,7 @@ SELF_DESTRUCT=0
 SELF_DESTRUCT_RELOCATED=0
 APP_DIR_ARG=""
 DOT_HANDLED=0
+PKG_FAILED=""
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -294,16 +295,27 @@ remove_service_completely() {
         run_as_root systemctl stop "$name" 2>/dev/null || true
         run_as_root systemctl disable "$name" 2>/dev/null || true
         if [ "$scope" = "ours" ]; then
-            local unit
-            for unit in "/etc/systemd/system/$name.service" \
-                        "/etc/systemd/system/$name.timer" \
-                        "/etc/systemd/system/multi-user.target.wants/$name.service" \
-                        "/etc/systemd/system/timers.target.wants/$name.timer"; do
-                if [ -e "$unit" ] || [ -L "$unit" ]; then
-                    run_as_root rm -f "$unit"
-                    echo "Удалён юнит: $unit"
-                fi
+            local frag
+            frag="$(systemctl show -p FragmentPath --value "$name.service" 2>/dev/null || true)"
+            if [ -n "$frag" ] && { [ -e "$frag" ] || [ -L "$frag" ]; }; then
+                run_as_root rm -f "$frag"
+                echo "Удалён юнит: $frag"
+            fi
+            local d unit
+            for d in /etc/systemd/system /run/systemd/system \
+                     /usr/lib/systemd/system /lib/systemd/system /usr/local/lib/systemd/system; do
+                [ -d "$d" ] || continue
+                for unit in "$d/$name.service" "$d/$name.timer" "$d/$name.socket" "$d/$name.path"; do
+                    if [ -e "$unit" ] || [ -L "$unit" ]; then
+                        run_as_root rm -f "$unit"
+                        echo "Удалён юнит: $unit"
+                    fi
+                done
             done
+            if [ -d /etc/systemd/system ]; then
+                run_as_root find /etc/systemd/system -maxdepth 2 \
+                    \( -name "$name.service" -o -name "$name.timer" \) -exec rm -f {} + 2>/dev/null || true
+            fi
         fi
     fi
 
@@ -422,6 +434,22 @@ selfdestruct_finalize() {
     cd /tmp 2>/dev/null || cd /
     run_as_root rm -rf "$SCRIPT_DIR"
     echo "Удалён каталог приложения: $SCRIPT_DIR"
+    return 0
+}
+
+remove_package() {
+    local pkg="$1"
+    if command -v apt-get >/dev/null; then
+        DEBIAN_FRONTEND=noninteractive run_as_root apt-get remove -y "$pkg" >/dev/null 2>&1 || return 1
+    elif command -v pacman >/dev/null; then
+        run_as_root pacman -Rns --noconfirm "$pkg" >/dev/null 2>&1 || return 1
+    elif command -v dnf >/dev/null; then
+        run_as_root dnf remove -y "$pkg" >/dev/null 2>&1 || return 1
+    elif command -v zypper >/dev/null; then
+        run_as_root zypper remove -y "$pkg" >/dev/null 2>&1 || return 1
+    else
+        return 1
+    fi
     return 0
 }
 
@@ -765,16 +793,14 @@ elif [ ${#PKGS_INSTALLED_BY_US[@]} -gt 0 ]; then
                     ans=$(ask_user "Удалить пакет $pkg?" "n")
                 fi
                 if [[ "$ans" == "y" || "$ans" == "Y" ]]; then
-                    if command -v apt-get >/dev/null; then
-                        DEBIAN_FRONTEND=noninteractive run_as_root apt-get remove -y "$pkg" 2>/dev/null || true
-                    elif command -v pacman >/dev/null; then
-                        run_as_root pacman -Rns --noconfirm "$pkg" 2>/dev/null || true
-                    elif command -v dnf >/dev/null; then
-                        run_as_root dnf remove -y "$pkg" 2>/dev/null || true
-                    elif command -v zypper >/dev/null; then
-                        run_as_root zypper remove -y "$pkg" 2>/dev/null || true
+                    if [ "$DRY_RUN" -eq 1 ]; then
+                        echo "[DRY-RUN] удаление пакета $pkg"
+                    elif remove_package "$pkg"; then
+                        echo "Пакет $pkg удалён."
+                    else
+                        echo -e "${YELLOW}⚠ Пакет $pkg не удалён: занят зависимостями или отказ пакетного менеджера.${NC}"
+                        PKG_FAILED="$PKG_FAILED $pkg"
                     fi
-                    echo "Пакет $pkg удалён."
                 else
                     echo "Пакет $pkg оставлен."
                 fi
@@ -828,6 +854,10 @@ elif [ "$SELF_DESTRUCT" -eq 1 ]; then
     echo "Лог установки будет удалён вместе с каталогом приложения."
 else
     echo "Лог установки сохранён: $INSTALL_LOG"
+fi
+
+if [ -n "$PKG_FAILED" ]; then
+    echo -e "${YELLOW}⚠ Не удалены пакеты:$PKG_FAILED${NC}"
 fi
 
 if [ "$SELF_DESTRUCT" -eq 1 ]; then

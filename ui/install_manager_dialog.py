@@ -22,7 +22,7 @@ from PyQt6.QtCore import pyqtSignal, QThread, QTimer
 ZAPRET_DIR = Path("/opt/zapret")
 OUR_MARKER = ZAPRET_DIR / "scripts" / "zapretpass-dot.sh"
 SUDO_TIMEOUT = 900
-SCROLL_MIN_HEIGHT = 200
+SCROLL_MIN_HEIGHT = 150
 
 
 class SudoWorker(QThread):
@@ -179,7 +179,7 @@ class LifecycleManagerDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("⚙ Управление установкой")
-        self.setMinimumSize(700, 560)
+        self.setMinimumSize(680, 420)
         self.setModal(True)
         self._parent = parent
         self._worker = None
@@ -217,7 +217,6 @@ class LifecycleManagerDialog(QDialog):
 
         self.mode_hint = QLabel("")
         self.mode_hint.setWordWrap(True)
-        self.mode_hint.setMinimumHeight(32)
         layout.addWidget(self.mode_hint)
 
         self.components_group = QGroupBox("Компоненты")
@@ -231,6 +230,7 @@ class LifecycleManagerDialog(QDialog):
         comp_outer.addWidget(self.components_summary)
 
         scroll = QScrollArea()
+        self._scroll = scroll
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         scroll.setMinimumHeight(SCROLL_MIN_HEIGHT)
@@ -250,18 +250,23 @@ class LifecycleManagerDialog(QDialog):
         comp_outer.addWidget(scroll, 1)
 
         self.lock_label = QLabel("")
-        self.lock_label.setWordWrap(True)
-        self.lock_label.setMinimumHeight(34)
+        self.lock_label.setWordWrap(False)
+        self.lock_label.setMinimumHeight(22)
         comp_outer.addWidget(self.lock_label)
 
         layout.addWidget(self.components_group, 1)
 
-        self.backup_group = QGroupBox("Сохранить перед удалением")
+        self.backup_group = QGroupBox("Перед удалением")
+        self.backup_group.setToolTip(
+            "Снимите все пункты бэкапа — резервная копия создаваться не будет.\n"
+            "«Удалить файлы приложения» стирает каталог ZapretPass целиком: данные, иконки, "
+            "скрипты и ярлык меню. Приложение закроется автоматически."
+        )
         backup_layout = QVBoxLayout(self.backup_group)
-        backup_layout.setSpacing(6)
+        backup_layout.setSpacing(4)
         backup_grid = QGridLayout()
         backup_grid.setHorizontalSpacing(14)
-        backup_grid.setVerticalSpacing(4)
+        backup_grid.setVerticalSpacing(2)
         self.chk_backup_configs = QCheckBox("Конфиги приложения")
         self.chk_backup_passports = QCheckBox("Паспорта сайтов")
         self.chk_backup_strategies = QCheckBox("Стратегии")
@@ -271,27 +276,15 @@ class LifecycleManagerDialog(QDialog):
             chk.setChecked(True)
             row, col = divmod(i, 2)
             backup_grid.addWidget(chk, row, col)
-        backup_layout.addLayout(backup_grid)
-        self.backup_hint = QLabel("Снимите все пункты — резервная копия создаваться не будет.")
-        self.backup_hint.setWordWrap(True)
-        backup_layout.addWidget(self.backup_hint)
-        layout.addWidget(self.backup_group)
-
-        self.selfdestruct_group = QGroupBox("Файлы приложения")
-        sd_layout = QVBoxLayout(self.selfdestruct_group)
-        sd_layout.setSpacing(6)
         self.chk_self_destruct = QCheckBox("Удалить файлы приложения (самоуничтожение)")
         self.chk_self_destruct.setChecked(True)
         self.chk_self_destruct.setToolTip(
-            "Удаляет каталог ZapretPass целиком: данные, иконки, скрипты и ярлык меню."
+            "Удаляет каталог ZapretPass целиком: данные, иконки, скрипты и ярлык меню.\n"
+            "После завершения приложение закроется. Останется только резервная копия."
         )
-        sd_layout.addWidget(self.chk_self_destruct)
-        self.selfdestruct_hint = QLabel(
-            "После завершения приложение закроется. Останется только резервная копия, если она выбрана."
-        )
-        self.selfdestruct_hint.setWordWrap(True)
-        sd_layout.addWidget(self.selfdestruct_hint)
-        layout.addWidget(self.selfdestruct_group)
+        backup_grid.addWidget(self.chk_self_destruct, 2, 0, 1, 2)
+        backup_layout.addLayout(backup_grid)
+        layout.addWidget(self.backup_group)
 
         self.loading_label = QLabel("⏳ Загрузка списка компонентов...")
         self.loading_label.setWordWrap(True)
@@ -319,12 +312,17 @@ class LifecycleManagerDialog(QDialog):
         lay = self.layout()
         if lay is None:
             return
+        screen = self.screen() or QApplication.primaryScreen()
+        limit = (screen.availableGeometry().height() - 80) if screen else 1200
+        self._scroll.setMinimumHeight(SCROLL_MIN_HEIGHT)
         lay.activate()
         needed = lay.totalMinimumSize().height()
-        screen = self.screen() or QApplication.primaryScreen()
-        limit = (screen.availableGeometry().height() - 60) if screen else 1200
-        target = min(max(needed, self.minimumHeight()), limit)
-        if self.height() < target:
+        if needed > limit:
+            self._scroll.setMinimumHeight(max(90, SCROLL_MIN_HEIGHT - (needed - limit)))
+            lay.activate()
+            needed = lay.totalMinimumSize().height()
+        target = min(max(needed, 420), limit)
+        if self.height() < target or self.height() > limit:
             self.resize(self.width(), target)
 
     # ---------- состояние режимов ----------
@@ -332,13 +330,11 @@ class LifecycleManagerDialog(QDialog):
     def _apply_mode(self, *_):
         is_reinstall = self.radio_reinstall.isChecked()
         self.backup_group.setVisible(not is_reinstall)
-        self.selfdestruct_group.setVisible(not is_reinstall)
         self.btn_action.setText("Переустановить" if is_reinstall else "Удалить полностью")
         self.mode_hint.setText(
-            "Движок и сервисы будут переустановлены, данные сохраняются автоматически. "
-            "Пакеты по умолчанию не трогаются — отметьте нужные, чтобы переустановить и их."
+            "Данные сохраняются. Пакеты по умолчанию не трогаются — отметьте нужные."
             if is_reinstall else
-            "Будет удалено всё, что установлено ZapretPass. Частичное удаление недоступно."
+            "Удаляется всё, что установил ZapretPass. Частичное удаление недоступно."
         )
         self._suspend_choice = True
         try:
@@ -381,9 +377,9 @@ class LifecycleManagerDialog(QDialog):
             self.lock_label.setToolTip("")
             return
         names = list(self._locked.keys())
-        shown = ", ".join(names[:5])
-        if len(names) > 5:
-            shown += f" и ещё {len(names) - 5}"
+        shown = ", ".join(names[:3])
+        if len(names) > 3:
+            shown += f" и ещё {len(names) - 3}"
         word = self._plural(len(names), "компонент", "компонента", "компонентов")
         if self.radio_reinstall.isChecked():
             self.lock_label.setText(f"🔒 {len(names)} {word} недоступны для выбора: {shown}")
