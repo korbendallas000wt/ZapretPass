@@ -4,6 +4,8 @@ SCRIPT_NAME="$(basename "$0")"
 CONFIG_FILE="/etc/dnscrypt-proxy/zapretpass.toml"
 DEFAULT_CONFIG="/opt/zapret/assets/defaults/dnscrypt-proxy.toml"
 LOG_FILE="/var/log/zapretpass/dnscrypt-proxy.log"
+# Ротация логов
+[ -f "$LOG_FILE" ] && { mv -f "$LOG_FILE" "${LOG_FILE}.old"; touch "$LOG_FILE"; }
 
 log_info()  { echo -e "\e[32m[INFO]\e[0m $1"; }
 log_warn()  { echo -e "\e[33m[WARN]\e[0m $1"; }
@@ -26,6 +28,16 @@ wait_runsv() {
         if sv status "$name" >/dev/null 2>&1; then return 0; fi
         sleep 1; waited=$((waited + 1))
     done
+    return 1
+}
+
+wait_for_port() {
+    local addr="$1" port="$2" waited=0
+    while [ "$waited" -lt 10 ]; do
+        if timeout 1 bash -c "</dev/tcp/$addr/$port" 2>/dev/null; then return 0; fi
+        sleep 1; waited=$((waited + 1))
+    done
+    log_warn "Порт $addr:$port не ответил за 10 сек"
     return 1
 }
 
@@ -175,6 +187,7 @@ RUNEOF
         sleep 2
     fi
 
+    wait_for_port "$listen_addr" 53
     if pgrep -x dnscrypt-proxy >/dev/null 2>&1; then
         log_info "✅ dnscrypt-proxy запущен и добавлен в автозапуск (PID: $(pgrep -x dnscrypt-proxy | head -1))"
         log_info "🎉 Защищённый DNS включён"
