@@ -3,7 +3,6 @@ set -e
 SCRIPT_NAME="$(basename "$0")"
 CONFIG_FILE="/etc/dnscrypt-proxy/zapretpass.toml"
 DEFAULT_CONFIG="/opt/zapret/assets/defaults/dnscrypt-proxy.toml"
-RESOLV_HEAD="/etc/resolv.conf.head"
 LOG_FILE="/var/log/zapretpass/dnscrypt-proxy.log"
 
 log_info()  { echo -e "\e[32m[INFO]\e[0m $1"; }
@@ -32,16 +31,25 @@ wait_runsv() {
 
 apply_resolver() {
     local addr="$1"
-    if command -v resolvconf >/dev/null 2>&1 && [ -d /etc/resolvconf ]; then
-        if [ -f "$RESOLV_HEAD" ]; then
-            grep -v "# ZapretPass DoT" "$RESOLV_HEAD" 2>/dev/null | grep -v "^nameserver 127\.0\.0\.[12]$" > "${RESOLV_HEAD}.tmp" 2>/dev/null || true
-            mv -f "${RESOLV_HEAD}.tmp" "$RESOLV_HEAD"
-        fi
-        printf '# ZapretPass DoT\nnameserver %s\n' "$addr" >> "$RESOLV_HEAD"
-        resolvconf -u 2>/dev/null || true
-        log_info "Резолвер обновлён через resolvconf ($addr)"
+    # 1. systemd-resolved (Ubuntu, Fedora, modern Arch)
+    if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet systemd-resolved; then
+        mkdir -p /etc/systemd/resolved.conf.d
+        cat > /etc/systemd/resolved.conf.d/zapretpass.conf <<EOF
+[Resolve]
+DNS=$addr
+EOF
+        systemctl restart systemd-resolved
+        log_info "Резолвер переключён на $addr через systemd-resolved (drop-in)"
         return 0
     fi
+    # 2. resolvconf (Debian, some AntiX)
+    if command -v resolvconf >/dev/null 2>&1 && [ -d /etc/resolvconf ]; then
+        printf 'nameserver %s
+' "$addr" | resolvconf -a zapretpass-dot
+        log_info "Резолвер переключён на $addr через resolvconf"
+        return 0
+    fi
+    # 3. Fallback: direct write (AntiX with connman/dhcpcd)
     if [ -e "$RESOLV_CONF" ] && [ ! -e "$RESOLV_BACKUP" ]; then
         if [ -L "$RESOLV_CONF" ]; then
             readlink -f "$RESOLV_CONF" > "${RESOLV_BACKUP}.link" 2>/dev/null || true
@@ -52,7 +60,10 @@ apply_resolver() {
         fi
         log_info "Исходный resolv.conf сохранён в $RESOLV_BACKUP"
     fi
-    printf '# ZapretPass DoT\nnameserver %s\noptions edns0 trust-ad\n' "$addr" > "${RESOLV_CONF}.tmp"
+    printf '# ZapretPass DoT
+nameserver %s
+options edns0 trust-ad
+' "$addr" > "${RESOLV_CONF}.tmp"
     chmod 644 "${RESOLV_CONF}.tmp"
     mv -f "${RESOLV_CONF}.tmp" "$RESOLV_CONF"
     log_info "Резолвер переключён на $addr (прямая запись $RESOLV_CONF)"
@@ -62,13 +73,22 @@ apply_resolver() {
 }
 
 restore_resolver() {
+    # 1. systemd-resolved
+    if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet systemd-resolved; then
+        rm -f /etc/systemd/resolved.conf.d/zapretpass.conf
+        systemctl restart systemd-resolved
+        log_info "systemd-resolved восстановлен"
+        return 0
+    fi
+    # 2. resolvconf
+    if command -v resolvconf >/dev/null 2>&1 && [ -d /etc/resolvconf ]; then
+        resolvconf -d zapretpass-dot
+        log_info "resolvconf восстановлен"
+        return 0
+    fi
+    # 3. Fallback: restore from backup
     if command -v chattr >/dev/null 2>&1; then
         chattr -i "$RESOLV_CONF" 2>/dev/null || true
-    fi
-    if [ -f "$RESOLV_HEAD" ]; then
-        grep -v "# ZapretPass DoT" "$RESOLV_HEAD" 2>/dev/null | grep -v "^nameserver 127\.0\.0\.[12]$" > "${RESOLV_HEAD}.tmp" 2>/dev/null || true
-        mv -f "${RESOLV_HEAD}.tmp" "$RESOLV_HEAD"
-        command -v resolvconf >/dev/null 2>&1 && resolvconf -u 2>/dev/null || true
     fi
     if [ -e "${RESOLV_BACKUP}.link" ]; then
         local target; target="$(cat "${RESOLV_BACKUP}.link" 2>/dev/null)"

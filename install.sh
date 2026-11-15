@@ -257,7 +257,7 @@ check_services() {
                 fi
                 ;;
             runit)
-                if [ -L "/etc/runit/runsvdir/default/$service" ] || \
+                if [ -L "$(runit_service_dir)/$service" ] || \
                    [ -d "/etc/sv/$service" ]; then
                     SERVICES_STATUS["$service"]="enabled"
                 else
@@ -717,6 +717,12 @@ EOF
     run_as_root systemctl enable "$service"
 }
 
+runit_service_dir() {
+    if [ -d /etc/service ] || [ -L /etc/service ]; then echo "/etc/service"
+    elif [ -d /var/service ]; then echo "/var/service"
+    else echo "/etc/runit/runsvdir/default"; fi
+}
+
 setup_runit_service() {
     local service="$1"
     local service_dir="/etc/sv/$service"
@@ -736,15 +742,15 @@ exit 0
 EOF
 
     run_as_root chmod +x "$service_dir/run" "$service_dir/finish"
-    run_as_root ln -sfn "$service_dir" "/etc/runit/runsvdir/default/$service"
+    run_as_root ln -sfn "$service_dir" "$(runit_service_dir)/$service"
     if command -v sv >/dev/null 2>&1; then
         local waited=0
         while [ "$waited" -lt 15 ]; do
-            if run_as_root sv status "/etc/runit/runsvdir/default/$service" >/dev/null 2>&1; then break; fi
+            if run_as_root sv status "$(runit_service_dir)/$service" >/dev/null 2>&1; then break; fi
             sleep 1; waited=$((waited + 1))
         done
-        run_as_root sv restart "/etc/runit/runsvdir/default/$service" >/dev/null 2>&1 \
-            || run_as_root sv up "/etc/runit/runsvdir/default/$service" >/dev/null 2>&1 || true
+        run_as_root sv restart "$(runit_service_dir)/$service" >/dev/null 2>&1 \
+            || run_as_root sv up "$(runit_service_dir)/$service" >/dev/null 2>&1 || true
     fi
 }
 

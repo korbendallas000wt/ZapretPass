@@ -4,6 +4,8 @@
 ZapretPass UI - Главное окно
 Каркас: вкладки сверху, панель управления (статус + индикатор + кнопки) снизу в GroupBox.
 """
+from pathlib import Path
+
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QTabWidget, QGroupBox, QSizePolicy,
