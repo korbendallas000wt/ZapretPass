@@ -116,6 +116,14 @@ restore_resolver() {
         rm -f "$RESOLV_CONF"
         log_warn "Исходный resolv.conf не сохранялся — файл удалён, DNS вернётся от DHCP"
     fi
+    # Принудительный рестарт сетевого менеджера для пересоздания resolv.conf
+    if command -v sv >/dev/null 2>&1 && sv status connman >/dev/null 2>&1; then
+        sv restart connman >/dev/null 2>&1 && log_info "connman перезапущен для восстановления DNS"
+    elif command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet connman 2>/dev/null; then
+        systemctl restart connman >/dev/null 2>&1 && log_info "connman перезапущен для восстановления DNS"
+    elif pgrep -x dhcpcd >/dev/null 2>&1; then
+        pkill -HUP dhcpcd 2>/dev/null && log_info "dhcpcd получил SIGHUP для обновления DNS"
+    fi
 }
 
 check_root() {
