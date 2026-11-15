@@ -11,6 +11,81 @@ log_warn()  { echo -e "\e[33m[WARN]\e[0m $1"; }
 log_error() { echo -e "\e[31m[ERROR]\e[0m $1"; }
 log_step()  { echo -e "\e[34m[STEP]\e[0m $1"; }
 
+# --- Управление системным резолвером ---
+RESOLV_CONF="/etc/resolv.conf"
+RESOLV_BACKUP="/etc/resolv.conf.zapretpass-backup"
+
+runit_service_dir() {
+    if [ -d /etc/service ] || [ -L /etc/service ]; then echo "/etc/service"
+    elif [ -d /var/service ]; then echo "/var/service"
+    else echo "/etc/runit/runsvdir/default"; fi
+}
+
+wait_runsv() {
+    local name="$1" waited=0
+    while [ "$waited" -lt 15 ]; do
+        if sv status "$name" >/dev/null 2>&1; then return 0; fi
+        sleep 1; waited=$((waited + 1))
+    done
+    return 1
+}
+
+apply_resolver() {
+    local addr="$1"
+    if command -v resolvconf >/dev/null 2>&1 && [ -d /etc/resolvconf ]; then
+        if [ -f "$RESOLV_HEAD" ]; then
+            grep -v "# ZapretPass DoT" "$RESOLV_HEAD" 2>/dev/null | grep -v "^nameserver 127\.0\.0\.[12]$" > "${RESOLV_HEAD}.tmp" 2>/dev/null || true
+            mv -f "${RESOLV_HEAD}.tmp" "$RESOLV_HEAD"
+        fi
+        printf '# ZapretPass DoT\nnameserver %s\n' "$addr" >> "$RESOLV_HEAD"
+        resolvconf -u 2>/dev/null || true
+        log_info "Резолвер обновлён через resolvconf ($addr)"
+        return 0
+    fi
+    if [ -e "$RESOLV_CONF" ] && [ ! -e "$RESOLV_BACKUP" ]; then
+        if [ -L "$RESOLV_CONF" ]; then
+            readlink -f "$RESOLV_CONF" > "${RESOLV_BACKUP}.link" 2>/dev/null || true
+            cp -a "$RESOLV_CONF" "${RESOLV_BACKUP}.content" 2>/dev/null || true
+            rm -f "$RESOLV_CONF"
+        else
+            cp -a "$RESOLV_CONF" "$RESOLV_BACKUP"
+        fi
+        log_info "Исходный resolv.conf сохранён в $RESOLV_BACKUP"
+    fi
+    printf '# ZapretPass DoT\nnameserver %s\noptions edns0 trust-ad\n' "$addr" > "${RESOLV_CONF}.tmp"
+    chmod 644 "${RESOLV_CONF}.tmp"
+    mv -f "${RESOLV_CONF}.tmp" "$RESOLV_CONF"
+    log_info "Резолвер переключён на $addr (прямая запись $RESOLV_CONF)"
+    if command -v chattr >/dev/null 2>&1; then
+        chattr -i "$RESOLV_CONF" 2>/dev/null || true
+    fi
+}
+
+restore_resolver() {
+    if command -v chattr >/dev/null 2>&1; then
+        chattr -i "$RESOLV_CONF" 2>/dev/null || true
+    fi
+    if [ -f "$RESOLV_HEAD" ]; then
+        grep -v "# ZapretPass DoT" "$RESOLV_HEAD" 2>/dev/null | grep -v "^nameserver 127\.0\.0\.[12]$" > "${RESOLV_HEAD}.tmp" 2>/dev/null || true
+        mv -f "${RESOLV_HEAD}.tmp" "$RESOLV_HEAD"
+        command -v resolvconf >/dev/null 2>&1 && resolvconf -u 2>/dev/null || true
+    fi
+    if [ -e "${RESOLV_BACKUP}.link" ]; then
+        local target; target="$(cat "${RESOLV_BACKUP}.link" 2>/dev/null)"
+        rm -f "$RESOLV_CONF"
+        [ -n "$target" ] && ln -s "$target" "$RESOLV_CONF" 2>/dev/null || true
+        [ -e "${RESOLV_BACKUP}.content" ] && cp -a "${RESOLV_BACKUP}.content" "$target" 2>/dev/null || true
+        rm -f "${RESOLV_BACKUP}.content" "${RESOLV_BACKUP}.link"
+        log_info "Исходный resolv.conf восстановлен (симлинк)"
+    elif [ -e "$RESOLV_BACKUP" ]; then
+        mv -f "$RESOLV_BACKUP" "$RESOLV_CONF"
+        log_info "Исходный resolv.conf восстановлен"
+    else
+        rm -f "$RESOLV_CONF"
+        log_warn "Исходный resolv.conf не сохранялся — файл удалён, DNS вернётся от DHCP"
+    fi
+}
+
 check_root() {
     if [ "$(id -u)" -ne 0 ]; then
         log_error "Требуются права root. Используйте: sudo $SCRIPT_NAME $*"
@@ -39,15 +114,7 @@ cmd_enable() {
     sed "s|127.0.0.1:53|${listen_addr}:53|g" "$DEFAULT_CONFIG" > "$CONFIG_FILE"
     log_info "Конфиг создан: $CONFIG_FILE (слушает ${listen_addr}:53)"
 
-    # Очистка и запись resolv.conf.head
-    if [ -f "$RESOLV_HEAD" ]; then
-        grep -v "# ZapretPass DoT" "$RESOLV_HEAD" > "${RESOLV_HEAD}.tmp" 2>/dev/null || true
-        grep -v "^nameserver 127\.0\.0\.[12]$" "${RESOLV_HEAD}.tmp" > "$RESOLV_HEAD" 2>/dev/null || true
-        rm -f "${RESOLV_HEAD}.tmp"
-    fi
-    echo "# ZapretPass DoT" >> "$RESOLV_HEAD"
-    echo "nameserver ${listen_addr}" >> "$RESOLV_HEAD"
-    log_info "Добавлен nameserver ${listen_addr} в $RESOLV_HEAD"
+    apply_resolver "${listen_addr}"
 
     log_step "Настройка автозапуска и запуск dnscrypt-proxy..."
     local init_sys=$(detect_init)
@@ -69,8 +136,9 @@ cmd_enable() {
         # Принудительно указываем наш конфиг в run-скрипте, если он там есть, или полагаемся на дефолт
         # Самый надёжный способ для runit без изменения системных файлов - симлинк и ручной запуск через sv
         if [ -d "/etc/sv/dnscrypt-proxy" ]; then
-            ln -sf /etc/sv/dnscrypt-proxy /etc/runit/runsvdir/default/ 2>/dev/null || true
-            sv restart dnscrypt-proxy 2>/dev/null || sv up dnscrypt-proxy
+            ln -sfn /etc/sv/dnscrypt-proxy "$(runit_service_dir)/dnscrypt-proxy" 2>/dev/null || true
+            wait_runsv dnscrypt-proxy
+            sv restart dnscrypt-proxy 2>/dev/null || sv up dnscrypt-proxy 2>/dev/null || true
         else
             # Fallback: если системного сервиса нет, создаём свой минимальный
             mkdir -p /etc/sv/dnscrypt-proxy
@@ -80,8 +148,9 @@ exec 2>&1
 exec dnscrypt-proxy -config /etc/dnscrypt-proxy/zapretpass.toml
 RUNEOF
             chmod +x /etc/sv/dnscrypt-proxy/run
-            ln -sf /etc/sv/dnscrypt-proxy /etc/runit/runsvdir/default/
-            sv up dnscrypt-proxy
+            ln -sfn /etc/sv/dnscrypt-proxy "$(runit_service_dir)/dnscrypt-proxy"
+            wait_runsv dnscrypt-proxy
+            sv up dnscrypt-proxy 2>/dev/null || true
         fi
         sleep 2
     fi
@@ -110,12 +179,7 @@ cmd_disable() {
     
     pkill -x dnscrypt-proxy 2>/dev/null || true
     
-    if [ -f "$RESOLV_HEAD" ]; then
-        grep -v "# ZapretPass DoT" "$RESOLV_HEAD" > "${RESOLV_HEAD}.tmp" 2>/dev/null || true
-        grep -v "^nameserver 127\.0\.0\.[12]$" "${RESOLV_HEAD}.tmp" > "$RESOLV_HEAD" 2>/dev/null || true
-        rm -f "${RESOLV_HEAD}.tmp"
-        log_info "Удалён nameserver из $RESOLV_HEAD"
-    fi
+    restore_resolver
     log_info "✅ Защищённый DNS выключен"
 }
 

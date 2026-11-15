@@ -752,20 +752,28 @@ class MainWindow(QMainWindow):
         self._settings_dialog.exec()
 
     def _on_settings_sudo_requested(self, cmd_list: list, prompt_msg: str):
-        """Обработка запроса sudo из диалога настроек."""
+        """Запрос sudo для настроек: сначала кэш core.sudo, диалог только при его отсутствии."""
+        from core.sudo import manager as sudo_manager
         from .password_dialog import get_password_from_user, PasswordDialogCancelled
-        try:
-            password = get_password_from_user(prompt_msg)
-            if password is not None:
-                self._dot_worker = DotToggleWorker(cmd_list[1], password, self)
-                self._dot_worker.finished_signal.connect(self._on_dot_toggle_finished)
-                self._dot_worker.start()
-            else:
+
+        password = sudo_manager.get_password()
+        if password is None:
+            try:
+                password = get_password_from_user(prompt_msg)
+            except PasswordDialogCancelled:
+                password = None
+            if password is None:
                 if hasattr(self, '_settings_dialog'):
                     self._settings_dialog.on_sudo_result(False, "Отменено")
-        except PasswordDialogCancelled:
-            if hasattr(self, '_settings_dialog'):
-                self._settings_dialog.on_sudo_result(False, "Отменено")
+                return
+            if not sudo_manager.verify_password(password):
+                if hasattr(self, '_settings_dialog'):
+                    self._settings_dialog.on_sudo_result(False, "Неверный пароль sudo")
+                return
+
+        self._dot_worker = DotToggleWorker(cmd_list[1], password, self)
+        self._dot_worker.finished_signal.connect(self._on_dot_toggle_finished)
+        self._dot_worker.start()
 
     def _on_dot_toggle_finished(self, success: bool, message: str):
         if hasattr(self, '_settings_dialog'):

@@ -9,6 +9,8 @@ source "$SCRIPT_DIR/scripts/deps.sh"
 APP_DIR="$SCRIPT_DIR"
 INSTALL_LOG="$APP_DIR/data/logs/install.log"
 
+REFRESH_APP_ARTIFACTS=1
+
 # === МЕТАДАННЫЕ (заполняется в inventory_system) ===
 declare -A METADATA
 
@@ -412,7 +414,7 @@ print_inventory_summary() {
     echo "Файлы требующие создания:"
     count=0
     for file in "${!FILES_STATUS[@]}"; do
-        if [[ "${FILES_STATUS[$file]}" == "needs_create" ]]; then
+        if [[ "${FILES_STATUS[$file]}" == "needs_create" || "$REFRESH_APP_ARTIFACTS" == "1" ]]; then
             echo "  - $file"
             count=$((count + 1))
         fi
@@ -434,7 +436,7 @@ print_inventory_summary() {
     echo "Сервисы требующие настройки:"
     count=0
     for service in "${!SERVICES_STATUS[@]}"; do
-        if [[ "${SERVICES_STATUS[$service]}" == "needs_setup" ]]; then
+        if [[ "${SERVICES_STATUS[$service]}" == "needs_setup" || "$REFRESH_APP_ARTIFACTS" == "1" ]]; then
             echo "  - $service"
             count=$((count + 1))
         fi
@@ -539,7 +541,7 @@ install_zapret_core() {
     
     # Компиляция бинарников
     echo "Компиляция бинарников zapret..."
-    if [ "$INIT_SYSTEM" = "systemd" ]; then
+    if [ "${METADATA[init_system]}" = "systemd" ]; then
         run_as_root bash -c "cd '$zapret_dir' && make systemd" || {
             echo "❌ Ошибка компиляции zapret (make systemd)"
             return 1
@@ -621,7 +623,7 @@ create_missing_files() {
     local count=0
     
     for file in "${FILES_LAUNCHER[@]}"; do
-        if [[ "${FILES_STATUS[$file]}" == "needs_create" ]]; then
+        if [[ "${FILES_STATUS[$file]}" == "needs_create" || "$REFRESH_APP_ARTIFACTS" == "1" ]]; then
             echo "Создаю launcher: $file"
             cat > "$file" <<'EOF'
 #!/bin/bash
@@ -634,7 +636,7 @@ EOF
     done
     
     local desktop_file="${METADATA[real_home]}/.local/share/applications/zapretpass.desktop"
-    if [[ "${FILES_STATUS[$desktop_file]}" == "needs_create" ]]; then
+    if [[ "${FILES_STATUS[$desktop_file]}" == "needs_create" || "$REFRESH_APP_ARTIFACTS" == "1" ]]; then
         echo "Создаю desktop-файл: $desktop_file"
         mkdir -p "$(dirname "$desktop_file")"
         cat > "$desktop_file" <<EOF
@@ -648,11 +650,13 @@ Type=Application
 Categories=Network;
 EOF
         chmod +x "$desktop_file"
+        command -v update-desktop-database >/dev/null 2>&1 && \
+            update-desktop-database "$(dirname "$desktop_file")" >/dev/null 2>&1 || true
         count=$((count + 1))
     fi
     
     for file in "${FILES_DOT[@]}"; do
-        if [[ "${FILES_STATUS[$file]}" == "needs_create" ]]; then
+        if [[ "${FILES_STATUS[$file]}" == "needs_create" || "$REFRESH_APP_ARTIFACTS" == "1" ]]; then
             echo "Создаю DOT-файл: $file"
             run_as_root mkdir -p "$(dirname "$file")"
             local asset_src=""
@@ -721,11 +725,27 @@ setup_runit_service() {
     
     run_as_root tee "$service_dir/run" > /dev/null <<EOF
 #!/bin/sh
-exec /opt/zapret/zapret.sh start
+/opt/zapret/init.d/sysv/zapret start || exit 1
+exec sleep infinity
 EOF
     
-    run_as_root chmod +x "$service_dir/run"
-    run_as_root ln -sf "$service_dir" "/etc/runit/runsvdir/default/$service"
+    run_as_root tee "$service_dir/finish" > /dev/null <<EOF
+#!/bin/sh
+/opt/zapret/init.d/sysv/zapret stop >/dev/null 2>&1
+exit 0
+EOF
+
+    run_as_root chmod +x "$service_dir/run" "$service_dir/finish"
+    run_as_root ln -sfn "$service_dir" "/etc/runit/runsvdir/default/$service"
+    if command -v sv >/dev/null 2>&1; then
+        local waited=0
+        while [ "$waited" -lt 15 ]; do
+            if run_as_root sv status "/etc/runit/runsvdir/default/$service" >/dev/null 2>&1; then break; fi
+            sleep 1; waited=$((waited + 1))
+        done
+        run_as_root sv restart "/etc/runit/runsvdir/default/$service" >/dev/null 2>&1 \
+            || run_as_root sv up "/etc/runit/runsvdir/default/$service" >/dev/null 2>&1 || true
+    fi
 }
 
 setup_openrc_service() {
@@ -739,12 +759,12 @@ depend() {
 }
 start() {
     ebegin "Starting Zapret"
-    /opt/zapret/zapret.sh start
+    /opt/zapret/init.d/sysv/zapret start
     eend $?
 }
 stop() {
     ebegin "Stopping Zapret"
-    /opt/zapret/zapret.sh stop
+    /opt/zapret/init.d/sysv/zapret stop
     eend $?
 }
 EOF
@@ -770,10 +790,10 @@ setup_sysvinit_service() {
 
 case "\$1" in
     start)
-        /opt/zapret/zapret.sh start
+        /opt/zapret/init.d/sysv/zapret start
         ;;
     stop)
-        /opt/zapret/zapret.sh stop
+        /opt/zapret/init.d/sysv/zapret stop
         ;;
     *)
         echo "Usage: \$0 {start|stop}"
@@ -793,7 +813,7 @@ setup_services() {
     local count=0
     
     for service in "${SERVICES[@]}"; do
-        if [[ "${SERVICES_STATUS[$service]}" == "needs_setup" ]]; then
+        if [[ "${SERVICES_STATUS[$service]}" == "needs_setup" || "$REFRESH_APP_ARTIFACTS" == "1" ]]; then
             echo "Настраиваю сервис: $service"
             
             case "$init" in
@@ -821,7 +841,7 @@ init_baseline_configs() {
     local count=0
     
     for file in "${FILES_BASELINE[@]}"; do
-        if [[ "${FILES_STATUS[$file]}" == "needs_create" ]]; then
+        if [[ "${FILES_STATUS[$file]}" == "needs_create" || "$REFRESH_APP_ARTIFACTS" == "1" ]]; then
             echo "Создаю baseline: $file"
             mkdir -p "$(dirname "$file")"
             # Копируем из assets/defaults если есть, иначе создаём пустой
