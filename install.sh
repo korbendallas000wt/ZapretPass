@@ -636,6 +636,7 @@ EOF
     done
     
     local desktop_file="${METADATA[real_home]}/.local/share/applications/zapretpass.desktop"
+    install_app_icons
     if [[ "${FILES_STATUS[$desktop_file]}" == "needs_create" || "$REFRESH_APP_ARTIFACTS" == "1" ]]; then
         echo "Создаю desktop-файл: $desktop_file"
         mkdir -p "$(dirname "$desktop_file")"
@@ -644,7 +645,7 @@ EOF
 Name=ZapretPass
 Comment=DPI Bypass Manager
 Exec=$APP_DIR/zapretpass.sh
-Icon=$APP_DIR/assets/icons/png/zapretpass-icon-64.png
+Icon=zapretpass
 Terminal=false
 Type=Application
 Categories=Network;
@@ -715,6 +716,21 @@ EOF
     
     run_as_root systemctl daemon-reload
     run_as_root systemctl enable "$service"
+}
+
+install_app_icons() {
+    # XDG hicolor: меню AntiX/Fluxbox ищет иконку по имени, а не по пути
+    local src_dir="$APP_DIR/assets/icons/png" size src dst
+    [ -d "$src_dir" ] || return 0
+    for size in 16 24 32 48 64 128 256 512; do
+        src="$src_dir/zapretpass-icon-$size.png"
+        dst="/usr/share/icons/hicolor/${size}x${size}/apps/zapretpass.png"
+        [ -f "$src" ] || continue
+        run_as_root install -D -m 644 "$src" "$dst" 2>/dev/null || true
+    done
+    if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+        run_as_root gtk-update-icon-cache -f -t /usr/share/icons/hicolor >/dev/null 2>&1 || true
+    fi
 }
 
 runit_service_dir() {
