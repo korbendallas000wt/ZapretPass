@@ -943,6 +943,23 @@ main() {
     write_full_inventory_log
     
     echo "=== Установка завершена ==="
+
+    # Предложение запуска приложения (по умолчанию — да)
+    if [ -t 0 ]; then
+        printf "Запустить ZapretPass сейчас? [Y/n]: "
+        read -r ans
+        case "$ans" in
+            n|N|no|NO|нет|Нет) : ;;
+            *)
+                if [ -x "$SCRIPT_DIR/zapretpass.sh" ]; then
+                    nohup "$SCRIPT_DIR/zapretpass.sh" >/dev/null 2>&1 &
+                    echo "ZapretPass запущен."
+                else
+                    echo "Лаунчер не найден: $SCRIPT_DIR/zapretpass.sh"
+                fi
+                ;;
+        esac
+    fi
 }
 
 main "$@"

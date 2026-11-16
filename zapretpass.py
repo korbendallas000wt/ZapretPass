@@ -6,10 +6,10 @@ ZapretPass — точка входа
 import os
 import sys
 
-from PyQt6.QtCore import QDir, QLockFile, QStandardPaths
+from PyQt6.QtCore import QDir, QLockFile, QStandardPaths, QTimer
 from PyQt6.QtWidgets import QApplication, QMessageBox
 from PyQt6.QtGui import QIcon
-from ui.main_window import MainWindow
+from ui.main_window import MainWindow, RestoreBaselineWorker
 from ui.password_dialog import get_password_from_user
 from core import preflight, sudo
 from core.logger import setup_logging
@@ -38,6 +38,25 @@ def _acquire_single_instance_lock():
         return None
 
     return lock
+
+
+def _startup_baseline_sync():
+    """Стартовая синхронизация эталона: поднимаем сервис, если демоны мертвы."""
+    from core import service
+    from core.zapret_config import ZapretConfigManager
+    try:
+        st = service.get_status()
+        if st.active and ZapretConfigManager.baseline_available():
+            return  # уже в синхроне и работает — не трогаем
+    except Exception:
+        pass
+    pwd = sudo.manager.get_password()
+    if not pwd:
+        return
+    w = RestoreBaselineWorker()
+    w.result_ready.connect(lambda ok, msg: print(f"[STARTUP] baseline: {msg}", flush=True))
+    w.start()
+    _startup_baseline_sync._worker = w
 
 
 def main():
@@ -86,6 +105,7 @@ def main():
 
     window = MainWindow()
     window.show()
+    QTimer.singleShot(800, _startup_baseline_sync)
     sys.exit(app.exec())
 
 
