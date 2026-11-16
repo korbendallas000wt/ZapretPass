@@ -197,10 +197,10 @@ def get_status() -> ServiceStatus:
             # Инициатор говорит "активен", но мы проверяем реальную работу
             actual_active, pid = _is_actively_working()
             
-            if init_says_active and actual_active:
+            if actual_active:
                 active = True
                 uptime = "N/A"
-            elif init_says_active and not actual_active:
+            elif init_says_active:
                 active = False
                 error = "Демон запущен, но правила DPI не применены или рабочие процессы отсутствуют"
             else:
