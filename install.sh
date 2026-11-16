@@ -731,6 +731,7 @@ setup_runit_service() {
     
     run_as_root tee "$service_dir/run" > /dev/null <<EOF
 #!/bin/sh
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 /opt/zapret/init.d/sysv/zapret start || exit 1
 exec sleep infinity
 EOF
