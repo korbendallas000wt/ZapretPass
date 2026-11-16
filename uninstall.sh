@@ -399,6 +399,20 @@ selfdestruct_services() {
     return 0
 }
 
+remove_app_icons() {
+    local size dst
+    for size in 16 24 32 48 64 128 256 512; do
+        dst="/usr/share/icons/hicolor/${size}x${size}/apps/zapretpass.png"
+        if [ -e "$dst" ]; then
+            run_as_root rm -f "$dst"
+            echo "Удалено: $dst"
+        fi
+    done
+    if command -v gtk-update-icon-cache >/dev/null 2>&1 && [ "$DRY_RUN" -eq 0 ]; then
+        run_as_root gtk-update-icon-cache -f -t /usr/share/icons/hicolor >/dev/null 2>&1 || true
+    fi
+}
+
 selfdestruct_finalize() {
     echo -e "\n${YELLOW}=== Самоуничтожение ===${NC}"
 
@@ -410,6 +424,8 @@ selfdestruct_finalize() {
             echo "Удалено: $p"
         fi
     done
+
+    remove_app_icons
 
     if command -v update-desktop-database >/dev/null 2>&1 && [ "$DRY_RUN" -eq 0 ]; then
         if [ "$EUID" -eq 0 ] && id "$REAL_USER" >/dev/null 2>&1; then
