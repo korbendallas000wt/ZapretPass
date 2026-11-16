@@ -194,7 +194,13 @@ check_package_installed() {
 check_packages() {
     echo "Проверка установленных пакетов..."
     
-    local all_packages=("${PACKAGES_CORE[@]}" "${PACKAGES_UI[@]}" "${PACKAGES_DOT[@]}")
+    local all_packages=("${PACKAGES_CORE[@]}" "${PACKAGES_UI[@]}")
+    # Добавляем DOT-пакеты только если нет системного резолвера
+    if ! check_system_resolved; then
+        all_packages+=("${PACKAGES_DOT[@]}")
+    else
+        log_info "🟢 Системный резолвер найден — dnscrypt-proxy не устанавливается"
+    fi
     
     for pkg in "${all_packages[@]}"; do
         if check_package_installed "$pkg"; then
@@ -290,6 +296,22 @@ check_services() {
 # ============================================================================
 # ФАЗА 1: ИНВЕНТАРИЗАЦИЯ СИСТЕМЫ
 # ============================================================================
+
+# ============================================================================
+# ДЕТЕКЦИЯ СИСТЕМНОГО РЕЗОЛВЕРА (для решения: не ставить dnscrypt-proxy при наличии resolved)
+# ============================================================================
+check_system_resolved() {
+    # Возвращает 0, если systemd-resolved присутствует в системе
+    # Возвращает 1, если его нет (AntiX, runit, чистая система)
+    if command -v resolvectl &>/dev/null && systemctl is-active --quiet systemd-resolved 2>/dev/null; then
+        return 0
+    fi
+    # Fallback: проверяем наличие unit-файла даже если сервис не активен
+    if systemctl list-unit-files systemd-resolved.service 2>/dev/null | grep -q "systemd-resolved"; then
+        return 0
+    fi
+    return 1
+}
 
 inventory_system() {
     echo "=== ФАЗА 1: Инвентаризация системы ==="

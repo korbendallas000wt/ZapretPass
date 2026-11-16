@@ -79,31 +79,47 @@ class SettingsDialog(QDialog):
         # Блокируем сигнал, чтобы избежать краша при инициализации
         self.dot_checkbox.blockSignals(True)
         
-        # Определяем, можно ли управлять DoT
-        can_control = result.status in ["ours", "plain", "none"]
-        
         if result.status == "ours":
             # Наш модуль работает — можно выключить
             self.dot_checkbox.setChecked(True)
             self.dot_checkbox.setEnabled(True)
             self.dot_checkbox.setToolTip("Модуль ZapretPass активен. Снимите галочку, чтобы отключить.")
         elif result.status == "system":
-            # Системный или сторонний DoT — не трогаем
+            # Системный DoT активен — только информируем
             self.dot_checkbox.setChecked(True)
             self.dot_checkbox.setEnabled(False)
-            self.dot_checkbox.setToolTip(f"🔒 Системный DoT активен ({result.process}). Управление отключено, чтобы не нарушить вашу конфигурацию.")
+            self.dot_checkbox.setToolTip(
+                f"🔒 Системный DoT активен ({result.process}).\n"
+                "Управляется через NetworkManager или resolvectl."
+            )
         elif result.status == "plain":
-            # Обычный резолвер — можно включить защиту
-            self.dot_checkbox.setChecked(False)
-            self.dot_checkbox.setEnabled(True)
-            self.dot_checkbox.setToolTip(f"Резолвер без шифрования ({result.process}). Включите для защиты DNS.")
+            # Резолвер есть, но без шифрования
+            # На systemd-системах — блокируем и даём подсказку
+            # На non-systemd (AntiX) — разрешаем управление через dnscrypt-proxy
+            import shutil
+            has_resolved = shutil.which("resolvectl") is not None
+            if has_resolved:
+                self.dot_checkbox.setChecked(False)
+                self.dot_checkbox.setEnabled(False)
+                self.dot_checkbox.setToolTip(
+                    f"⚠️ {result.process} без шифрования.\n"
+                    "Для включения DoT используйте системные настройки:\n"
+                    "• NetworkManager → IPv4/IPv6 → DNS → 1.1.1.1#cloudflare-dns.com\n"
+                    "• Или: sudo resolvectl dns ~0 1.1.1.1#cloudflare-dns.com && sudo resolvectl dot yes"
+                )
+            else:
+                # AntiX/runit/sysvinit — dnscrypt-proxy доступен
+                self.dot_checkbox.setChecked(False)
+                self.dot_checkbox.setEnabled(True)
+                self.dot_checkbox.setToolTip(
+                    f"Резолвер без шифрования ({result.process}).\n"
+                    "Включите для защиты DNS через dnscrypt-proxy."
+                )
         else:
             # Нет резолвера — можно включить
             self.dot_checkbox.setChecked(False)
             self.dot_checkbox.setEnabled(True)
             self.dot_checkbox.setToolTip("Локальный резолвер не найден. Включите для защиты DNS.")
-        
-        self._original_checkbox_state = self.dot_checkbox.isChecked()
         self.dot_checkbox.blockSignals(False)
         
         self.btn_apply.setEnabled(False)
