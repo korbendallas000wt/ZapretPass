@@ -369,7 +369,7 @@ selfdestruct_services() {
         if [ "$DRY_RUN" -eq 1 ]; then
             echo "[DRY-RUN] $ZAPRET_DIR/scripts/zapretpass-dot.sh disable"
         else
-            "$ZAPRET_DIR/scripts/zapretpass-dot.sh" disable 2>/dev/null || true
+            run_as_root "$ZAPRET_DIR/scripts/zapretpass-dot.sh" disable 2>/dev/null || true
         fi
         DOT_HANDLED=1
     fi
@@ -821,7 +821,7 @@ elif [ -x "$ZAPRET_DIR/scripts/zapretpass-dot.sh" ]; then
     if [ "$DRY_RUN" -eq 1 ]; then
         echo "[DRY-RUN] $ZAPRET_DIR/scripts/zapretpass-dot.sh disable"
     else
-        "$ZAPRET_DIR/scripts/zapretpass-dot.sh" disable 2>/dev/null || true
+        run_as_root "$ZAPRET_DIR/scripts/zapretpass-dot.sh" disable 2>/dev/null || true
     fi
 fi
 
