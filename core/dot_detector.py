@@ -89,6 +89,17 @@ def _check_our_config_exists() -> bool:
     return any(Path(p).exists() for p in config_paths)
 
 
+def can_manage_dot() -> bool:
+    """Разрешено ли управление DoT? True только если мы сами устанавливали dnscrypt-proxy."""
+    log_path = Path(__file__).resolve().parent.parent / "data" / "logs" / "install.log"
+    if not log_path.exists():
+        return False
+    try:
+        content = log_path.read_text(encoding="utf-8", errors="ignore")
+        return "[ACTION] package name=dnscrypt-proxy" in content or "[ACTION] package name=dnscrypt_proxy" in content
+    except Exception:
+        return False
+
 def detect_dot_status() -> DotDetectionResult:
     """
     Определяет статус защищённого DNS.

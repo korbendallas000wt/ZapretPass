@@ -199,7 +199,7 @@ check_packages() {
     if ! check_system_resolved; then
         all_packages+=("${PACKAGES_DOT[@]}")
     else
-        log_info "🟢 Системный резолвер найден — dnscrypt-proxy не устанавливается"
+        echo "  🟢 Системный резолвер найден — dnscrypt-proxy не устанавливается"
     fi
     
     for pkg in "${all_packages[@]}"; do
